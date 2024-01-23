@@ -21,6 +21,7 @@
 class ServerUserInfo : public User {
 public:
 	Version::full_t m_version = Version::UNKNOWN;
+	Version::full_t m_FancyVersion = Version::UNKNOWN;
 	QString qsRelease;
 	QString qsOS;
 	QString qsOSVersion;
