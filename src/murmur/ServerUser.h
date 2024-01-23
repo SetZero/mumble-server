@@ -120,6 +120,7 @@ public:
 	quint32 uiUDPPackets, uiTCPPackets;
 
 	Version::full_t m_version;
+	Version::full_t m_FancyVersion;
 	QString qsRelease;
 	QString qsOS;
 	QString qsOSVersion;
