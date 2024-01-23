@@ -282,6 +282,10 @@ message TextMessage {
 	repeated uint32 tree_id = 4;
 	// The UTF-8 encoded message. May be HTML if the server allows.
 	required string message = 5;
+	// unique identifier for this message
+	optional string message_id = 6;
+	// message timestamp
+	optional uint64 timestamp = 7;
 }
 
 message PermissionDenied {

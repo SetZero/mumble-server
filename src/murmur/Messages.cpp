@@ -22,9 +22,11 @@
 
 #include <QtCore/QStack>
 #include <QtCore/QtEndian>
+#include <QUuid>
 
 #include <cassert>
 #include <unordered_map>
+#include <chrono>
 
 #include <tracy/Tracy.hpp>
 
@@ -1592,6 +1594,19 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	}
 
 	msg.set_actor(uSource->uiSession);
+
+	// generate a message id using qt
+	QUuid uuid = QUuid::createUuid();
+    QString strUuid = uuid.toString();
+	msg.set_message_id(u8(strUuid));
+
+	// add a timestamp using c++17
+	auto now = std::chrono::system_clock::now();
+	auto epoch = now.time_since_epoch();
+	auto value = std::chrono::duration_cast<std::chrono::milliseconds>(epoch);
+	long long timestamp = value.count();
+	msg.set_timestamp(timestamp);
+
 
 	// Send the message to all users that are in (= have joined) OR are
 	// "listening" to channels to which the message has been directed to
