@@ -1607,7 +1607,7 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	auto epoch = now.time_since_epoch();
 	auto value = std::chrono::duration_cast<std::chrono::milliseconds>(epoch);
 	long long timestamp = value.count();
-	msg.set_timestamp(timestamp);
+	msg.set_timestamp(static_cast<uint64_t>(timestamp));
 
 
 	// Send the message to all users that are in (= have joined) OR are
@@ -2111,15 +2111,17 @@ void Server::msgVersion(ServerUser *uSource, MumbleProto::Version &msg) {
 	}
 
 	if(msg.has_fancy_version()) {
-		uSource->m_FancyVersion = static_cast<::Version::full_t >(msg.fancy_version());
+		uSource->m_FancyVersion.emplace(static_cast<::Version::full_t >(msg.fancy_version()));
 	}
+
+	auto versionString = uSource->m_FancyVersion ? Version::toString(*(uSource->m_FancyVersion)) : "n/a";
 
 	log(uSource, QString("Client version %1 (%2 %3: %4); Fancy: %5")
 					 .arg(Version::toString(uSource->m_version))
 					 .arg(uSource->qsOS)
 					 .arg(uSource->qsOSVersion)
 					 .arg(uSource->qsRelease)
-					 .arg(Version::toString(uSource->m_FancyVersion)));
+					 .arg(versionString));
 }
 
 void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {

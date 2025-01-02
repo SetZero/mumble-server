@@ -21,6 +21,8 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QStringList>
 
+#include <optional>
+
 #ifdef Q_OS_WIN
 #	include <winsock2.h>
 #else
@@ -120,7 +122,7 @@ public:
 	quint32 uiUDPPackets, uiTCPPackets;
 
 	Version::full_t m_version;
-	Version::full_t m_FancyVersion;
+	std::optional<Version::full_t> m_FancyVersion;
 	QString qsRelease;
 	QString qsOS;
 	QString qsOSVersion;
