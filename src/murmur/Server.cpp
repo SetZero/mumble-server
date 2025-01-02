@@ -1466,7 +1466,26 @@ void Server::newClient() {
 		connect(u, &ServerUser::handleSslErrors, this, &Server::sslError);
 		connect(u, &ServerUser::encrypted, this, &Server::encrypted);
 
-		log(u, QString("New connection: %1").arg(addressToString(sock->peerAddress(), sock->peerPort())));
+		auto const peerAddress = sock->peerAddress();
+		auto const peerPort    = sock->peerPort();
+		auto const peerAddressString = peerAddress.toString().toStdString();
+		log(QString("New connection: %1")
+				.arg(addressToString(peerAddress, peerPort)));
+
+		m_geoIpResolver.resolve(peerAddressString, [this, peerAddress, peerPort](const GeoIpInformation &data) {
+			std::string geoIpInfo;
+			if(data.status == GeoIpStatus::SUCCESS && data.data) {
+				geoIpInfo = GeoIpResolver::getGeoIpSuccessDataAsJson(*(data.data));
+			} else if(data.message) {
+				geoIpInfo = R"({"status": "Unknown", "message": ")" + *data.message + R"("})";
+			} else {
+				geoIpInfo = R"({"status": "Unknown", "message": "unknown error"})";
+			}
+			
+			log(QString("Connection Information: %1: %2")
+					.arg(addressToString(peerAddress, peerPort))
+					.arg(QString::fromStdString(geoIpInfo)));
+		});
 
 		u->setToS();
 

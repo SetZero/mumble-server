@@ -23,6 +23,7 @@
 #include "User.h"
 #include "Version.h"
 #include "VolumeAdjustment.h"
+#include "GeoIpResolver.h"
 
 #ifndef Q_MOC_RUN
 #	include <boost/function.hpp>
@@ -211,6 +212,8 @@ private:
 
 	AudioReceiverBuffer m_udpAudioReceivers;
 	AudioReceiverBuffer m_tcpAudioReceivers;
+
+	GeoIpResolver m_geoIpResolver;
 
 public slots:
 	void regSslError(const QList< QSslError > &);
