@@ -15,6 +15,7 @@ set(ICE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/MumbleServer.ice")
 include(qt-utils)
 
 option(ice "Build support for Ice RPC." ON)
+add_subdirectory("${3RDPARTY_DIR}/nlohmann_json/" "${CMAKE_CURRENT_BINARY_DIR}/nlohmann_json/" EXCLUDE_FROM_ALL)
 
 find_pkg(Qt6 COMPONENTS Sql REQUIRED)
 
@@ -32,6 +33,8 @@ add_library(mumble_server_object_lib OBJECT
 	"RPC.cpp"
 	"Server.cpp"
 	"Server.h"
+	"GeoIpResolver.cpp"
+	"GeoIpResolver.h"
 	"ServerUser.cpp"
 	"ServerUser.h"
 	"Globals.cpp"
@@ -90,7 +93,7 @@ target_include_directories(mumble_server_object_lib
 		${SHARED_SOURCE_DIR}
 )
 
-target_link_libraries(mumble_server_object_lib PUBLIC shared Qt6::Sql)
+target_link_libraries(mumble_server_object_lib PUBLIC shared Qt6::Sql nlohmann_json::nlohmann_json)
 
 if(static)
 	# MariaDB and MySQL

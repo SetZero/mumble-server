@@ -21,6 +21,8 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QStringList>
 
+#include <optional>
+
 #ifdef Q_OS_WIN
 #	include <winsock2.h>
 #else

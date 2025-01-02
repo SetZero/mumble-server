@@ -12,6 +12,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <optional>
 #include <string>
 
 /**
@@ -21,7 +22,7 @@
 class ServerUserInfo : public User {
 public:
 	Version::full_t m_version = Version::UNKNOWN;
-	Version::full_t m_FancyVersion = Version::UNKNOWN;
+	std::optional<Version::full_t> m_FancyVersion;
 	QString qsRelease;
 	QString qsOS;
 	QString qsOSVersion;

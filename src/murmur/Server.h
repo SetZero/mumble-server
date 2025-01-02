@@ -25,6 +25,7 @@
 #include "User.h"
 #include "Version.h"
 #include "VolumeAdjustment.h"
+#include "GeoIpResolver.h"
 
 #include "database/ConnectionParameter.h"
 
@@ -218,6 +219,8 @@ private:
 
 	AudioReceiverBuffer m_udpAudioReceivers;
 	AudioReceiverBuffer m_tcpAudioReceivers;
+
+	GeoIpResolver m_geoIpResolver;
 
 public slots:
 	void regSslError(const QList< QSslError > &);
