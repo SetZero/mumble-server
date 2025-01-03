@@ -277,7 +277,7 @@ MumbleServerIce::MumbleServerIce() {
 
 		adapter->activate();
 		foreach (const Ice::EndpointPtr ep, mprx->ice_getEndpoints()) {
-			qWarning("MumbleServerIce: Endpoint \"%s\" running", qPrintable(u8(ep->toString())));
+			qWarning(R"({"event": "MumbleServerIce: Endpoint running", "payload": "%s"})", qPrintable(u8(ep->toString())));
 		}
 
 		meta->connectListener(this);
@@ -296,7 +296,7 @@ MumbleServerIce::~MumbleServerIce() {
 		communicator->waitForShutdown();
 		communicator->destroy();
 		communicator = nullptr;
-		qWarning("MumbleServerIce: Shutdown complete");
+		qWarning(R"({"event": "MumbleServerIce", "payload": "Shutdown complete"})");
 	}
 	iopServer = nullptr;
 }

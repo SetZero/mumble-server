@@ -2116,7 +2116,7 @@ void Server::msgVersion(ServerUser *uSource, MumbleProto::Version &msg) {
 
 	auto versionString = uSource->m_FancyVersion ? Version::toString(*(uSource->m_FancyVersion)) : "n/a";
 
-	log(uSource, QString("Client version %1 (%2 %3: %4); Fancy: %5")
+	log(uSource, QString(R"({"event": "ClientVersion", "payload": {"version": "%1", "os": "%2", "os_version": "%3", "release": "%4", "fancy_version": "%5"}})")
 					 .arg(Version::toString(uSource->m_version))
 					 .arg(uSource->qsOS)
 					 .arg(uSource->qsOSVersion)

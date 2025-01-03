@@ -300,8 +300,7 @@ void UnixMurmur::setuid() {
 		}
 #endif
 	} else if (bRoot) {
-		qCritical("WARNING: You are running murmurd as root, without setting a uname in the ini file. This might be a "
-				  "security risk.");
+		qCritical(R"({"event": "WARNING", "payload": "You are running murmurd as root, without setting a uname in the ini file. This might be a security risk."})");
 	}
 }
 
@@ -347,7 +346,7 @@ void UnixMurmur::finalcap() {
 					  "rlim_t is unexpectedly large");
 		ulong_t current = r.rlim_cur;
 		ulong_t max     = r.rlim_max;
-		qWarning("Resource limits were %llu %llu", current, max);
+		qCritical(R"({"event": "resource_limits", "payload": {"current": %llu, "max": %llu}})", current, max);
 
 		r.rlim_cur = r.rlim_max = 1;
 		if (setrlimit(RLIMIT_RTPRIO, &r) != 0) {
@@ -364,7 +363,7 @@ void UnixMurmur::finalcap() {
 	if (cap_set_proc(c) != 0) {
 		qCritical("Failed to set final capabilities");
 	} else {
-		qWarning("Successfully dropped capabilities");
+		qCritical(R"({"event": "capabilities", "payload": "Successfully dropped capabilities"})");
 	}
 	cap_free(c);
 #endif
