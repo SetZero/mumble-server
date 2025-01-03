@@ -143,8 +143,7 @@ ServerHandler::ServerHandler() : database(new Database(QLatin1String("ServerHand
 	{
 		QList< QSslCipher > ciphers = MumbleSSL::ciphersFromOpenSSLCipherString(Global::get().s.qsSslCiphers);
 		if (ciphers.isEmpty()) {
-			qFatal("Invalid 'net/sslciphers' config option. Either the cipher string is invalid or none of the ciphers "
-				   "are available:: \"%s\"",
+			qFatal(R"({"event": "Invalid SSL Ciphers", "payload": "Invalid 'net/sslciphers' config option. Either the cipher string is invalid or none of the ciphers are available: \"%s\"})",
 				   qPrintable(Global::get().s.qsSslCiphers));
 		}
 
@@ -156,7 +155,7 @@ ServerHandler::ServerHandler() : database(new Database(QLatin1String("ServerHand
 		for (const QSslCipher &c : ciphers) {
 			pref << c.name();
 		}
-		qWarning("ServerHandler: TLS cipher preference is \"%s\"", qPrintable(pref.join(QLatin1String(":"))));
+		qWarning(R"({"event": "TLS cipher preference", "payload": "%s"})", qPrintable(pref.join(QLatin1String(":"))));
 	}
 
 #ifdef Q_OS_WIN
