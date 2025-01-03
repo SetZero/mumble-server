@@ -239,10 +239,9 @@ void MetaParams::read(QString fname) {
 	}
 
 	if (QFile::exists(qsAbsSettingsFilePath)) {
-		qWarning("Initializing settings from %s (basepath %s)", qPrintable(qsSettings->fileName()),
-				 qPrintable(qdBasePath.absolutePath()));
+		qWarning(R"({"event": "Initializing settings", "payload": {"file": "%s", "basepath": "%s"}})", qPrintable(qsSettings->fileName()), qPrintable(qdBasePath.absolutePath()));
 	} else {
-		qWarning("No ini file at %s (basepath %s). Initializing with default settings.",
+		qWarning(R"({"event": "No ini file", "payload": {"file": "%s", "basepath": "%s"}})", 
 				 qPrintable(qsSettings->fileName()), qPrintable(qdBasePath.absolutePath()));
 	}
 
@@ -627,7 +626,7 @@ bool MetaParams::loadSSLSettings() {
 		for (const QSslCipher &c : tmpCiphers) {
 			pref << c.name();
 		}
-		qWarning("MetaParams: TLS cipher preference is \"%s\"", qPrintable(pref.join(QLatin1String(":"))));
+		qWarning(R"({"event": "TLS cipher preference", "payload": {"preference": "%s"}})", qPrintable(pref.join(QLatin1String(":"))));
 	}
 
 	qscCert         = tmpCert;

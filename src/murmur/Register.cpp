@@ -22,11 +22,10 @@ void Server::initRegister() {
 			&& bAllowPing) {
 			qtTick.start((60 + (QRandomGenerator::global()->bounded(0, 120))) * 1000);
 		} else {
-			log("Registration needs nonempty 'registername', 'registerpassword' and 'registerurl', must have an empty "
-				"'password' and allowed pings.");
+			log(R"({"event": "registration", "payload": {"status": "not_registering", "reason": "missing_required_fields"}})");
 		}
 	} else {
-		log("Not registering server as public");
+		log(R"({"event": "registration", "payload": {"status": "not_registering", "reason": "missing_registername"}})");
 	}
 }
 
@@ -124,10 +123,10 @@ void Server::finished() {
 	QNetworkReply *rep = qobject_cast< QNetworkReply * >(sender());
 
 	if (rep->error() != QNetworkReply::NoError) {
-		log(QString("Registration failed: %1").arg(rep->errorString()));
+		log(QString(R"({"event": "registration", "payload": {"status": "failed", "error": "%1"}})").arg(rep->errorString()));
 	} else {
 		QByteArray qba = rep->readAll();
-		log(QString("Registration: %1").arg(QLatin1String(qba)));
+		log(QString(R"({"event": "registration", "payload": {"response": "%1"}})").arg(QString::fromUtf8(qba)));
 	}
 	rep->deleteLater();
 }
