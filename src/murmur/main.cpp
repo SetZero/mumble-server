@@ -169,11 +169,11 @@ void IceStop();
 #endif
 
 void cleanup(int signum) {
-	qWarning("Killing running servers");
+	qWarning(R"({"event": "Shutdown", "payload": {"signal": %d}})", signum);
 
 	meta->killAll();
 
-	qWarning("Shutting down");
+	qWarning(R"({"event": "Shutdown", "payload": "Shutting down"})");
 
 #ifdef USE_DBUS
 	delete MurmurDBus::qdbc;
@@ -434,9 +434,9 @@ int main(int argc, char **argv) {
 	}
 
 	if (QSslSocket::supportsSsl()) {
-		qInfo("SSL: OpenSSL version is '%s'", SSLeay_version(SSLEAY_VERSION));
+		qInfo(R"({"event": "SSL", "payload": {"OpenSSL version": "%s"}})", SSLeay_version(SSLEAY_VERSION));
 	} else {
-		qFatal("SSL: this version of Murmur is built against Qt without SSL Support. Aborting.");
+		qFatal(R"({"event": "SSL", "payload": "this version of Murmur is built against Qt without SSL Support. Aborting."})");
 	}
 
 #ifdef Q_OS_UNIX
@@ -649,8 +649,8 @@ int main(int argc, char **argv) {
 
 	meta->getOSInfo();
 
-	qWarning("Murmur %s running on %s: %s: Booting servers", qPrintable(Version::toString(Version::get())),
-			 qPrintable(meta->qsOS), qPrintable(meta->qsOSVersion));
+	qWarning(R"({"event": "Murmur Boot", "payload": {"version": "%s", "os": "%s", "os_version": "%s"}})", 
+			 qPrintable(Version::toString(Version::get())), qPrintable(meta->qsOS), qPrintable(meta->qsOSVersion));
 
 	meta->bootAll();
 

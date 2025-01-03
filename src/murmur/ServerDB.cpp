@@ -153,9 +153,10 @@ ServerDB::ServerDB() {
 		}
 		if (found) {
 			QFileInfo fi(db->databaseName());
-			qWarning("ServerDB: Opened SQLite database %s", qPrintable(fi.absoluteFilePath()));
+			qWarning(R"({"event": "ServerDB", "payload": "Opened SQLite database %s"})",
+					 qPrintable(fi.absoluteFilePath()));
 			if (!fi.isWritable())
-				qFatal("ServerDB: Database is not writable");
+				qFatal(R"({"event": "ServerDB", "payload": "Database is not writable"})");
 		}
 	} else {
 		db->setDatabaseName(Meta::mp.qsDatabase);
@@ -169,13 +170,13 @@ ServerDB::ServerDB() {
 
 	if (!found) {
 		QSqlError e = db->lastError();
-		qFatal("ServerDB: Failed initialization: %s", qPrintable(e.text()));
+		qFatal(R"({"event": "ServerDB", "payload": "Failed initialization: %s"})", qPrintable(e.text()));
 	}
 
 	// Use SQLite in WAL mode if possible.
 	if (Meta::mp.qsDBDriver == "QSQLITE") {
 		if (Meta::mp.iSQLiteWAL == 0) {
-			qWarning("ServerDB: Using SQLite's default rollback journal.");
+			qWarning(R"({"event": "ServerDB", "payload": "Using SQLite's default rollback journal."})");
 		} else if (Meta::mp.iSQLiteWAL > 0 && Meta::mp.iSQLiteWAL <= 2) {
 			QSqlQuery query;
 
@@ -202,22 +203,25 @@ ServerDB::ServerDB() {
 				SQLDO("PRAGMA journal_mode=WAL;");
 				if (Meta::mp.iSQLiteWAL == 1) {
 					SQLDO("PRAGMA synchronous=NORMAL;");
-					qWarning("ServerDB: Configured SQLite for journal_mode=WAL, synchronous=NORMAL");
+					qWarning(
+						R"({"event": "ServerDB", "payload": "Configured SQLite for journal_mode=WAL, synchronous=NORMAL"})");
 				} else if (Meta::mp.iSQLiteWAL == 2) {
 					SQLDO("PRAGMA synchronous=FULL;");
-					qWarning("ServerDB: Configured SQLite for journal_mode=WAL, synchronous=FULL");
+					qWarning(
+						R"({"event": "ServerDB", "payload": "Configured SQLite for journal_mode=WAL, synchronous=FULL"})");
 				}
 			} else if (hasversion) {
-				qWarning("ServerDB: Unable to use SQLite in WAL mode due to incompatible SQLite version %i.%i", major,
-						 minor);
+				qWarning(
+					R"({"event": "ServerDB", "payload": "Unable to use SQLite in WAL mode due to incompatible SQLite version %i.%i"})",
+					major, minor);
 			} else {
 				qWarning(
-					"ServerDB: Unable to use SQLite in WAL mode because the SQLite version could not be determined.");
+					R"({"event": "ServerDB", "payload": "Unable to use SQLite in WAL mode because the SQLite version could not be determined."})");
 			}
 		} else {
-			qFatal("ServerDB: Invalid value '%i' for sqlite_wal. Please use 0 (no wal), 1 (wal), 2 (wal with "
-				   "synchronous=full)",
-				   Meta::mp.iSQLiteWAL);
+			qFatal(
+				R"-({"event": "ServerDB", "payload": "Invalid value '%i' for sqlite_wal. Please use 0 (no wal), 1 (wal), 2 (wal with synchronous=full)"})-",
+				Meta::mp.iSQLiteWAL);
 		}
 	}
 
@@ -2295,7 +2299,9 @@ void Server::dumpChannel(const Channel *c) {
 	}
 	qWarning(" ");
 
-	foreach (c, c->qlChannels) { dumpChannel(c); }
+	foreach (c, c->qlChannels) {
+		dumpChannel(c);
+	}
 }
 
 void Server::getBans() {

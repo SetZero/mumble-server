@@ -109,10 +109,10 @@ Server::Server(int snum, QObject *p) : QThread(p) {
 		connect(ss, SIGNAL(newConnection()), this, SLOT(newClient()), Qt::QueuedConnection);
 
 		if (!ss->listen(qha, usPort)) {
-			log(QString("Server: TCP Listen on %1 failed: %2").arg(addressToString(qha, usPort), ss->errorString()));
+			log(QString(R"({"event": "tcp_listen_failed", "payload": {"address": "%1", "error": "%2"}})").arg(addressToString(qha, usPort), ss->errorString()));
 			bValid = false;
 		} else {
-			log(QString("Server listening on %1").arg(addressToString(qha, usPort)));
+			log(QString(R"({"event": "server_listening", "payload": {"address": "%1"}})").arg(addressToString(qha, usPort)));
 		}
 		qlServer << ss;
 	}
@@ -151,11 +151,11 @@ Server::Server(int snum, QObject *p) : QThread(p) {
 		if (WSAIoctl(sock, SIO_UDP_CONNRESET, &bNewBehaviour, sizeof(bNewBehaviour), nullptr, 0, &dwBytesReturned,
 					 nullptr, nullptr)
 			== SOCKET_ERROR) {
-			log(QString("Failed to set SIO_UDP_CONNRESET: %1").arg(WSAGetLastError()));
+			log(QString(R"({"event": "udp_connreset_failed", "payload": {"error": "%1"}})").arg(WSAGetLastError()));
 		}
 #endif
 		if (sock == INVALID_SOCKET) {
-			log("Failed to create UDP Socket");
+			log(QString(R"({"event": "udp_socket_creation_failed", "payload": {}})"));
 			bValid = false;
 			return;
 		} else {
@@ -171,20 +171,20 @@ Server::Server(int snum, QObject *p) : QThread(p) {
 					if (::setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast< const char * >(&ipv6only),
 									 optlen)
 						== SOCKET_ERROR) {
-						log(QString("Failed to copy IPV6_V6ONLY socket attribute from tcp to udp socket"));
+						log(R"({"event": "failed_to_copy_IPV6_V6ONLY_socket_attribute", "payload": {}})");
 					}
 				}
 			}
 
 			if (::bind(sock, reinterpret_cast< sockaddr * >(&addr), len) == SOCKET_ERROR) {
-				log(QString("Failed to bind UDP Socket to %1").arg(addressToString(ss->serverAddress(), usPort)));
+				log(R"({"event": "udp_socket_bind_failed", "payload": {"address": ")" + addressToString(ss->serverAddress(), usPort) + R"("}})");
 			} else {
 #ifdef Q_OS_UNIX
 				int val = 0xe0;
 				if (setsockopt(sock, IPPROTO_IP, IP_TOS, &val, sizeof(val))) {
 					val = 0x80;
 					if (setsockopt(sock, IPPROTO_IP, IP_TOS, &val, sizeof(val)))
-						log("Server: Failed to set TOS for UDP Socket");
+						log(R"({"event": "udp_socket_tos_failed", "payload": {}})");
 				}
 #	if defined(SO_PRIORITY)
 				socklen_t optlen = sizeof(val);
@@ -210,7 +210,7 @@ Server::Server(int snum, QObject *p) : QThread(p) {
 
 #ifdef Q_OS_UNIX
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, aiNotify) != 0) {
-		log("Failed to create notify socket");
+		log(R"({"event": "notify_socket_creation_failed", "payload": {}})");
 		bValid = false;
 		return;
 	}
@@ -243,7 +243,7 @@ Server::Server(int snum, QObject *p) : QThread(p) {
 
 void Server::startThread() {
 	if (!isRunning()) {
-		log("Starting voice thread");
+		log(R"({"event": "voice_thread_start", "payload": {}})");
 		bRunning = true;
 
 		foreach (QSocketNotifier *qsn, qlUdpNotifier)
@@ -269,12 +269,12 @@ void Server::startThread() {
 void Server::stopThread() {
 	bRunning = false;
 	if (isRunning()) {
-		log("Ending voice thread");
+		log(R"({"event": "voice_thread_end", "payload": {}})");
 
 #ifdef Q_OS_UNIX
 		unsigned char val = 0;
 		if (::write(aiNotify[1], &val, 1) != 1)
-			log("Failed to signal voice thread");
+			log(R"({"event": "voice_thread_signal_failed", "payload": {}})");
 #else
 		SetEvent(hNotify);
 #endif
@@ -312,7 +312,7 @@ Server::~Server() {
 #endif
 	clearACLCache();
 
-	log("Stopped");
+	log(R"({"event": "server_stopped", "payload": {}})");
 }
 
 void Server::readParams() {
@@ -378,12 +378,12 @@ void Server::readParams() {
 					}
 				}
 				if (!found) {
-					log(QString("Lookup of bind hostname %1 failed").arg(host));
+					log(QString(R"({"event": "lookup_failed", "payload": {"hostname": "%1"}})").arg(host));
 				}
 			}
 		}
 		foreach (const QHostAddress &qha, qlBind)
-			log(QString("Binding to address %1").arg(qha.toString()));
+			log(QString(R"({"event": "binding_address", "payload": {"address": "%1"}})").arg(qha.toString()));
 		if (qlBind.isEmpty())
 			qlBind = Meta::mp.qlBind;
 	}
@@ -411,10 +411,10 @@ void Server::readParams() {
 				qsWelcomeText = in.readAll();
 				f.close();
 			} else {
-				log(QString("Failed to open welcome text file %1").arg(qsWelcomeTextFile));
+				log(QString(R"({"event": "welcome_text_file_open_failed", "payload": {"file": "%1"}})").arg(qsWelcomeTextFile));
 			}
 		} else {
-			log(QString("Ignoring welcometextfile %1 because welcometext is defined").arg(qsWelcomeTextFile));
+			log(QString(R"({"event": "ignoring_welcometextfile", "payload": {"file": "%1", "reason": "welcometext is defined"}})").arg(qsWelcomeTextFile));
 		}
 	}
 
@@ -609,7 +609,7 @@ void Server::setLiveConf(const QString &key, const QString &value) {
 void Server::initZeroconf() {
 	zeroconf = new Zeroconf();
 	if (zeroconf->isOk()) {
-		log("Registering zeroconf service...");
+		log(R"({"event": "zeroconf_register", "payload": {"message": "Registering zeroconf service..."}})");
 		zeroconf->registerService(BonjourRecord(qsRegName, "_mumble._tcp", ""), usPort);
 		return;
 	}
@@ -624,7 +624,7 @@ void Server::removeZeroconf() {
 	}
 
 	if (zeroconf->isOk()) {
-		log("Unregistering zeroconf service...");
+		log(R"({"event": "zeroconf_unregister", "payload": {"message": "Unregistering zeroconf service..."}})");
 	}
 
 	delete zeroconf;
@@ -1359,7 +1359,7 @@ void Server::newClient() {
 		QHostAddress adr = sock->peerAddress();
 
 		if (meta->banCheck(adr)) {
-			log(QString("Ignoring connection: %1 (Global ban)")
+			log(QString(R"({"event": "connection_rejected", "payload": {"reason": "Global ban"}})")
 					.arg(addressToString(sock->peerAddress(), sock->peerPort())));
 			sock->disconnectFromHost();
 			sock->deleteLater();
@@ -1380,7 +1380,7 @@ void Server::newClient() {
 
 		foreach (const Ban &ban, qlBans) {
 			if (ban.haAddress.match(ha, static_cast< unsigned int >(ban.iMask))) {
-				log(QString("Ignoring connection: %1, Reason: %2, Username: %3, Hash: %4 (Server ban)")
+				log(QString(R"({"event": "connection_rejected", "payload": {"reason": "Server ban", "address": "%1", "ban_reason": "%2", "username": "%3", "hash": "%4"}})")
 						.arg(addressToString(sock->peerAddress(), sock->peerPort()), ban.qsReason, ban.qsUsername,
 							 ban.qsHash));
 				sock->disconnectFromHost();
@@ -1450,7 +1450,7 @@ void Server::newClient() {
 		sock->setSslConfiguration(config);
 
 		if (qqIds.isEmpty()) {
-			log(QString("Session ID pool (%1) empty, rejecting connection").arg(iMaxUsers));
+			log(QString(R"({"event": "connection_rejected", "payload": {"reason": "Session ID pool empty", "max_users": %1}})").arg(iMaxUsers));
 			sock->disconnectFromHost();
 			sock->deleteLater();
 			return;
@@ -1469,20 +1469,20 @@ void Server::newClient() {
 		auto const peerAddress = sock->peerAddress();
 		auto const peerPort    = sock->peerPort();
 		auto const peerAddressString = peerAddress.toString().toStdString();
-		log(QString("New connection: %1")
+		log(QString(R"({"event": "new_connection", "payload": {"connection": "%1"}})")
 				.arg(addressToString(peerAddress, peerPort)));
 
 		m_geoIpResolver.resolve(peerAddressString, [this, peerAddress, peerPort](const GeoIpInformation &data) {
 			std::string geoIpInfo;
 			if(data.status == GeoIpStatus::SUCCESS && data.data) {
-				geoIpInfo = GeoIpResolver::getGeoIpSuccessDataAsJson(*(data.data));
+				geoIpInfo = GeoIpResolver::getGeoIpSuccessDataAsJson(data.query, *(data.data));
 			} else if(data.message) {
 				geoIpInfo = R"({"status": "Unknown", "message": ")" + *data.message + R"("})";
 			} else {
 				geoIpInfo = R"({"status": "Unknown", "message": "unknown error"})";
 			}
 			
-			log(QString("Connection Information: %1: %2")
+			log(QString(R"({"event": "geoip", "payload": {"connection": %1, "data": %2)")
 					.arg(addressToString(peerAddress, peerPort))
 					.arg(QString::fromStdString(geoIpInfo)));
 		});
@@ -1536,7 +1536,7 @@ void Server::encrypted() {
 				issuer = issuerList.first();
 			}
 
-			log(uSource, QString::fromUtf8("Strong certificate for %1 <%2> (signed by %3)")
+			log(uSource, QString(R"({"event": "strong_certificate", "payload": {"subject": "%1", "email": "%2", "issuer": "%3"}})")
 							 .arg(subject)
 							 .arg(uSource->qslEmail.join(", "))
 							 .arg(issuer));
@@ -1544,7 +1544,7 @@ void Server::encrypted() {
 
 		foreach (const Ban &ban, qlBans) {
 			if (ban.qsHash == uSource->qsHash) {
-				log(uSource, QString("Certificate hash is banned: %1, Username: %2, Reason: %3.")
+				log(uSource, QString(R"({"event": "certificate_banned", "payload": {"hash": "%1", "username": "%2", "reason": "%3"}})")
 								 .arg(ban.qsHash, ban.qsUsername, ban.qsReason));
 				uSource->disconnectSocket();
 			}
@@ -1574,7 +1574,7 @@ void Server::sslError(const QList< QSslError > &errors) {
 				u->bVerified = false;
 				break;
 			default:
-				log(u, QString("SSL Error: %1").arg(e.errorString()));
+				log(u, QString(R"({"event": "ssl_error", "payload": {"error": "%1"}})").arg(e.errorString()));
 				ok = false;
 		}
 	}
@@ -1629,7 +1629,7 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 		// "Error while reading: error:140E0197:SSL routines:SSL_shutdown:shutdown while in init [20]"
 		//
 		// Definitely not ideal, but it fixes a critical vulnerability.
-		qWarning("Ignored OpenSSL error 140E0197 for %p", static_cast< void * >(sender()));
+		qWarning(R"({"event": "ignored_openssl_error", "payload": {"error_code": "140E0197", "sender": "%p"}})", static_cast< void * >(sender()));
 		return;
 	}
 
@@ -1642,7 +1642,7 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 
 	ServerUser *u = static_cast< ServerUser * >(c);
 
-	log(u, QString("Connection closed: %1 [%2]").arg(reason).arg(err));
+	log(u, QString(R"({"event": "connection_closed", "payload": {"reason": "%1", "error": "%2"}})").arg(reason).arg(err));
 
 	setLastDisconnect(u);
 
@@ -1786,7 +1786,7 @@ void Server::checkTimeout() {
 	qrwlVoiceThread.lockForRead();
 	foreach (ServerUser *u, qhUsers) {
 		if (u->activityTime() > (iTimeout * 1000)) {
-			log(u, "Timeout");
+			log(u, R"({"event": "timeout", "payload": {}})");
 			qlClose.append(u);
 		}
 	}
@@ -1816,7 +1816,7 @@ void Server::tcpTransmitData(QByteArray a, unsigned int id) {
 void Server::doSync(unsigned int id) {
 	ServerUser *u = qhUsers.value(id);
 	if (u) {
-		log(u, "Requesting crypt-nonce resync");
+		log(u, R"({"event": "requesting_crypt_nonce_resync", "payload": {}})");
 		MumbleProto::CryptSetup mpcs;
 		sendMessage(u, mpcs);
 	}
@@ -2269,7 +2269,7 @@ void Server::recheckCodecVersions(ServerUser *connectingUser) {
 		}
 	}
 
-	log(QString::fromLatin1("CELT codec switch %1 %2 (prefer %3) (Opus %4)")
+	log(QString(R"({"event": "codec_switch", "payload": {"alpha": "%1", "beta": "%2", "prefer": "%3", "opus": "%4"}})")
 			.arg(iCodecAlpha, 0, 16)
 			.arg(iCodecBeta, 0, 16)
 			.arg(bPreferAlpha ? iCodecAlpha : iCodecBeta, 0, 16)
