@@ -46,11 +46,11 @@ public:
 
 	virtual void getLogLen_async(const ::MumbleServer::AMD_Server_getLogLenPtr &, const Ice::Current &);
 
-	virtual void getUsers_async(const ::MumbleServer::AMD_Server_getUsersPtr &, const Ice::Current &);
+	virtual void getUsers_async(const ::MumbleServer::AMD_Server_getUsersPtr &, bool includeDescription, const Ice::Current &);
 
-	virtual void getChannels_async(const ::MumbleServer::AMD_Server_getChannelsPtr &, const Ice::Current &);
+	virtual void getChannels_async(const ::MumbleServer::AMD_Server_getChannelsPtr &, bool includeDescription, const Ice::Current &);
 
-	virtual void getTree_async(const ::MumbleServer::AMD_Server_getTreePtr &, const Ice::Current &);
+	virtual void getTree_async(const ::MumbleServer::AMD_Server_getTreePtr &, bool includeDescription, const Ice::Current &);
 
 	virtual void getCertificateList_async(const ::MumbleServer::AMD_Server_getCertificateListPtr &, ::Ice::Int,
 										  const ::Ice::Current &);

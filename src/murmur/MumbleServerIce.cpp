@@ -96,7 +96,7 @@ static void logToLog(const ServerDB::LogRecord &r, ::MumbleServer::LogEntry &ent
 	entry.txt       = iceString(r.second);
 }
 
-static void userToUser(const ::User *p, ::MumbleServer::User &mp) {
+static void userToUser(const ::User *p, ::MumbleServer::User &mp, bool includeDescription = true) {
 	mp.session         = static_cast< int >(p->uiSession);
 	mp.userid          = p->iId;
 	mp.name            = iceString(p->qsName);
@@ -108,7 +108,7 @@ static void userToUser(const ::User *p, ::MumbleServer::User &mp) {
 	mp.selfMute        = p->bSelfMute;
 	mp.selfDeaf        = p->bSelfDeaf;
 	mp.channel         = static_cast< int >(p->cChannel->iId);
-	mp.comment         = iceString(p->qsComment);
+	mp.comment         = includeDescription ? iceString(p->qsComment) : iceString("");
 
 	const ServerUser *u = static_cast< const ServerUser * >(p);
 	mp.onlinesecs       = u->bwr.onlineSeconds();
@@ -139,11 +139,11 @@ static void userToUser(const ::User *p, ::MumbleServer::User &mp) {
 	mp.address = addr;
 }
 
-static void channelToChannel(const ::Channel *c, ::MumbleServer::Channel &mc) {
+static void channelToChannel(const ::Channel *c, ::MumbleServer::Channel &mc, bool includeDescription = true) {
 	mc.id          = static_cast< int >(c->iId);
 	mc.name        = iceString(c->qsName);
 	mc.parent      = c->cParent ? static_cast< int >(c->cParent->iId) : -1;
-	mc.description = iceString(c->qsDesc);
+	mc.description = includeDescription ? iceString(c->qsDesc) :  iceString("");
 	mc.position    = c->iPosition;
 	mc.links.clear();
 	foreach (::Channel *chn, c->qsPermLinks)
@@ -1051,13 +1051,13 @@ static void impl_Server_getLogLen(const ::MumbleServer::AMD_Server_getLogLenPtr 
 }
 
 #define ACCESS_Server_getUsers_READ
-static void impl_Server_getUsers(const ::MumbleServer::AMD_Server_getUsersPtr cb, int server_id) {
+static void impl_Server_getUsers(const ::MumbleServer::AMD_Server_getUsersPtr cb, int server_id, bool includeDescription) {
 	NEED_SERVER;
 	::MumbleServer::UserMap pm;
 	foreach (const ::User *p, server->qhUsers) {
 		::MumbleServer::User mp;
 		if (static_cast< const ServerUser * >(p)->sState == ::ServerUser::Authenticated) {
-			userToUser(p, mp);
+			userToUser(p, mp, includeDescription);
 			pm[static_cast< int >(p->uiSession)] = mp;
 		}
 	}
@@ -1065,12 +1065,12 @@ static void impl_Server_getUsers(const ::MumbleServer::AMD_Server_getUsersPtr cb
 }
 
 #define ACCESS_Server_getChannels_READ
-static void impl_Server_getChannels(const ::MumbleServer::AMD_Server_getChannelsPtr cb, int server_id) {
+static void impl_Server_getChannels(const ::MumbleServer::AMD_Server_getChannelsPtr cb, int server_id, bool includeDescription) {
 	NEED_SERVER;
 	::MumbleServer::ChannelMap cm;
 	foreach (const ::Channel *c, server->qhChannels) {
 		::MumbleServer::Channel mc;
-		channelToChannel(c, mc);
+		channelToChannel(c, mc, includeDescription);
 		cm[static_cast< int >(c->iId)] = mc;
 	}
 	cb->ice_response(cm);
@@ -1084,30 +1084,30 @@ static bool channelSort(const ::Channel *a, const ::Channel *b) {
 	return ::Channel::lessThan(a, b);
 }
 
-TreePtr recurseTree(const ::Channel *c) {
+TreePtr recurseTree(const ::Channel *c, bool includeDescription) {
 	TreePtr t = new Tree();
-	channelToChannel(c, t->c);
+	channelToChannel(c, t->c, includeDescription);
 	QList<::User * > users = c->qlUsers;
 	std::sort(users.begin(), users.end(), userSort);
 
 	foreach (const ::User *p, users) {
 		::MumbleServer::User mp;
-		userToUser(p, mp);
+		userToUser(p, mp, includeDescription);
 		t->users.push_back(mp);
 	}
 
 	QList<::Channel * > channels = c->qlChannels;
 	std::sort(channels.begin(), channels.end(), channelSort);
 
-	foreach (const ::Channel *chn, channels) { t->children.push_back(recurseTree(chn)); }
+	foreach (const ::Channel *chn, channels) { t->children.push_back(recurseTree(chn, includeDescription)); }
 
 	return t;
 }
 
 #define ACCESS_Server_getTree_READ
-static void impl_Server_getTree(const ::MumbleServer::AMD_Server_getTreePtr cb, int server_id) {
+static void impl_Server_getTree(const ::MumbleServer::AMD_Server_getTreePtr cb, int server_id, bool includeDescription) {
 	NEED_SERVER;
-	cb->ice_response(recurseTree(server->qhChannels.value(0)));
+	cb->ice_response(recurseTree(server->qhChannels.value(0), includeDescription));
 }
 
 #define ACCESS_Server_getCertificateList_READ

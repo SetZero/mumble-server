@@ -544,13 +544,13 @@ module MumbleServer
 		 * @return List of connected users.
 		 * @see getState
 		 */
-		idempotent UserMap getUsers() throws ServerBootedException, InvalidSecretException;
+		idempotent UserMap getUsers(bool includeDescription) throws ServerBootedException, InvalidSecretException;
 
 		/** Fetch all channels. This returns all defined channels on the server. The root channel is always channel 0.
 		 * @return List of defined channels.
 		 * @see getChannelState
 		 */
-		idempotent ChannelMap getChannels() throws ServerBootedException, InvalidSecretException;
+		idempotent ChannelMap getChannels(bool includeDescription) throws ServerBootedException, InvalidSecretException;
 
 		/** Fetch certificate of user. This returns the complete certificate chain of a user.
 		 * @param session Connection ID of user. See {@link User.session}.
@@ -562,7 +562,7 @@ module MumbleServer
 		 *  as a tree. This is primarily used for viewing the state of the server on a webpage.
 		 * @return Recursive tree of all channels and connected users.
 		 */
-		idempotent Tree getTree() throws ServerBootedException, InvalidSecretException;
+		idempotent Tree getTree(bool includeDescription) throws ServerBootedException, InvalidSecretException;
 
 		/** Fetch all current IP bans on the server.
 		 * @return List of bans.
