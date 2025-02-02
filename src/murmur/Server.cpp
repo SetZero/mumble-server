@@ -1492,8 +1492,8 @@ void Server::newClient() {
 			} else {
 				geoIpInfo = R"({"status": "Unknown", "message": "unknown error"})";
 			}
-			
-			log(QString(R"({"event": "geoip", "payload": {"connection": %1, "data": %2)")
+
+			log(QString(R"({"event": "geoip", "payload": {"connection": "%1", "data": %2}})")
 					.arg(addressToString(peerAddress, peerPort))
 					.arg(QString::fromStdString(geoIpInfo)));
 		});
