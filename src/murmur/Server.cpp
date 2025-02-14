@@ -205,8 +205,14 @@ Server::Server(int snum, QObject *p) : QThread(p) {
 	}
 
 	bValid = bValid && (qlServer.count() == qlBind.count()) && (qlUdpSocket.count() == qlBind.count());
-	if (!bValid)
+	if (!bValid) {
+		log(QString(R"({"event": "server_failed", "payload": {"reason": "invalid_configuration", "bValid": %1, "qlServerCount": %2, "qlBindCount": %3, "qlUdpSocketCount": %4}})")
+			.arg(bValid)
+			.arg(qlServer.count())
+			.arg(qlBind.count())
+			.arg(qlUdpSocket.count()));
 		return;
+	}
 
 #ifdef Q_OS_UNIX
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, aiNotify) != 0) {
@@ -237,8 +243,15 @@ Server::Server(int snum, QObject *p) : QThread(p) {
 		if (bBonjour)
 			initZeroconf();
 #endif
-		initRegister();
+		log(R"({"event": "server_started", "payload": {}})");
+	} else {
+		log(QString(R"({"event": "server_failed", "payload": {"reason": "invalid_configuration", "bValid": %1, "qlServerCount": %2, "qlBindCount": %3, "qlUdpSocketCount": %4}})")
+			.arg(bValid)
+			.arg(qlServer.count())
+			.arg(qlBind.count())
+			.arg(qlUdpSocket.count()));
 	}
+	initRegister();
 }
 
 void Server::startThread() {

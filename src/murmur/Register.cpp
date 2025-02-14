@@ -23,11 +23,13 @@ void Server::initRegister() {
 		if (!qsRegName.isEmpty() && !qsRegPassword.isEmpty() && qurlRegWeb.isValid() && qsPassword.isEmpty()
 			&& bAllowPing) {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
-			qtTick.start((60 + (static_cast< int >(QRandomGenerator::global()->generate()) % 120)) * 1000);
+			int interval = 60 + (static_cast< int >(QRandomGenerator::global()->generate()) % 120);
 #else
-			// Qt 5.10 introduces the QRandomGenerator class and in Qt 5.15 qrand got deprecated in its favor
-			qtTick.start((60 + (static_cast< int >(qrand()) % 120)) * 1000);
+			int interval = 60 + (static_cast< int >(qrand()) % 120);
 #endif
+			interval = std::max(interval, 60); // Failsafe: default to 60 seconds if the interval is less than 60
+			log(QString(R"({"event": "registration", "payload": {"interval": %1}})").arg(interval));
+			qtTick.start(interval * 1000);
 		} else {
 			log(R"({"event": "registration", "payload": {"status": "not_registering", "reason": "missing_required_fields"}})");
 		}
@@ -135,7 +137,8 @@ void Server::finished() {
 	QNetworkReply *rep = qobject_cast< QNetworkReply * >(sender());
 
 	if (rep->error() != QNetworkReply::NoError) {
-		log(QString(R"({"event": "registration", "payload": {"status": "failed", "error": "%1"}})").arg(rep->errorString()));
+		log(QString(R"({"event": "registration", "payload": {"status": "failed", "error": "%1"}})")
+				.arg(rep->errorString()));
 	} else {
 		QByteArray qba = rep->readAll();
 		log(QString(R"({"event": "registration", "payload": {"response": "%1"}})").arg(QString::fromUtf8(qba)));
