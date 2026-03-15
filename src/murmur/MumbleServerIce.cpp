@@ -118,7 +118,7 @@ static void userToUser(const ::User *p, ::MumbleServer::User &mp, bool includeDe
 	mp.selfMute        = p->bSelfMute;
 	mp.selfDeaf        = p->bSelfDeaf;
 	mp.channel         = static_cast< int >(p->cChannel->iId);
-	mp.comment         = includeDescription ? iceString(p->qsComment) : iceString("");
+	mp.comment         = includeDescription ? iceString(p->qsComment) : iceString(QString());
 
 	const ServerUser *u = static_cast< const ServerUser * >(p);
 	mp.onlinesecs       = u->bwr.onlineSeconds();
@@ -148,7 +148,7 @@ static void channelToChannel(const ::Channel *c, ::MumbleServer::Channel &mc, bo
 	mc.id          = static_cast< int >(c->iId);
 	mc.name        = iceString(c->qsName);
 	mc.parent      = c->cParent ? static_cast< int >(c->cParent->iId) : -1;
-	mc.description = includeDescription ? iceString(c->qsDesc) :  iceString("");
+	mc.description = includeDescription ? iceString(c->qsDesc) : iceString(QString());
 	mc.position    = c->iPosition;
 	mc.links.clear();
 	for (::Channel *chn : c->qsPermLinks) {
