@@ -1,3 +1,6 @@
+#ifndef MUMBLE_MURMUR_GEOIPRESOLVER_H_
+#define MUMBLE_MURMUR_GEOIPRESOLVER_H_
+
 #include <QHostAddress>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -199,3 +202,5 @@ private:
 	std::map< std::string, std::function< void(GeoIpInformation) > > m_CallbackMap;
 	std::mutex m_CallbackMapMutex;
 };
+
+#endif // MUMBLE_MURMUR_GEOIPRESOLVER_H_
