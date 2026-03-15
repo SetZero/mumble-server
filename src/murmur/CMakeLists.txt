@@ -15,7 +15,6 @@ set(ICE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/MumbleServer.ice")
 include(qt-utils)
 
 option(ice "Build support for Ice RPC." ON)
-add_subdirectory("${3RDPARTY_DIR}/nlohmann_json/" "${CMAKE_CURRENT_BINARY_DIR}/nlohmann_json/" EXCLUDE_FROM_ALL)
 
 find_pkg(Qt6 COMPONENTS Sql REQUIRED)
 
