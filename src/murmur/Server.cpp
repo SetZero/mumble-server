@@ -25,6 +25,8 @@
 #include "User.h"
 #include "Version.h"
 
+#include "database/ServerDatabase.h"
+
 #ifdef USE_ZEROCONF
 #	include "Zeroconf.h"
 #endif
@@ -245,6 +247,22 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	m_bans = m_dbWrapper.getBans(iServerNum);
 	m_dbWrapper.initializeChannels(*this);
 	m_dbWrapper.initializeChannelLinks(*this);
+
+	// Initialize persistent chat manager
+	m_pchatRateLimiter = std::make_unique< pchat::TokenBucketRateLimiter >();
+	m_pchatRateLimiter->defineLimit("msg", 30, 60);
+	m_pchatRateLimiter->defineLimit("fetch", 10, 60);
+	m_pchatRateLimiter->defineLimit("key_announce", 5, 60);
+	m_pchatRateLimiter->defineLimit("key_exchange", 20, 60);
+
+	m_pchatBridge = std::make_unique< pchat::ServerBridge >(*this);
+
+	m_pchatManager = std::make_unique< pchat::PersistentChatManager >(
+		m_dbWrapper.getServerDB().getPChatMessageTable(),
+		m_dbWrapper.getServerDB().getPChatUserKeysTable(),
+		m_dbWrapper.getServerDB().getPChatMemberJoinTable(),
+		m_dbWrapper.getServerDB().getPChatPendingKeyRequestsTable(),
+		*m_pchatBridge, *m_pchatRateLimiter);
 
 	initializeCert();
 
@@ -1534,6 +1552,7 @@ void Server::encrypted() {
 		mpv.set_os(u8(meta->qsOS));
 		mpv.set_os_version(u8(meta->qsOSVersion));
 	}
+	mpv.set_fancy_version(::Version::fromComponents(0, 2, 0));
 	sendMessage(uSource, mpv);
 
 	QList< QSslCertificate > certs = uSource->peerCertificateChain();

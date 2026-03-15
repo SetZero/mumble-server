@@ -154,6 +154,8 @@ public:
 
 	void importFromJSON(const nlohmann::json &json, bool createMissingTables);
 
+	::mumble::server::db::ServerDatabase &getServerDB() { return m_serverDB; }
+
 protected:
 	::mumble::server::db::ServerDatabase m_serverDB;
 	const std::thread::id m_threadID = std::this_thread::get_id();

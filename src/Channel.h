@@ -12,6 +12,9 @@
 #include <QtCore/QReadWriteLock>
 #include <QtCore/QSet>
 #include <QtCore/QString>
+#include <QtCore/QStringList>
+
+#include <cstdint>
 
 #ifdef MUMBLE
 #	include <atomic>
@@ -64,6 +67,15 @@ public:
 	/// channel is given by the server's "usersperchannel"
 	/// setting.
 	unsigned int uiMaxUsers;
+
+	/// Persistent chat mode: 0=NONE, 1=POST_JOIN, 2=FULL_ARCHIVE, 3=SERVER_MANAGED (future).
+	uint32_t uiPChatMode = 0;
+	/// Maximum number of stored persistent chat messages (0=unlimited).
+	uint32_t uiPChatMaxHistory = 0;
+	/// Auto-delete persistent chat messages after N days (0=forever).
+	uint32_t uiPChatRetentionDays = 0;
+	/// TLS certificate hashes of persistent chat key custodians.
+	QStringList qslPChatKeyCustodians;
 
 	Channel(unsigned int id, const QString &name, QObject *p = nullptr);
 	~Channel();
