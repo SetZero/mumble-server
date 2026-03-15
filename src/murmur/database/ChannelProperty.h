@@ -17,6 +17,10 @@ namespace server {
 			Description,
 			Position,
 			MaxUsers,
+			PChatMode,
+			PChatMaxHistory,
+			PChatRetentionDays,
+			PChatKeyCustodians,
 		};
 
 	} // namespace db

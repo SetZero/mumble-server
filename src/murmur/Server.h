@@ -18,6 +18,9 @@
 #include "ChannelListenerManager.h"
 #include "DBWrapper.h"
 #include "HostAddress.h"
+#include "pchat/PersistentChatManager.h"
+#include "pchat/ServerBridge.h"
+#include "pchat/TokenBucketRateLimiter.h"
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
 #include "QtUtils.h"
@@ -52,6 +55,7 @@
 #endif
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -327,6 +331,10 @@ public:
 	std::vector< Ban > m_bans;
 
 	DBWrapper m_dbWrapper;
+
+	std::unique_ptr< pchat::ServerBridge > m_pchatBridge;
+	std::unique_ptr< pchat::TokenBucketRateLimiter > m_pchatRateLimiter;
+	std::unique_ptr< pchat::PersistentChatManager > m_pchatManager;
 
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,

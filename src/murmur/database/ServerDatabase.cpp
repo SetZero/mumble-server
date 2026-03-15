@@ -14,6 +14,10 @@
 #include "GroupMemberTable.h"
 #include "GroupTable.h"
 #include "LogTable.h"
+#include "PChatMemberJoinTable.h"
+#include "PChatMessageTable.h"
+#include "PChatPendingKeyRequestsTable.h"
+#include "PChatUserKeysTable.h"
 #include "ServerTable.h"
 #include "UserProperty.h"
 #include "UserPropertyTable.h"
@@ -46,6 +50,10 @@ namespace server {
 				ChannelLinkTable,
 				BanTable,
 				ChannelListenerTable,
+				PChatMessageTable,
+				PChatUserKeysTable,
+				PChatMemberJoinTable,
+				PChatPendingKeyRequestsTable,
 			};
 		}
 
@@ -113,6 +121,18 @@ namespace server {
 				addTable(std::make_unique< ChannelListenerTable >(m_sql, m_backend, getUserTable(), getChannelTable()));
 			assert(id == TableIndex::ChannelListenerTable);
 
+			id = addTable(std::make_unique< PChatMessageTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::PChatMessageTable);
+
+			id = addTable(std::make_unique< PChatUserKeysTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::PChatUserKeysTable);
+
+			id = addTable(std::make_unique< PChatMemberJoinTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::PChatMemberJoinTable);
+
+			id = addTable(std::make_unique< PChatPendingKeyRequestsTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::PChatPendingKeyRequestsTable);
+
 			// Mark id as unused in case the asserts are disabled (e.g. in release builds)
 			(void) id;
 		}
@@ -145,6 +165,10 @@ namespace server {
 		GET_TABLE_IMPL(ChannelLinkTable)
 		GET_TABLE_IMPL(BanTable)
 		GET_TABLE_IMPL(ChannelListenerTable)
+		GET_TABLE_IMPL(PChatMessageTable)
+		GET_TABLE_IMPL(PChatUserKeysTable)
+		GET_TABLE_IMPL(PChatMemberJoinTable)
+		GET_TABLE_IMPL(PChatPendingKeyRequestsTable)
 
 #undef GET_TABLE_IMPL
 

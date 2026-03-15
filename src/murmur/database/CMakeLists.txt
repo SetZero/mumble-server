@@ -30,6 +30,10 @@ add_library(mumble_server_database STATIC
 	"ChannelLinkTable.cpp"
 	"BanTable.cpp"
 	"ChannelListenerTable.cpp"
+	"PChatMessageTable.cpp"
+	"PChatUserKeysTable.cpp"
+	"PChatMemberJoinTable.cpp"
+	"PChatPendingKeyRequestsTable.cpp"
 )
 
 set_property(TARGET mumble_server_database PROPERTY INTERPROCEDURAL_OPTIMIZATION ${lto})

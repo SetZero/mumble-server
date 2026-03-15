@@ -435,6 +435,22 @@ void DBWrapper::initializeChannelDetails(Server &server) {
 		currentChannel->uiMaxUsers = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
 			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::MaxUsers);
 
+		// Read persistent chat properties
+		currentChannel->uiPChatMode = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::PChatMode);
+
+		currentChannel->uiPChatMaxHistory = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::PChatMaxHistory);
+
+		currentChannel->uiPChatRetentionDays = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::PChatRetentionDays);
+
+		std::string custodians = m_serverDB.getChannelPropertyTable().getProperty< std::string, false >(
+			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::PChatKeyCustodians);
+		if (!custodians.empty()) {
+			currentChannel->qslPChatKeyCustodians =
+				QString::fromStdString(custodians).split(',', Qt::SkipEmptyParts);
+		}
 
 		// Read and initialize the groups defined for the current channel
 		for (const ::msdb::DBGroup &currentGroup :
@@ -629,6 +645,25 @@ void DBWrapper::updateChannelData(unsigned int serverID, const Channel &channel)
 
 	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::MaxUsers,
 													 std::to_string(channel.uiMaxUsers));
+
+	// Update persistent chat properties
+	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::PChatMode,
+													 std::to_string(channel.uiPChatMode));
+
+	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::PChatMaxHistory,
+													 std::to_string(channel.uiPChatMaxHistory));
+
+	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::PChatRetentionDays,
+													 std::to_string(channel.uiPChatRetentionDays));
+
+	if (!channel.qslPChatKeyCustodians.isEmpty()) {
+		m_serverDB.getChannelPropertyTable().setProperty(
+			serverID, channel.iId, ::msdb::ChannelProperty::PChatKeyCustodians,
+			channel.qslPChatKeyCustodians.join(',').toStdString());
+	} else {
+		m_serverDB.getChannelPropertyTable().clearProperty(serverID, channel.iId,
+														   ::msdb::ChannelProperty::PChatKeyCustodians);
+	}
 
 	// First, clear old groups and ACLs
 	// (Clearing the groups automatically clear all entries referencing that group - in particular any members of that

@@ -410,6 +410,15 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 		mpcs.set_max_users(c->uiMaxUsers);
 
+		if (c->uiPChatMode > 0) {
+			mpcs.set_pchat_mode(
+				static_cast< MumbleProto::ChannelState_PchatMode >(c->uiPChatMode));
+			mpcs.set_pchat_max_history(c->uiPChatMaxHistory);
+			mpcs.set_pchat_retention_days(c->uiPChatRetentionDays);
+			for (const auto &kc : c->qslPChatKeyCustodians)
+				mpcs.add_pchat_key_custodians(u8(kc));
+		}
+
 		// Include info about enter restrictions of this channel
 		mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
 		mpcs.set_can_enter(hasPermission(uSource, c, ChanACL::Enter));
@@ -1539,6 +1548,14 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			}
 		}
 
+		if (msg.has_pchat_mode() || msg.has_pchat_max_history() || msg.has_pchat_retention_days()
+			|| msg.pchat_key_custodians_size() > 0) {
+			if (!hasPermission(uSource, c, ChanACL::Write)) {
+				PERM_DENIED(uSource, c, ChanACL::Write);
+				return;
+			}
+		}
+
 		// All permission checks done -- the update is good.
 
 		if (p) {
@@ -1570,6 +1587,18 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 
 		if (msg.has_max_users())
 			c->uiMaxUsers = msg.max_users();
+
+		if (msg.has_pchat_mode())
+			c->uiPChatMode = static_cast< uint32_t >(msg.pchat_mode());
+		if (msg.has_pchat_max_history())
+			c->uiPChatMaxHistory = msg.pchat_max_history();
+		if (msg.has_pchat_retention_days())
+			c->uiPChatRetentionDays = msg.pchat_retention_days();
+		if (msg.pchat_key_custodians_size() > 0) {
+			c->qslPChatKeyCustodians.clear();
+			for (int i = 0; i < msg.pchat_key_custodians_size(); ++i)
+				c->qslPChatKeyCustodians << u8(msg.pchat_key_custodians(i));
+		}
 
 		if (!c->bTemporary) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
@@ -2550,6 +2579,16 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 	// Always set the sender's session and don't rely on it being set correctly (would
 	// allow spoofing the sender's session)
 	msg.set_sendersession(sender->uiSession);
+
+	// Check if this is a persistent chat message handled by the pchat manager
+	if (m_pchatManager) {
+		std::string dataId = msg.dataid();
+		const std::string &rawData = msg.data();
+		std::vector< uint8_t > data(rawData.begin(), rawData.end());
+		if (m_pchatManager->handlePluginData(sender->uiSession, dataId, data)) {
+			return;
+		}
+	}
 
 	// Copy needed data from message in order to be able to remove info about receivers from the message as this doesn't
 	// matter for the client
