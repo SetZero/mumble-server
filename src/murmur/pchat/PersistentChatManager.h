@@ -95,7 +95,7 @@ public:
 	/// Configuration for the persistent chat manager.
 	struct Config {
 		bool enabled                  = true;
-		bool requireRegistration      = true;
+		bool requireRegistration      = false;
 		int defaultMaxHistory         = 5000;
 		int defaultRetentionDays      = 90;
 		int maxPayloadSize            = 65536;

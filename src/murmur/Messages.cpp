@@ -417,6 +417,8 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			mpcs.set_pchat_retention_days(c->uiPChatRetentionDays);
 			for (const auto &kc : c->qslPChatKeyCustodians)
 				mpcs.add_pchat_key_custodians(u8(kc));
+			qDebug("pchat: sending channel tree for channelId=%d pchat_mode=%u to session=%u",
+				   c->iId, c->uiPChatMode, uSource->uiSession);
 		}
 
 		// Include info about enter restrictions of this channel
@@ -1588,16 +1590,23 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		if (msg.has_max_users())
 			c->uiMaxUsers = msg.max_users();
 
-		if (msg.has_pchat_mode())
+		if (msg.has_pchat_mode()) {
 			c->uiPChatMode = static_cast< uint32_t >(msg.pchat_mode());
-		if (msg.has_pchat_max_history())
+			log(uSource, QString("pchat: set channel %1 pchat_mode=%2").arg(c->iId).arg(c->uiPChatMode));
+		}
+		if (msg.has_pchat_max_history()) {
 			c->uiPChatMaxHistory = msg.pchat_max_history();
-		if (msg.has_pchat_retention_days())
+			log(uSource, QString("pchat: set channel %1 pchat_max_history=%2").arg(c->iId).arg(c->uiPChatMaxHistory));
+		}
+		if (msg.has_pchat_retention_days()) {
 			c->uiPChatRetentionDays = msg.pchat_retention_days();
+			log(uSource, QString("pchat: set channel %1 pchat_retention_days=%2").arg(c->iId).arg(c->uiPChatRetentionDays));
+		}
 		if (msg.pchat_key_custodians_size() > 0) {
 			c->qslPChatKeyCustodians.clear();
 			for (int i = 0; i < msg.pchat_key_custodians_size(); ++i)
 				c->qslPChatKeyCustodians << u8(msg.pchat_key_custodians(i));
+			log(uSource, QString("pchat: set channel %1 key_custodians count=%2").arg(c->iId).arg(c->qslPChatKeyCustodians.size()));
 		}
 
 		if (!c->bTemporary) {
@@ -2585,7 +2594,10 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 		std::string dataId = msg.dataid();
 		const std::string &rawData = msg.data();
 		std::vector< uint8_t > data(rawData.begin(), rawData.end());
+		qDebug("pchat: PluginData from session=%u dataId=%s size=%zu",
+			   sender->uiSession, dataId.c_str(), data.size());
 		if (m_pchatManager->handlePluginData(sender->uiSession, dataId, data)) {
+			qDebug("pchat: consumed by pchat manager");
 			return;
 		}
 	}
