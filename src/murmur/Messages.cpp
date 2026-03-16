@@ -417,7 +417,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			mpcs.set_pchat_retention_days(c->uiPChatRetentionDays);
 			for (const auto &kc : c->qslPChatKeyCustodians)
 				mpcs.add_pchat_key_custodians(u8(kc));
-			qDebug("pchat: sending channel tree for channelId=%d pchat_mode=%u to session=%u",
+			qWarning("pchat: sending channel tree for channelId=%d pchat_mode=%u to session=%u",
 				   c->iId, c->uiPChatMode, uSource->uiSession);
 		}
 
@@ -2594,10 +2594,10 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 		std::string dataId = msg.dataid();
 		const std::string &rawData = msg.data();
 		std::vector< uint8_t > data(rawData.begin(), rawData.end());
-		qDebug("pchat: PluginData from session=%u dataId=%s size=%zu",
+		qWarning("pchat: PluginData from session=%u dataId=%s size=%zu",
 			   sender->uiSession, dataId.c_str(), data.size());
 		if (m_pchatManager->handlePluginData(sender->uiSession, dataId, data)) {
-			qDebug("pchat: consumed by pchat manager");
+			qWarning("pchat: consumed by pchat manager");
 			return;
 		}
 	}
