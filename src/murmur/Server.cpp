@@ -2114,6 +2114,15 @@ void Server::userEnterChannel(User *p, Channel *c, MumbleProto::UserState &mpus)
 	sendClientPermission(static_cast< ServerUser * >(p), c);
 	if (c->cParent)
 		sendClientPermission(static_cast< ServerUser * >(p), c->cParent);
+
+	// Notify pchat manager when a Fancy client joins a persistent channel
+	if (m_pchatManager) {
+		ServerUser *su = static_cast< ServerUser * >(p);
+		if (su->m_FancyVersion.has_value()
+			&& su->m_FancyVersion.value() >= Version::fromComponents(0, 2, 0)) {
+			m_pchatManager->onFancyClientJoinedChannel(su->uiSession, c->iId);
+		}
+	}
 }
 
 bool Server::hasPermission(ServerUser *p, Channel *c, QFlags< ChanACL::Perm > perm) {
