@@ -46,7 +46,7 @@ PersistentChatManager::PersistentChatManager(msdb::PChatMessageTable &msgTable,
 bool PersistentChatManager::handlePluginData(unsigned int senderSession, const std::string &dataId,
 											 const std::vector< uint8_t > &data) {
 	if (!m_config.enabled) {
-		qDebug("pchat: disabled, ignoring dataId=%s from session=%u", dataId.c_str(), senderSession);
+		qWarning("pchat: disabled, ignoring dataId=%s from session=%u", dataId.c_str(), senderSession);
 		return false;
 	}
 
@@ -55,7 +55,7 @@ bool PersistentChatManager::handlePluginData(unsigned int senderSession, const s
 		return false;
 	}
 
-	qDebug("pchat: received dataId=%s from session=%u (dataSize=%zu)", dataId.c_str(), senderSession, data.size());
+	qWarning("pchat: received dataId=%s from session=%u (dataSize=%zu)", dataId.c_str(), senderSession, data.size());
 
 	// Check registration requirement
 	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
@@ -75,7 +75,7 @@ bool PersistentChatManager::handlePluginData(unsigned int senderSession, const s
 	} else if (dataId == PCHAT_EPOCH_COUNTERSIG) {
 		handleEpochCountersig(senderSession, data);
 	} else {
-		qDebug("pchat: unknown pchat dataId=%s from session=%u, consuming", dataId.c_str(), senderSession);
+		qWarning("pchat: unknown pchat dataId=%s from session=%u, consuming", dataId.c_str(), senderSession);
 		return true;
 	}
 
@@ -84,7 +84,7 @@ bool PersistentChatManager::handlePluginData(unsigned int senderSession, const s
 
 void PersistentChatManager::handleMsg(unsigned int senderSession, const std::vector< uint8_t > &data) {
 	if (!m_rateLimiter.allow(std::to_string(senderSession), "msg")) {
-		qDebug("pchat: rate-limited msg from session=%u", senderSession);
+		qWarning("pchat: rate-limited msg from session=%u", senderSession);
 		return;
 	}
 
@@ -98,7 +98,7 @@ void PersistentChatManager::handleMsg(unsigned int senderSession, const std::vec
 
 	const auto serverNum = m_bridge.serverNum();
 	const std::string senderHash = m_bridge.getCertHash(senderSession);
-	qDebug("pchat: handleMsg session=%u hash=%s", senderSession, senderHash.c_str());
+	qWarning("pchat: handleMsg session=%u hash=%s", senderSession, senderHash.c_str());
 
 	// Validate sender_hash matches session
 	if (!j.contains("sender_hash") || j["sender_hash"].get< std::string >() != senderHash) {
@@ -117,7 +117,7 @@ void PersistentChatManager::handleMsg(unsigned int senderSession, const std::vec
 
 	// Validate channel exists and has the claimed mode
 	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
-	qDebug("pchat: handleMsg channelId=%u channelMode=%u msgMode=%s msgId=%s",
+	qWarning("pchat: handleMsg channelId=%u channelMode=%u msgMode=%s msgId=%s",
 		   channelId, channelMode, mode.c_str(), messageId.c_str());
 	if (channelMode == 0) {
 		qWarning("pchat: rejected msg from session=%u - channel %u is not persistent (mode=0)",
@@ -197,7 +197,7 @@ void PersistentChatManager::handleMsg(unsigned int senderSession, const std::vec
 		return;
 	}
 
-	qDebug("pchat: stored msg id=%s in channel=%u from hash=%s (payload=%d bytes)",
+	qWarning("pchat: stored msg id=%s in channel=%u from hash=%s (payload=%d bytes)",
 		   messageId.c_str(), channelId, senderHash.c_str(), static_cast< int >(payload.size()));
 	sendAck(senderSession, messageId, "stored");
 
@@ -219,7 +219,7 @@ void PersistentChatManager::handleMsg(unsigned int senderSession, const std::vec
 
 void PersistentChatManager::handleFetch(unsigned int senderSession, const std::vector< uint8_t > &data) {
 	if (!m_rateLimiter.allow(std::to_string(senderSession), "fetch")) {
-		qDebug("pchat: rate-limited fetch from session=%u", senderSession);
+		qWarning("pchat: rate-limited fetch from session=%u", senderSession);
 		return;
 	}
 
@@ -236,7 +236,7 @@ void PersistentChatManager::handleFetch(unsigned int senderSession, const std::v
 	const unsigned int channelId = j.value("channel_id", 0u);
 	const unsigned int limit = j.value("limit", 50u);
 
-	qDebug("pchat: handleFetch session=%u channel=%u limit=%u hash=%s",
+	qWarning("pchat: handleFetch session=%u channel=%u limit=%u hash=%s",
 		   senderSession, channelId, limit, requesterHash.c_str());
 
 	if (channelId == 0) {
@@ -246,13 +246,13 @@ void PersistentChatManager::handleFetch(unsigned int senderSession, const std::v
 
 	// Check channel access
 	if (!m_bridge.hasEnterPermission(senderSession, channelId)) {
-		qDebug("pchat: fetch rejected - no Enter permission session=%u channel=%u", senderSession, channelId);
+		qWarning("pchat: fetch rejected - no Enter permission session=%u channel=%u", senderSession, channelId);
 		return;
 	}
 
 	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
 	if (channelMode == 0) {
-		qDebug("pchat: fetch rejected - channel %u has pchat_mode=0", channelId);
+		qWarning("pchat: fetch rejected - channel %u has pchat_mode=0", channelId);
 		return;
 	}
 
@@ -569,7 +569,7 @@ void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std
 
 void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, unsigned int channelId) {
 	if (!m_config.enabled) {
-		qDebug("pchat: onFancyClientJoinedChannel disabled, ignoring session=%u channel=%u",
+		qWarning("pchat: onFancyClientJoinedChannel disabled, ignoring session=%u channel=%u",
 			   sessionId, channelId);
 		return;
 	}
@@ -578,7 +578,7 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 	const std::string certHash = m_bridge.getCertHash(sessionId);
 	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
 
-	qDebug("pchat: onFancyClientJoinedChannel session=%u channel=%u mode=%u hash=%s",
+	qWarning("pchat: onFancyClientJoinedChannel session=%u channel=%u mode=%u hash=%s",
 		   sessionId, channelId, channelMode, certHash.c_str());
 
 	if (channelMode == 0) {
