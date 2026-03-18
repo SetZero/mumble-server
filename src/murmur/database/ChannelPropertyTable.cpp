@@ -182,10 +182,11 @@ namespace server {
 				if (fromSchemaVersion < 10) {
 					// In v10 we renamed this table from "channel_info" to "channel_properties"
 					// -> Import all data from the old table into the new one
+					// Filter out rows with NULL value since the new schema has a NOT NULL constraint.
 					m_sql << "INSERT INTO \"" << getName() << "\" (\"" << column::server_id << "\", \""
 						  << column::channel_id << "\", \"" << column::key << "\", \"" << column::value
 						  << "\") SELECT \"server_id\", \"channel_id\", \"key\", value FROM \"channel_info"
-						  << mdb::Database::OLD_TABLE_SUFFIX << "\"";
+						  << mdb::Database::OLD_TABLE_SUFFIX << "\" WHERE value IS NOT NULL";
 				} else {
 					// Use default implementation to handle migration without change of format
 					mdb::Table::migrate(fromSchemaVersion, toSchemaVersion);
