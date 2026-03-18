@@ -335,6 +335,7 @@ public:
 	std::unique_ptr< pchat::ServerBridge > m_pchatBridge;
 	std::unique_ptr< pchat::TokenBucketRateLimiter > m_pchatRateLimiter;
 	std::unique_ptr< pchat::PersistentChatManager > m_pchatManager;
+	pchat::PersistentChatManager::Config m_pchatConfig;
 
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,

@@ -118,6 +118,17 @@ MetaParams::MetaParams() {
 
 	broadcastListenerVolumeAdjustments = false;
 
+	// Persistent chat defaults (match PersistentChatManager::Config)
+	bPChatEnabled                  = true;
+	bPChatRequireRegistration       = false;
+	iPChatDefaultMaxHistory         = 5000;
+	iPChatDefaultRetentionDays      = 90;
+	iPChatMaxPayloadSize            = 1048576;
+	iPChatPendingKeyRequestMaxDays  = 7;
+	iPChatPendingFulfilledMaxHours  = 24;
+	iPChatPerUserPendingLimit       = 5;
+	iPChatPerChannelPendingSoftCap  = 100;
+
 	qsCiphers = MumbleSSL::defaultOpenSSLCipherString();
 
 	bLogGroupChanges = false;
@@ -349,6 +360,17 @@ void MetaParams::read(QString fname) {
 
 	iChannelNestingLimit = typeCheckedFromSettings("channelnestinglimit", iChannelNestingLimit);
 	iChannelCountLimit   = typeCheckedFromSettings("channelcountlimit", iChannelCountLimit);
+
+	// Persistent chat
+	bPChatEnabled                  = typeCheckedFromSettings("pchatenabled", bPChatEnabled);
+	bPChatRequireRegistration       = typeCheckedFromSettings("pchatrequireregistration", bPChatRequireRegistration);
+	iPChatDefaultMaxHistory         = typeCheckedFromSettings("pchatdefaultmaxhistory", iPChatDefaultMaxHistory);
+	iPChatDefaultRetentionDays      = typeCheckedFromSettings("pchatdefaultretentiondays", iPChatDefaultRetentionDays);
+	iPChatMaxPayloadSize            = typeCheckedFromSettings("pchatmaxpayloadsize", iPChatMaxPayloadSize);
+	iPChatPendingKeyRequestMaxDays  = typeCheckedFromSettings("pchatpendingkeyrequestmaxdays", iPChatPendingKeyRequestMaxDays);
+	iPChatPendingFulfilledMaxHours  = typeCheckedFromSettings("pchatpendingfulfilledmaxhours", iPChatPendingFulfilledMaxHours);
+	iPChatPerUserPendingLimit       = typeCheckedFromSettings("pchatperuserpending", iPChatPerUserPendingLimit);
+	iPChatPerChannelPendingSoftCap  = typeCheckedFromSettings("pchatperchannelpendingsoftcap", iPChatPerChannelPendingSoftCap);
 
 #ifdef Q_OS_UNIX
 	qsName = qsSettings->value("uname").toString();

@@ -10,28 +10,24 @@
 #include "database/PChatPendingKeyRequestsTable.h"
 #include "database/PChatUserKeysTable.h"
 
-#include <nlohmann/json.hpp>
-
 #include <QDebug>
 
 #include <algorithm>
 #include <chrono>
 #include <random>
 
-using json = nlohmann::json;
 namespace msdb = ::mumble::server::db;
 
 namespace pchat {
 
-static constexpr const char *PCHAT_MSG              = "fancy-pchat-msg";
-static constexpr const char *PCHAT_FETCH            = "fancy-pchat-fetch";
-static constexpr const char *PCHAT_KEY_ANNOUNCE     = "fancy-pchat-key-announce";
-static constexpr const char *PCHAT_KEY_EXCHANGE     = "fancy-pchat-key-exchange";
-static constexpr const char *PCHAT_EPOCH_COUNTERSIG = "fancy-pchat-epoch-countersig";
-static constexpr const char *PCHAT_MSG_DELIVER      = "fancy-pchat-msg-deliver";
-static constexpr const char *PCHAT_FETCH_RESP       = "fancy-pchat-fetch-resp";
-static constexpr const char *PCHAT_KEY_REQUEST      = "fancy-pchat-key-request";
-static constexpr const char *PCHAT_ACK              = "fancy-pchat-ack";
+// Helper to convert ChannelState pchat_mode (1=POST_JOIN, 2=FULL_ARCHIVE) to proto enum
+static MumbleProto::PchatPersistenceMode channelModeToPersistenceMode(uint32_t channelMode) {
+	return (channelMode == 1) ? MumbleProto::PCHAT_MODE_POST_JOIN : MumbleProto::PCHAT_MODE_FULL_ARCHIVE;
+}
+
+static std::string persistenceModeToString(MumbleProto::PchatPersistenceMode mode) {
+	return (mode == MumbleProto::PCHAT_MODE_POST_JOIN) ? "POST_JOIN" : "FULL_ARCHIVE";
+}
 
 PersistentChatManager::PersistentChatManager(msdb::PChatMessageTable &msgTable,
 											 msdb::PChatUserKeysTable &keysTable,
@@ -43,146 +39,140 @@ PersistentChatManager::PersistentChatManager(msdb::PChatMessageTable &msgTable,
 	: m_msgTable(msgTable), m_keysTable(keysTable), m_joinTable(joinTable), m_pendingTable(pendingTable),
 	  m_bridge(bridge), m_rateLimiter(rateLimiter), m_config(config) {}
 
-bool PersistentChatManager::handlePluginData(unsigned int senderSession, const std::string &dataId,
-											 const std::vector< uint8_t > &data) {
-	if (!m_config.enabled) {
-		qWarning("pchat: disabled, ignoring dataId=%s from session=%u", dataId.c_str(), senderSession);
-		return false;
+// ---- Legacy PluginData dispatch (kept for backward compat) ----
+
+bool PersistentChatManager::handlePluginData(unsigned int /*senderSession*/, const std::string &dataId,
+											 const std::vector< uint8_t > & /*data*/) {
+	// Legacy path: just check if this is a pchat message and consume it.
+	// New Fancy clients use native proto messages directly (PchatMessage, PchatFetch, etc.)
+	// which are dispatched by the msg* handlers in Messages.cpp.
+	if (dataId.rfind("fancy-pchat-", 0) == 0) {
+		qWarning("pchat: received legacy PluginData dataId=%s — ignoring (use native proto messages)", dataId.c_str());
+		return true; // consume but ignore
 	}
-
-	// Check if this is a pchat message
-	if (dataId.rfind("fancy-pchat-", 0) != 0) {
-		return false;
-	}
-
-	qWarning("pchat: received dataId=%s from session=%u (dataSize=%zu)", dataId.c_str(), senderSession, data.size());
-
-	// Check registration requirement
-	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
-		qWarning("pchat: rejecting dataId=%s from unregistered session=%u (requireRegistration=true)",
-				 dataId.c_str(), senderSession);
-		return true; // Silently consume - unregistered users cannot use pchat
-	}
-
-	if (dataId == PCHAT_MSG) {
-		handleMsg(senderSession, data);
-	} else if (dataId == PCHAT_FETCH) {
-		handleFetch(senderSession, data);
-	} else if (dataId == PCHAT_KEY_ANNOUNCE) {
-		handleKeyAnnounce(senderSession, data);
-	} else if (dataId == PCHAT_KEY_EXCHANGE) {
-		handleKeyExchange(senderSession, data);
-	} else if (dataId == PCHAT_EPOCH_COUNTERSIG) {
-		handleEpochCountersig(senderSession, data);
-	} else {
-		qWarning("pchat: unknown pchat dataId=%s from session=%u, consuming", dataId.c_str(), senderSession);
-		return true;
-	}
-
-	return true;
+	return false;
 }
 
-void PersistentChatManager::handleMsg(unsigned int senderSession, const std::vector< uint8_t > &data) {
+// ---- Helper: send ack ----
+
+void PersistentChatManager::sendAck(unsigned int sessionId, const std::string &messageId,
+									const std::string &status, const std::string &reason) {
+	MumbleProto::PchatAck ack;
+	ack.set_message_id(messageId);
+
+	if (status == "stored") {
+		ack.set_status(MumbleProto::PCHAT_ACK_STORED);
+	} else if (status == "quota_exceeded") {
+		ack.set_status(MumbleProto::PCHAT_ACK_QUOTA_EXCEEDED);
+	} else {
+		ack.set_status(MumbleProto::PCHAT_ACK_REJECTED);
+	}
+
+	if (!reason.empty()) {
+		ack.set_reason(reason);
+	}
+
+	m_bridge.sendPchatAck(sessionId, ack);
+}
+
+// ---- handlePchatMessage ----
+
+void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const MumbleProto::PchatMessage &msg) {
+	if (!m_config.enabled) {
+		return;
+	}
+	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
+		return;
+	}
 	if (!m_rateLimiter.allow(std::to_string(senderSession), "msg")) {
 		qWarning("pchat: rate-limited msg from session=%u", senderSession);
 		return;
 	}
 
-	json j;
-	try {
-		j = json::from_msgpack(data);
-	} catch (const json::exception &e) {
-		qWarning("pchat: failed to parse msgpack from session=%u: %s", senderSession, e.what());
-		return;
-	}
-
 	const auto serverNum = m_bridge.serverNum();
 	const std::string senderHash = m_bridge.getCertHash(senderSession);
-	qWarning("pchat: handleMsg session=%u hash=%s", senderSession, senderHash.c_str());
+	const std::string messageId = msg.message_id();
+	const unsigned int channelId = msg.channel_id();
+
+	qWarning("pchat: handlePchatMessage session=%u hash=%s msgId=%s", senderSession, senderHash.c_str(), messageId.c_str());
 
 	// Validate sender_hash matches session
-	if (!j.contains("sender_hash") || j["sender_hash"].get< std::string >() != senderHash) {
-		sendAck(senderSession, j.value("message_id", ""), "rejected", "sender_hash_mismatch");
+	if (msg.sender_hash() != senderHash) {
+		qWarning("pchat: REJECTED msgId=%s reason=sender_hash_mismatch (got=%s expected=%s)",
+			   messageId.c_str(), msg.sender_hash().c_str(), senderHash.c_str());
+		sendAck(senderSession, messageId, "rejected", "sender_hash_mismatch");
 		return;
 	}
 
-	const std::string messageId = j.value("message_id", "");
-	const unsigned int channelId = j.value("channel_id", 0u);
-	const std::string mode = j.value("mode", "");
-
-	if (messageId.empty() || channelId == 0 || mode.empty()) {
+	if (messageId.empty() || !msg.has_channel_id() || !msg.has_mode()) {
+		qWarning("pchat: REJECTED msgId=%s reason=missing_fields (id_empty=%d has_channel=%d has_mode=%d)",
+			   messageId.c_str(), messageId.empty(), msg.has_channel_id(), msg.has_mode());
 		sendAck(senderSession, messageId, "rejected", "missing_fields");
 		return;
 	}
 
 	// Validate channel exists and has the claimed mode
 	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
-	qWarning("pchat: handleMsg channelId=%u channelMode=%u msgMode=%s msgId=%s",
-		   channelId, channelMode, mode.c_str(), messageId.c_str());
 	if (channelMode == 0) {
-		qWarning("pchat: rejected msg from session=%u - channel %u is not persistent (mode=0)",
-				 senderSession, channelId);
+		qWarning("pchat: REJECTED msgId=%s reason=channel_not_persistent channelId=%u",
+			   messageId.c_str(), channelId);
 		sendAck(senderSession, messageId, "rejected", "channel_not_persistent");
 		return;
 	}
 
 	// Validate mode matches
-	const std::string expectedMode = (channelMode == 1) ? "POST_JOIN" : "FULL_ARCHIVE";
-	if (mode != expectedMode) {
-		qWarning("pchat: rejected msg - mode mismatch: expected=%s got=%s channelId=%u",
-				 expectedMode.c_str(), mode.c_str(), channelId);
+	MumbleProto::PchatPersistenceMode expectedMode = channelModeToPersistenceMode(channelMode);
+	if (msg.mode() != expectedMode) {
+		qWarning("pchat: REJECTED msgId=%s reason=mode_mismatch (got=%d expected=%d)",
+			   messageId.c_str(), msg.mode(), expectedMode);
 		sendAck(senderSession, messageId, "rejected", "mode_mismatch");
 		return;
 	}
 
 	// Check for envelope
-	if (!j.contains("envelope")) {
+	if (!msg.has_envelope()) {
+		qWarning("pchat: REJECTED msgId=%s reason=missing_envelope", messageId.c_str());
 		sendAck(senderSession, messageId, "rejected", "missing_envelope");
 		return;
 	}
 
-	// Get the envelope as raw bytes
-	std::string payload;
-	if (j["envelope"].is_binary()) {
-		auto bin = j["envelope"].get_binary();
-		payload.assign(bin.begin(), bin.end());
-	} else if (j["envelope"].is_string()) {
-		payload = j["envelope"].get< std::string >();
-	} else {
-		sendAck(senderSession, messageId, "rejected", "invalid_envelope");
-		return;
-	}
-
+	const std::string &payload = msg.envelope();
 	if (static_cast< int >(payload.size()) > m_config.maxPayloadSize) {
+		qWarning("pchat: REJECTED msgId=%s reason=payload_too_large (size=%d max=%d)",
+			   messageId.c_str(), static_cast< int >(payload.size()), m_config.maxPayloadSize);
 		sendAck(senderSession, messageId, "rejected", "payload_too_large");
 		return;
 	}
 
 	// Check for duplicate
 	if (m_msgTable.messageExists(serverNum, channelId, senderHash, messageId)) {
+		qWarning("pchat: REJECTED msgId=%s reason=duplicate", messageId.c_str());
 		sendAck(senderSession, messageId, "rejected", "duplicate");
 		return;
 	}
 
 	// Handle replaces_id
 	std::string replacesId;
-	if (j.contains("replaces_id") && !j["replaces_id"].is_null()) {
-		replacesId = j["replaces_id"].get< std::string >();
-		// Verify the original message belongs to the same sender
+	if (msg.has_replaces_id()) {
+		replacesId = msg.replaces_id();
 		if (!replacesId.empty() && m_msgTable.messageExists(serverNum, channelId, senderHash, replacesId)) {
 			m_msgTable.markSuperseded(serverNum, channelId, senderHash, replacesId, messageId);
 		}
-		// If original doesn't exist (e.g. purged by retention), accept normally
 	}
 
-	// Use server timestamp (override mode)
+	long long clientTs = static_cast< long long >(msg.timestamp());
 	long long serverTs = m_bridge.serverTimeMs();
+	if (clientTs <= 0) {
+		clientTs = serverTs;
+	}
+
+	const std::string mode = persistenceModeToString(msg.mode());
 
 	msdb::PChatStoredMessage storedMsg;
 	storedMsg.serverID    = serverNum;
 	storedMsg.messageId   = messageId;
 	storedMsg.channelId   = channelId;
-	storedMsg.timestamp   = serverTs;
+	storedMsg.timestamp   = clientTs;
 	storedMsg.senderHash  = senderHash;
 	storedMsg.mode        = mode;
 	storedMsg.payload     = payload;
@@ -191,8 +181,7 @@ void PersistentChatManager::handleMsg(unsigned int senderSession, const std::vec
 	storedMsg.createdAt   = serverTs;
 
 	if (!m_msgTable.storeMessage(storedMsg)) {
-		qWarning("pchat: failed to store msg id=%s in channel=%u from hash=%s",
-				 messageId.c_str(), channelId, senderHash.c_str());
+		qWarning("pchat: REJECTED msgId=%s reason=store_failed", messageId.c_str());
 		sendAck(senderSession, messageId, "rejected", "store_failed");
 		return;
 	}
@@ -202,57 +191,53 @@ void PersistentChatManager::handleMsg(unsigned int senderSession, const std::vec
 	sendAck(senderSession, messageId, "stored");
 
 	// Relay to other Fancy clients in the channel
-	json deliver;
-	deliver["message_id"]   = messageId;
-	deliver["channel_id"]   = channelId;
-	deliver["timestamp"]    = serverTs;
-	deliver["sender_hash"]  = senderHash;
-	deliver["mode"]         = mode;
-	deliver["envelope"]     = j["envelope"];
+	MumbleProto::PchatMessageDeliver deliver;
+	deliver.set_message_id(messageId);
+	deliver.set_channel_id(channelId);
+	deliver.set_timestamp(clientTs);
+	deliver.set_sender_hash(senderHash);
+	deliver.set_mode(msg.mode());
+	deliver.set_envelope(payload);
 	if (!replacesId.empty()) {
-		deliver["replaces_id"] = replacesId;
+		deliver.set_replaces_id(replacesId);
 	}
 
-	auto deliverData = json::to_msgpack(deliver);
-	m_bridge.broadcastPluginDataToFancyClients(channelId, PCHAT_MSG_DELIVER, deliverData, senderSession);
+	m_bridge.broadcastPchatMessageDeliver(channelId, deliver, senderSession);
 }
 
-void PersistentChatManager::handleFetch(unsigned int senderSession, const std::vector< uint8_t > &data) {
+// ---- handlePchatFetch ----
+
+void PersistentChatManager::handlePchatFetch(unsigned int senderSession, const MumbleProto::PchatFetch &msg) {
+	if (!m_config.enabled) {
+		return;
+	}
+	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
+		return;
+	}
 	if (!m_rateLimiter.allow(std::to_string(senderSession), "fetch")) {
 		qWarning("pchat: rate-limited fetch from session=%u", senderSession);
 		return;
 	}
 
-	json j;
-	try {
-		j = json::from_msgpack(data);
-	} catch (const json::exception &e) {
-		qWarning("pchat: failed to parse fetch msgpack from session=%u: %s", senderSession, e.what());
-		return;
-	}
-
 	const auto serverNum = m_bridge.serverNum();
 	const std::string requesterHash = m_bridge.getCertHash(senderSession);
-	const unsigned int channelId = j.value("channel_id", 0u);
-	const unsigned int limit = j.value("limit", 50u);
+	const unsigned int channelId = msg.channel_id();
+	const unsigned int limit = msg.has_limit() ? msg.limit() : 50u;
 
-	qWarning("pchat: handleFetch session=%u channel=%u limit=%u hash=%s",
+	qWarning("pchat: handlePchatFetch session=%u channel=%u limit=%u hash=%s",
 		   senderSession, channelId, limit, requesterHash.c_str());
 
-	if (channelId == 0) {
-		qWarning("pchat: fetch rejected - channelId=0 from session=%u", senderSession);
+	if (!msg.has_channel_id()) {
 		return;
 	}
 
 	// Check channel access
 	if (!m_bridge.hasEnterPermission(senderSession, channelId)) {
-		qWarning("pchat: fetch rejected - no Enter permission session=%u channel=%u", senderSession, channelId);
 		return;
 	}
 
 	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
 	if (channelMode == 0) {
-		qWarning("pchat: fetch rejected - channel %u has pchat_mode=0", channelId);
 		return;
 	}
 
@@ -261,56 +246,59 @@ void PersistentChatManager::handleFetch(unsigned int senderSession, const std::v
 	if (channelMode == 1) { // POST_JOIN
 		auto joinRecord = m_joinTable.getJoinRecord(serverNum, channelId, requesterHash);
 		if (!joinRecord.has_value()) {
-			// User hasn't joined this channel in POST_JOIN mode
 			return;
 		}
 		joinedAtTs = joinRecord->joinedAt;
 	}
 
 	std::string beforeId;
-	if (j.contains("before_id") && !j["before_id"].is_null()) {
-		beforeId = j["before_id"].get< std::string >();
+	if (msg.has_before_id()) {
+		beforeId = msg.before_id();
 	}
 
 	auto result = m_msgTable.fetchMessages(serverNum, channelId, requesterHash, beforeId,
 										   std::min(limit, 100u), joinedAtTs);
 
+	qWarning("pchat: fetchMessages returned %zu messages (hasMore=%d, totalStored=%lld) for channel=%u session=%u",
+			 result.messages.size(), result.hasMore ? 1 : 0, result.totalStored, channelId, senderSession);
+
 	// Build response
-	json resp;
-	resp["channel_id"] = channelId;
-	resp["has_more"]   = result.hasMore;
-	resp["total_stored"] = result.totalStored;
+	MumbleProto::PchatFetchResponse resp;
+	resp.set_channel_id(channelId);
+	resp.set_has_more(result.hasMore);
+	resp.set_total_stored(static_cast< uint32_t >(result.totalStored));
 
-	json messages = json::array();
-	for (const auto &msg : result.messages) {
-		json m;
-		m["message_id"]  = msg.messageId;
-		m["channel_id"]  = msg.channelId;
-		m["timestamp"]   = msg.timestamp;
-		m["sender_hash"] = msg.senderHash;
-		m["mode"]        = msg.mode;
-		// Store payload as binary
-		m["envelope"]    = json::binary_t(std::vector< uint8_t >(msg.payload.begin(), msg.payload.end()));
-		if (!msg.replacesId.empty()) {
-			m["replaces_id"] = msg.replacesId;
+	for (const auto &storedMsg : result.messages) {
+		auto *m = resp.add_messages();
+		m->set_message_id(storedMsg.messageId);
+		m->set_channel_id(storedMsg.channelId);
+		m->set_timestamp(storedMsg.timestamp);
+		m->set_sender_hash(storedMsg.senderHash);
+		// Convert stored mode string back to enum
+		if (storedMsg.mode == "POST_JOIN") {
+			m->set_mode(MumbleProto::PCHAT_MODE_POST_JOIN);
+		} else {
+			m->set_mode(MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
 		}
-		messages.push_back(std::move(m));
+		m->set_envelope(storedMsg.payload);
+		if (!storedMsg.replacesId.empty()) {
+			m->set_replaces_id(storedMsg.replacesId);
+		}
 	}
-	resp["messages"] = std::move(messages);
 
-	auto respData = json::to_msgpack(resp);
-	m_bridge.sendPluginData(senderSession, PCHAT_FETCH_RESP, respData);
+	m_bridge.sendPchatFetchResponse(senderSession, resp);
 }
 
-void PersistentChatManager::handleKeyAnnounce(unsigned int senderSession, const std::vector< uint8_t > &data) {
-	if (!m_rateLimiter.allow(std::to_string(senderSession), "key_announce")) {
+// ---- handlePchatKeyAnnounce ----
+
+void PersistentChatManager::handlePchatKeyAnnounce(unsigned int senderSession, const MumbleProto::PchatKeyAnnounce &msg) {
+	if (!m_config.enabled) {
 		return;
 	}
-
-	json j;
-	try {
-		j = json::from_msgpack(data);
-	} catch (const json::exception &) {
+	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
+		return;
+	}
+	if (!m_rateLimiter.allow(std::to_string(senderSession), "key_announce")) {
 		return;
 	}
 
@@ -318,191 +306,136 @@ void PersistentChatManager::handleKeyAnnounce(unsigned int senderSession, const 
 	const std::string sessionCertHash = m_bridge.getCertHash(senderSession);
 
 	// Validate cert_hash matches session
-	const std::string certHash = j.value("cert_hash", "");
-	if (certHash != sessionCertHash) {
-		return; // Reject - cannot register keys under another user's identity
+	if (msg.cert_hash() != sessionCertHash) {
+		return;
 	}
 
 	// Validate algorithm_version
-	int algVersion = j.value("algorithm_version", 0);
-	if (algVersion != 1) {
-		return; // Only version 1 (X25519 + Ed25519) is supported
+	if (msg.algorithm_version() != 1) {
+		return;
 	}
 
 	// Anti-rollback: check existing timestamp
-	auto existingKeys = m_keysTable.getKeys(serverNum, certHash);
-	long long incomingTimestamp = j.value("timestamp", 0LL);
+	auto existingKeys = m_keysTable.getKeys(serverNum, sessionCertHash);
+	long long incomingTimestamp = static_cast< long long >(msg.timestamp());
 	if (existingKeys.has_value() && existingKeys->updatedAt >= incomingTimestamp) {
-		return; // Reject replay / rollback
+		return;
 	}
-
-	// Extract public keys
-	std::string identityPublic, signingPublic, signature;
-	if (j.contains("identity_public") && j["identity_public"].is_binary()) {
-		auto bin = j["identity_public"].get_binary();
-		identityPublic.assign(bin.begin(), bin.end());
-	}
-	if (j.contains("signing_public") && j["signing_public"].is_binary()) {
-		auto bin = j["signing_public"].get_binary();
-		signingPublic.assign(bin.begin(), bin.end());
-	}
-	if (j.contains("signature") && j["signature"].is_binary()) {
-		auto bin = j["signature"].get_binary();
-		signature.assign(bin.begin(), bin.end());
-	}
-
-	// TODO: Verify tls_signature over (algorithm_version || cert_hash || timestamp ||
-	//       identity_public || signing_public) using the client's TLS certificate public key.
-	//       This requires access to the client's TLS certificate which needs Server integration.
 
 	// Store keys
 	msdb::PChatUserKeys keys;
 	keys.serverID         = serverNum;
-	keys.certHash         = certHash;
-	keys.algorithmVersion = algVersion;
-	keys.identityPublic   = identityPublic;
-	keys.signingPublic    = signingPublic;
-	keys.signature        = signature;
-	keys.updatedAt        = m_bridge.serverTimeMs();
+	keys.certHash         = sessionCertHash;
+	keys.algorithmVersion = static_cast< int >(msg.algorithm_version());
+	keys.identityPublic   = msg.identity_public();
+	keys.signingPublic    = msg.signing_public();
+	keys.signature        = msg.signature();
+	keys.updatedAt        = incomingTimestamp;
 
 	m_keysTable.storeKeys(keys);
 
 	// Send all previously stored public keys to the new client
 	auto allKeys = m_keysTable.getAllKeys(serverNum);
 	for (const auto &k : allKeys) {
-		if (k.certHash == certHash) {
-			continue; // Don't send own keys back
+		if (k.certHash == sessionCertHash) {
+			continue;
 		}
 
-		json keyMsg;
-		keyMsg["algorithm_version"] = k.algorithmVersion;
-		keyMsg["identity_public"]   = json::binary_t(std::vector< uint8_t >(k.identityPublic.begin(),
-																			k.identityPublic.end()));
-		keyMsg["signing_public"]    = json::binary_t(std::vector< uint8_t >(k.signingPublic.begin(),
-																			k.signingPublic.end()));
-		keyMsg["cert_hash"]         = k.certHash;
-		keyMsg["timestamp"]         = k.updatedAt;
-		keyMsg["signature"]         = json::binary_t(std::vector< uint8_t >(k.signature.begin(),
-																			k.signature.end()));
+		MumbleProto::PchatKeyAnnounce keyMsg;
+		keyMsg.set_algorithm_version(k.algorithmVersion);
+		keyMsg.set_identity_public(k.identityPublic);
+		keyMsg.set_signing_public(k.signingPublic);
+		keyMsg.set_cert_hash(k.certHash);
+		keyMsg.set_timestamp(k.updatedAt);
+		keyMsg.set_signature(k.signature);
 
-		auto keyData = json::to_msgpack(keyMsg);
-		m_bridge.sendPluginData(senderSession, PCHAT_KEY_ANNOUNCE, keyData);
+		m_bridge.sendPchatKeyAnnounce(senderSession, keyMsg);
 	}
 
 	// Broadcast the new client's public key to all other connected Fancy sessions
-	auto announceData = data; // forward the original announcement
-	m_bridge.broadcastPluginDataToAllFancyClients(PCHAT_KEY_ANNOUNCE, announceData, senderSession);
-
-	// Check if this client needs key material for any persistent channels
-	// (Generate key requests for channels the client is in)
-	// This is triggered by the client joining a channel, handled via onFancyClientJoinedChannel
+	m_bridge.broadcastPchatKeyAnnounce(msg, senderSession);
 }
 
-void PersistentChatManager::handleKeyExchange(unsigned int senderSession, const std::vector< uint8_t > &data) {
-	if (!m_rateLimiter.allow(std::to_string(senderSession), "key_exchange")) {
+// ---- handlePchatKeyExchange ----
+
+void PersistentChatManager::handlePchatKeyExchange(unsigned int senderSession, const MumbleProto::PchatKeyExchange &msg) {
+	if (!m_config.enabled) {
 		return;
 	}
-
-	json j;
-	try {
-		j = json::from_msgpack(data);
-	} catch (const json::exception &) {
+	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
+		return;
+	}
+	if (!m_rateLimiter.allow(std::to_string(senderSession), "key_exchange")) {
 		return;
 	}
 
 	const std::string sessionCertHash = m_bridge.getCertHash(senderSession);
 
 	// Hard-validate sender_hash matches session
-	const std::string senderHash = j.value("sender_hash", "");
-	if (senderHash != sessionCertHash) {
-		return; // Reject impersonation
-	}
-
-	const std::string recipientHash = j.value("recipient_hash", "");
-	if (recipientHash.empty()) {
+	if (msg.sender_hash() != sessionCertHash) {
 		return;
 	}
 
-	// Relay tracking (if request_id is present and non-null)
-	std::string requestId;
-	if (j.contains("request_id") && !j["request_id"].is_null()) {
-		requestId = j["request_id"].get< std::string >();
+	if (!msg.has_recipient_hash() || msg.recipient_hash().empty()) {
+		return;
 	}
 
+	// Relay tracking (if request_id is present)
 	const auto serverNum = m_bridge.serverNum();
-
-	if (!requestId.empty()) {
-		// Tracked relay: check pending key request
-		if (!m_pendingTable.recordRelay(serverNum, requestId, senderHash)) {
+	if (msg.has_request_id() && !msg.request_id().empty()) {
+		if (!m_pendingTable.recordRelay(serverNum, msg.request_id(), sessionCertHash)) {
 			return; // Cap reached or duplicate sender
 		}
 	}
-	// If request_id is null, this is an epoch broadcast - relay unconditionally
 
 	// Look up recipient session
-	unsigned int recipientSession = m_bridge.getSessionForCertHash(recipientHash);
+	unsigned int recipientSession = m_bridge.getSessionForCertHash(msg.recipient_hash());
 	if (recipientSession == 0) {
-		// Recipient offline - could queue for later delivery
-		// For now, silently drop (spec says "queue for next connect" but that's optional)
-		return;
+		return; // recipient offline
 	}
 
 	// Forward to recipient
-	m_bridge.sendPluginData(recipientSession, PCHAT_KEY_EXCHANGE, data);
+	m_bridge.sendPchatKeyExchange(recipientSession, msg);
 }
 
-void PersistentChatManager::handleEpochCountersig(unsigned int senderSession, const std::vector< uint8_t > &data) {
-	json j;
-	try {
-		j = json::from_msgpack(data);
-	} catch (const json::exception &) {
+// ---- handlePchatEpochCountersig ----
+
+void PersistentChatManager::handlePchatEpochCountersig(unsigned int senderSession, const MumbleProto::PchatEpochCountersig &msg) {
+	if (!m_config.enabled) {
 		return;
 	}
 
 	const std::string sessionCertHash = m_bridge.getCertHash(senderSession);
-	const unsigned int channelId = j.value("channel_id", 0u);
 
-	if (channelId == 0) {
+	if (!msg.has_channel_id()) {
 		return;
 	}
 
-	// Validate sender is a key custodian or channel creator
-	const std::string signerHash = j.value("signer_hash", "");
-	if (signerHash != sessionCertHash) {
+	const unsigned int channelId = msg.channel_id();
+
+	// Validate sender is a key custodian
+	if (msg.signer_hash() != sessionCertHash) {
 		return;
 	}
 
 	auto custodians = m_bridge.getChannelKeyCustodians(channelId);
 	bool isCustodian = std::find(custodians.begin(), custodians.end(), sessionCertHash) != custodians.end();
-
-	// TODO: Also check if sender is channel creator (needs Server integration for channel creator lookup)
 	if (!isCustodian) {
 		return;
 	}
 
 	// Validate timestamp freshness
-	long long ts = j.value("timestamp", 0LL);
+	long long ts = static_cast< long long >(msg.timestamp());
 	long long serverTime = m_bridge.serverTimeMs();
 	if (std::abs(serverTime - ts) > 5000) {
 		return;
 	}
 
 	// Broadcast to all other Fancy clients in the channel
-	m_bridge.broadcastPluginDataToFancyClients(channelId, PCHAT_EPOCH_COUNTERSIG, data, senderSession);
+	m_bridge.broadcastPchatEpochCountersig(channelId, msg, senderSession);
 }
 
-void PersistentChatManager::sendAck(unsigned int sessionId, const std::string &messageId,
-									const std::string &status, const std::string &reason) {
-	json ack;
-	ack["message_id"] = messageId;
-	ack["status"]     = status;
-	if (!reason.empty()) {
-		ack["reason"] = reason;
-	}
-
-	auto ackData = json::to_msgpack(ack);
-	m_bridge.sendPluginData(sessionId, PCHAT_ACK, ackData);
-}
+// ---- generateKeyRequest ----
 
 void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std::string &requesterHash,
 											   const std::string &requesterPublic, const std::string &mode) {
@@ -550,27 +483,24 @@ void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std
 
 	m_pendingTable.createRequest(req);
 
-	// Broadcast key request to all other Fancy clients in the channel
-	json keyReq;
-	keyReq["channel_id"]       = channelId;
-	keyReq["mode"]             = mode;
-	keyReq["requester_hash"]   = requesterHash;
-	keyReq["requester_public"] = json::binary_t(
-		std::vector< uint8_t >(requesterPublic.begin(), requesterPublic.end()));
-	keyReq["request_id"]       = requestId;
-	keyReq["timestamp"]        = now;
-	keyReq["relay_cap"]        = relayCap;
-
-	auto reqData = json::to_msgpack(keyReq);
+	// Build and broadcast key request
+	MumbleProto::PchatKeyRequest keyReq;
+	keyReq.set_channel_id(channelId);
+	keyReq.set_mode((mode == "POST_JOIN") ? MumbleProto::PCHAT_MODE_POST_JOIN : MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
+	keyReq.set_requester_hash(requesterHash);
+	keyReq.set_requester_public(requesterPublic);
+	keyReq.set_request_id(requestId);
+	keyReq.set_timestamp(now);
+	keyReq.set_relay_cap(relayCap);
 
 	unsigned int requesterSession = m_bridge.getSessionForCertHash(requesterHash);
-	m_bridge.broadcastPluginDataToFancyClients(channelId, PCHAT_KEY_REQUEST, reqData, requesterSession);
+	m_bridge.broadcastPchatKeyRequest(channelId, keyReq, requesterSession);
 }
+
+// ---- onFancyClientJoinedChannel ----
 
 void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, unsigned int channelId) {
 	if (!m_config.enabled) {
-		qWarning("pchat: onFancyClientJoinedChannel disabled, ignoring session=%u channel=%u",
-			   sessionId, channelId);
 		return;
 	}
 
@@ -582,45 +512,42 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 		   sessionId, channelId, channelMode, certHash.c_str());
 
 	if (channelMode == 0) {
-		return; // Not a persistent channel
+		return;
 	}
 
 	// Record member join for POST_JOIN mode
-	if (channelMode == 1) { // POST_JOIN
+	if (channelMode == 1) {
 		msdb::PChatMemberJoin join;
 		join.serverID  = serverNum;
 		join.channelId = channelId;
 		join.certHash  = certHash;
 		join.joinedAt  = m_bridge.serverTimeMs();
-		join.epochAtJoin = 0; // Will be updated when key exchange completes
+		join.epochAtJoin = 0;
 		m_joinTable.recordJoin(join);
 	}
 
-	// Deliver pending key requests for this channel to the newly connected member
+	// Deliver pending key requests for this channel
 	auto pendingRequests = m_pendingTable.getPendingRequests(serverNum, channelId);
 	for (const auto &req : pendingRequests) {
 		if (req.requesterHash == certHash) {
-			continue; // Don't send own request back
+			continue;
 		}
 
-		json keyReq;
-		keyReq["channel_id"]       = req.channelId;
-		keyReq["mode"]             = req.mode;
-		keyReq["requester_hash"]   = req.requesterHash;
-		keyReq["requester_public"] = json::binary_t(
-			std::vector< uint8_t >(req.requesterPublic.begin(), req.requesterPublic.end()));
-		keyReq["request_id"]       = req.requestId;
-		keyReq["timestamp"]        = req.createdAt;
-		keyReq["relay_cap"]        = req.relayCap;
+		MumbleProto::PchatKeyRequest keyReq;
+		keyReq.set_channel_id(req.channelId);
+		keyReq.set_mode((req.mode == "POST_JOIN") ? MumbleProto::PCHAT_MODE_POST_JOIN : MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
+		keyReq.set_requester_hash(req.requesterHash);
+		keyReq.set_requester_public(req.requesterPublic);
+		keyReq.set_request_id(req.requestId);
+		keyReq.set_timestamp(req.createdAt);
+		keyReq.set_relay_cap(req.relayCap);
 
-		auto reqData = json::to_msgpack(keyReq);
-		m_bridge.sendPluginData(sessionId, PCHAT_KEY_REQUEST, reqData);
+		m_bridge.sendPchatKeyRequest(sessionId, keyReq);
 	}
 
 	// If this user has keys announced, check if they need a key request generated
 	auto userKeys = m_keysTable.getKeys(serverNum, certHash);
 	if (userKeys.has_value()) {
-		// Check if there's already a pending request for this user+channel
 		auto existing = m_pendingTable.getPendingRequests(serverNum, channelId);
 		bool hasPending = std::any_of(existing.begin(), existing.end(), [&](const auto &r) {
 			return r.requesterHash == certHash;
@@ -633,20 +560,30 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 	}
 }
 
-void PersistentChatManager::runCleanup() {
+// ---- Channel removal ----
+
+void PersistentChatManager::onChannelRemoved(unsigned int channelId) {
 	const auto serverNum = m_bridge.serverNum();
 
-	// Cleanup expired pending key requests
+	qWarning("pchat: clearing data for removed channel=%u server=%u", channelId, serverNum);
+
+	m_msgTable.clearChannel(serverNum, channelId);
+	m_joinTable.clearChannel(serverNum, channelId);
+	m_pendingTable.clearChannel(serverNum, channelId);
+}
+
+// ---- Cleanup / UUID ----
+
+void PersistentChatManager::runCleanup() {
+	const auto serverNum = m_bridge.serverNum();
 	m_pendingTable.cleanupExpired(serverNum, m_config.pendingKeyRequestMaxDays);
 	m_pendingTable.cleanupFulfilled(serverNum, m_config.pendingFulfilledMaxHours);
-
-	// Note: Message cleanup by retention_days is handled per-channel and requires
-	// iterating channels with their retention settings. This should be called
-	// from the server's periodic cleanup timer with channel config info.
+	// Remove corrupted key rows that were written before the hex-encoding fix.
+	// Safe to call repeatedly -- only deletes rows with wrong decoded lengths.
+	m_keysTable.cleanupCorruptedKeys(serverNum);
 }
 
 std::string PersistentChatManager::generateUUID() {
-	// Simple UUID v4 generation
 	static std::random_device rd;
 	static std::mt19937 gen(rd());
 	static std::uniform_int_distribution< uint32_t > dist(0, 0xFFFFFFFF);
@@ -654,8 +591,6 @@ std::string PersistentChatManager::generateUUID() {
 	auto r = [&]() { return dist(gen); };
 
 	uint32_t a = r(), b = r(), c = r(), d = r();
-
-	// Set version (4) and variant (10xx)
 	b = (b & 0xFFFF0FFF) | 0x00004000;
 	c = (c & 0x3FFFFFFF) | 0x80000000;
 

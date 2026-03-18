@@ -9,6 +9,8 @@
 #include "IRateLimiter.h"
 #include "PChatTypes.h"
 
+#include "Mumble.pb.h"
+
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -36,21 +38,40 @@ namespace pchat {
 struct IServerBridge {
 	virtual ~IServerBridge() = default;
 
-	/// Send a PluginDataTransmission message to a specific user session.
-	virtual void sendPluginData(unsigned int sessionId, const std::string &dataId,
-								const std::vector< uint8_t > &data) = 0;
+	/// Send a PchatAck to a specific user session.
+	virtual void sendPchatAck(unsigned int sessionId, const MumbleProto::PchatAck &msg) = 0;
 
-	/// Send a PluginDataTransmission message to all Fancy Mumble v2+ sessions in a channel,
-	/// optionally excluding one session.
-	virtual void broadcastPluginDataToFancyClients(unsigned int channelId, const std::string &dataId,
-												   const std::vector< uint8_t > &data,
-												   unsigned int excludeSession = 0) = 0;
+	/// Send a PchatFetchResponse to a specific user session.
+	virtual void sendPchatFetchResponse(unsigned int sessionId, const MumbleProto::PchatFetchResponse &msg) = 0;
 
-	/// Send a PluginDataTransmission message to all Fancy Mumble v2+ sessions on the server,
+	/// Send a PchatKeyAnnounce to a specific user session.
+	virtual void sendPchatKeyAnnounce(unsigned int sessionId, const MumbleProto::PchatKeyAnnounce &msg) = 0;
+
+	/// Send a PchatKeyExchange to a specific user session.
+	virtual void sendPchatKeyExchange(unsigned int sessionId, const MumbleProto::PchatKeyExchange &msg) = 0;
+
+	/// Send a PchatKeyRequest to a specific user session.
+	virtual void sendPchatKeyRequest(unsigned int sessionId, const MumbleProto::PchatKeyRequest &msg) = 0;
+
+	/// Broadcast a PchatMessageDeliver to all Fancy Mumble v2+ sessions in a channel,
 	/// optionally excluding one session.
-	virtual void broadcastPluginDataToAllFancyClients(const std::string &dataId,
-													  const std::vector< uint8_t > &data,
-													  unsigned int excludeSession = 0) = 0;
+	virtual void broadcastPchatMessageDeliver(unsigned int channelId, const MumbleProto::PchatMessageDeliver &msg,
+											  unsigned int excludeSession = 0) = 0;
+
+	/// Broadcast a PchatKeyAnnounce to all Fancy Mumble v2+ sessions on the server,
+	/// optionally excluding one session.
+	virtual void broadcastPchatKeyAnnounce(const MumbleProto::PchatKeyAnnounce &msg,
+										   unsigned int excludeSession = 0) = 0;
+
+	/// Broadcast a PchatKeyRequest to all Fancy Mumble v2+ sessions in a channel,
+	/// optionally excluding one session.
+	virtual void broadcastPchatKeyRequest(unsigned int channelId, const MumbleProto::PchatKeyRequest &msg,
+										  unsigned int excludeSession = 0) = 0;
+
+	/// Broadcast a PchatEpochCountersig to all Fancy Mumble v2+ sessions in a channel,
+	/// optionally excluding one session.
+	virtual void broadcastPchatEpochCountersig(unsigned int channelId, const MumbleProto::PchatEpochCountersig &msg,
+											   unsigned int excludeSession = 0) = 0;
 
 	/// Get the TLS certificate hash for a session.
 	virtual std::string getCertHash(unsigned int sessionId) const = 0;
@@ -88,7 +109,7 @@ struct IServerBridge {
 
 /// Server-side persistent chat companion manager.
 ///
-/// Intercepts PluginDataTransmission messages with "fancy-pchat-" prefix
+/// Receives native protobuf messages from the msg* handlers in Messages.cpp
 /// and handles storage, retrieval, key exchange relay, and key request generation.
 class PersistentChatManager {
 public:
@@ -98,7 +119,7 @@ public:
 		bool requireRegistration      = false;
 		int defaultMaxHistory         = 5000;
 		int defaultRetentionDays      = 90;
-		int maxPayloadSize            = 65536;
+		int maxPayloadSize            = 1048576;
 		int pendingKeyRequestMaxDays  = 7;
 		int pendingFulfilledMaxHours  = 24;
 		int perUserPendingLimit       = 5;
@@ -126,20 +147,32 @@ public:
 	bool handlePluginData(unsigned int senderSession, const std::string &dataId,
 						  const std::vector< uint8_t > &data);
 
+	/// Handle a PchatMessage (client wants to store an encrypted message).
+	void handlePchatMessage(unsigned int senderSession, const MumbleProto::PchatMessage &msg);
+
+	/// Handle a PchatFetch (client wants to retrieve stored messages).
+	void handlePchatFetch(unsigned int senderSession, const MumbleProto::PchatFetch &msg);
+
+	/// Handle a PchatKeyAnnounce (client announces E2EE identity public keys).
+	void handlePchatKeyAnnounce(unsigned int senderSession, const MumbleProto::PchatKeyAnnounce &msg);
+
+	/// Handle a PchatKeyExchange (client sends key material to another client).
+	void handlePchatKeyExchange(unsigned int senderSession, const MumbleProto::PchatKeyExchange &msg);
+
+	/// Handle a PchatEpochCountersig (key custodian countersignature).
+	void handlePchatEpochCountersig(unsigned int senderSession, const MumbleProto::PchatEpochCountersig &msg);
+
 	/// Called when a Fancy client connects and joins a persistent channel.
 	/// Delivers pending key requests for that channel.
 	void onFancyClientJoinedChannel(unsigned int sessionId, unsigned int channelId);
+
+	/// Called when a channel is removed. Clears all pchat data for the channel.
+	void onChannelRemoved(unsigned int channelId);
 
 	/// Run periodic cleanup (retention, expired key requests).
 	void runCleanup();
 
 private:
-	void handleMsg(unsigned int senderSession, const std::vector< uint8_t > &data);
-	void handleFetch(unsigned int senderSession, const std::vector< uint8_t > &data);
-	void handleKeyAnnounce(unsigned int senderSession, const std::vector< uint8_t > &data);
-	void handleKeyExchange(unsigned int senderSession, const std::vector< uint8_t > &data);
-	void handleEpochCountersig(unsigned int senderSession, const std::vector< uint8_t > &data);
-
 	void sendAck(unsigned int sessionId, const std::string &messageId,
 				 const std::string &status, const std::string &reason = "");
 

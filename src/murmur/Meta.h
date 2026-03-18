@@ -112,6 +112,17 @@ public:
 
 	bool broadcastListenerVolumeAdjustments;
 
+	// Persistent chat settings
+	bool bPChatEnabled;
+	bool bPChatRequireRegistration;
+	int iPChatDefaultMaxHistory;
+	int iPChatDefaultRetentionDays;
+	int iPChatMaxPayloadSize;
+	int iPChatPendingKeyRequestMaxDays;
+	int iPChatPendingFulfilledMaxHours;
+	int iPChatPerUserPendingLimit;
+	int iPChatPerChannelPendingSoftCap;
+
 	QSslCertificate qscCert;
 	QSslKey qskKey;
 

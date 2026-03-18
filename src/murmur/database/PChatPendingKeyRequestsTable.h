@@ -82,6 +82,9 @@ namespace server {
 
 			unsigned int cleanupFulfilled(unsigned int serverID, int maxAgeHours);
 
+			/// Delete all pending key requests for a channel (used when channel is removed).
+			void clearChannel(unsigned int serverID, unsigned int channelId);
+
 			void migrate(unsigned int fromSchemaVersion, unsigned int toSchemaVersion) override;
 		};
 

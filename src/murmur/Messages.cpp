@@ -1405,6 +1405,21 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		c = createNewChannel(p, qsName, msg.temporary(), msg.position(), msg.max_users());
 		hashAssign(c->qsDesc, c->qbaDescHash, qsDesc);
 
+		if (msg.has_pchat_mode()) {
+			c->uiPChatMode = static_cast< uint32_t >(msg.pchat_mode());
+		}
+		if (msg.has_pchat_max_history()) {
+			c->uiPChatMaxHistory = msg.pchat_max_history();
+		}
+		if (msg.has_pchat_retention_days()) {
+			c->uiPChatRetentionDays = msg.pchat_retention_days();
+		}
+		if (msg.pchat_key_custodians_size() > 0) {
+			c->qslPChatKeyCustodians.clear();
+			for (int i = 0; i < msg.pchat_key_custodians_size(); ++i)
+				c->qslPChatKeyCustodians << u8(msg.pchat_key_custodians(i));
+		}
+
 		if (uSource->iId >= 0) {
 			Group *g = new Group(c, "admin");
 			g->qsAdd << uSource->iId;
@@ -2574,6 +2589,10 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 		return;
 	}
 
+	// Always set the sender's session and don't rely on it being set correctly (would
+	// allow spoofing the sender's session)
+	msg.set_sendersession(sender->uiSession);
+
 	if (msg.data().size() > Mumble::Plugins::PluginMessage::MAX_DATA_LENGTH) {
 		qWarning("Dropping plugin message sent from \"%s\" (%d) - data too large", qUtf8Printable(sender->qsName),
 				 sender->uiSession);
@@ -2583,23 +2602,6 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 		qWarning("Dropping plugin message sent from \"%s\" (%d) - data ID too long", qUtf8Printable(sender->qsName),
 				 sender->uiSession);
 		return;
-	}
-
-	// Always set the sender's session and don't rely on it being set correctly (would
-	// allow spoofing the sender's session)
-	msg.set_sendersession(sender->uiSession);
-
-	// Check if this is a persistent chat message handled by the pchat manager
-	if (m_pchatManager) {
-		std::string dataId = msg.dataid();
-		const std::string &rawData = msg.data();
-		std::vector< uint8_t > data(rawData.begin(), rawData.end());
-		qWarning("pchat: PluginData from session=%u dataId=%s size=%zu",
-			   sender->uiSession, dataId.c_str(), data.size());
-		if (m_pchatManager->handlePluginData(sender->uiSession, dataId, data)) {
-			qWarning("pchat: consumed by pchat manager");
-			return;
-		}
 	}
 
 	// Copy needed data from message in order to be able to remove info about receivers from the message as this doesn't
@@ -2628,6 +2630,62 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 			// We can simply redirect the message we have received to the clients
 			sendMessage(receiver, msg);
 		}
+	}
+}
+
+void Server::msgPchatMessage(ServerUser *uSource, MumbleProto::PchatMessage &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatMessage(uSource->uiSession, msg);
+	}
+}
+
+void Server::msgPchatFetch(ServerUser *uSource, MumbleProto::PchatFetch &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatFetch(uSource->uiSession, msg);
+	}
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatFetchResponse(ServerUser *, MumbleProto::PchatFetchResponse &) {
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatMessageDeliver(ServerUser *, MumbleProto::PchatMessageDeliver &) {
+}
+
+void Server::msgPchatKeyAnnounce(ServerUser *uSource, MumbleProto::PchatKeyAnnounce &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatKeyAnnounce(uSource->uiSession, msg);
+	}
+}
+
+void Server::msgPchatKeyExchange(ServerUser *uSource, MumbleProto::PchatKeyExchange &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatKeyExchange(uSource->uiSession, msg);
+	}
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatKeyRequest(ServerUser *, MumbleProto::PchatKeyRequest &) {
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatAck(ServerUser *, MumbleProto::PchatAck &) {
+}
+
+void Server::msgPchatEpochCountersig(ServerUser *uSource, MumbleProto::PchatEpochCountersig &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatEpochCountersig(uSource->uiSession, msg);
 	}
 }
 

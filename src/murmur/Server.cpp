@@ -262,7 +262,7 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 		m_dbWrapper.getServerDB().getPChatUserKeysTable(),
 		m_dbWrapper.getServerDB().getPChatMemberJoinTable(),
 		m_dbWrapper.getServerDB().getPChatPendingKeyRequestsTable(),
-		*m_pchatBridge, *m_pchatRateLimiter);
+		*m_pchatBridge, *m_pchatRateLimiter, m_pchatConfig);
 
 	initializeCert();
 
@@ -401,6 +401,17 @@ void Server::readParams() {
 	iChannelNestingLimit               = Meta::mp->iChannelNestingLimit;
 	iChannelCountLimit                 = Meta::mp->iChannelCountLimit;
 
+	// Persistent chat config from INI
+	m_pchatConfig.enabled                  = Meta::mp->bPChatEnabled;
+	m_pchatConfig.requireRegistration      = Meta::mp->bPChatRequireRegistration;
+	m_pchatConfig.defaultMaxHistory        = Meta::mp->iPChatDefaultMaxHistory;
+	m_pchatConfig.defaultRetentionDays     = Meta::mp->iPChatDefaultRetentionDays;
+	m_pchatConfig.maxPayloadSize           = Meta::mp->iPChatMaxPayloadSize;
+	m_pchatConfig.pendingKeyRequestMaxDays = Meta::mp->iPChatPendingKeyRequestMaxDays;
+	m_pchatConfig.pendingFulfilledMaxHours = Meta::mp->iPChatPendingFulfilledMaxHours;
+	m_pchatConfig.perUserPendingLimit      = Meta::mp->iPChatPerUserPendingLimit;
+	m_pchatConfig.perChannelPendingSoftCap = Meta::mp->iPChatPerChannelPendingSoftCap;
+
 	QString qsHost;
 	m_dbWrapper.getConfigurationTo(iServerNum, "host", qsHost);
 
@@ -516,6 +527,17 @@ void Server::readParams() {
 	}
 	m_dbWrapper.getConfigurationTo(iServerNum, "broadcastlistenervolumeadjustments",
 								   broadcastListenerVolumeAdjustments);
+
+	// Persistent chat: database overrides
+	m_dbWrapper.getConfigurationTo(iServerNum, "pchatenabled", m_pchatConfig.enabled);
+	m_dbWrapper.getConfigurationTo(iServerNum, "pchatrequireregistration", m_pchatConfig.requireRegistration);
+	m_dbWrapper.getConfigurationTo(iServerNum, "pchatdefaultmaxhistory", m_pchatConfig.defaultMaxHistory);
+	m_dbWrapper.getConfigurationTo(iServerNum, "pchatdefaultretentiondays", m_pchatConfig.defaultRetentionDays);
+	m_dbWrapper.getConfigurationTo(iServerNum, "pchatmaxpayloadsize", m_pchatConfig.maxPayloadSize);
+	m_dbWrapper.getConfigurationTo(iServerNum, "pchatpendingkeyrequestmaxdays", m_pchatConfig.pendingKeyRequestMaxDays);
+	m_dbWrapper.getConfigurationTo(iServerNum, "pchatpendingfulfilledmaxhours", m_pchatConfig.pendingFulfilledMaxHours);
+	m_dbWrapper.getConfigurationTo(iServerNum, "pchatperuserpending", m_pchatConfig.perUserPendingLimit);
+	m_dbWrapper.getConfigurationTo(iServerNum, "pchatperchannelpendingsoftcap", m_pchatConfig.perChannelPendingSoftCap);
 }
 
 void Server::setLiveConf(const QString &key, const QString &value) {
@@ -1994,6 +2016,10 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 	MumbleProto::ChannelRemove mpcr;
 	mpcr.set_channel_id(chan->iId);
 	sendAll(mpcr);
+
+	if (m_pchatManager) {
+		m_pchatManager->onChannelRemoved(static_cast< unsigned int >(chan->iId));
+	}
 
 	if (!chan->bTemporary) {
 		m_dbWrapper.deleteChannel(iServerNum, static_cast< unsigned int >(chan->iId));
