@@ -114,7 +114,7 @@ private:
 			std::lock_guard< std::mutex > lock(m_CallbackMapMutex);
 
 			// Extract the IP address from the URL
-			auto connectionString = reply->url().toString().toStdString();
+			connectionString = reply->url().toString().toStdString();
 			connectionString.erase(0, connectionString.find_last_of('/') + 1);
 			auto it = m_CallbackMap.find(connectionString);
 			if (it == m_CallbackMap.end()) {
@@ -130,9 +130,9 @@ private:
 			return;
 		}
 
-		auto data = reply->readAll();
+		auto replyData = reply->readAll();
 
-		if (data.trimmed().isEmpty()) {
+		if (replyData.trimmed().isEmpty()) {
 			GeoIpInformation info;
 			info.query   = connectionString;
 			info.status  = GeoIpStatus::FAIL;
@@ -146,7 +146,7 @@ private:
 		GeoIpInformation info;
 
 		try {
-			auto jsonData = json::parse(data);
+			auto jsonData = json::parse(replyData);
 
 			if (!jsonData.contains("query") || !jsonData.contains("status")) {
 				info.status  = GeoIpStatus::FAIL;
