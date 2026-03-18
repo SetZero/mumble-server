@@ -133,7 +133,8 @@ namespace server {
 				std::string sql = "SELECT \"" + std::string(column::message_id) + "\", \""
 								  + column::channel_id + "\", \"" + column::timestamp + "\", \""
 								  + column::sender_hash + "\", \"" + column::mode + "\", \""
-								  + column::payload + "\", \"" + column::replaces_id + "\", \""
+								  + column::payload + "\", \"" + column::payload_size + "\", \""
+								  + column::replaces_id + "\", \""
 								  + column::created_at + "\" FROM \"" + std::string(NAME)
 								  + "\" WHERE \"" + column::server_id + "\" = :sid AND \""
 								  + column::channel_id + "\" = :cid AND \""
@@ -173,7 +174,7 @@ namespace server {
 				st.exchange(soci::use(lim, "lim"));
 
 				std::string msgId, senderHash, mode, payload, replacesId;
-				int chId = 0;
+				int chId = 0, psize = 0;
 				long long ts = 0, cat = 0;
 				st.exchange(soci::into(msgId));
 				st.exchange(soci::into(chId));
@@ -181,6 +182,7 @@ namespace server {
 				st.exchange(soci::into(senderHash));
 				st.exchange(soci::into(mode));
 				st.exchange(soci::into(payload));
+				st.exchange(soci::into(psize));
 				st.exchange(soci::into(replacesId));
 				st.exchange(soci::into(cat));
 
@@ -194,15 +196,20 @@ namespace server {
 						break;
 					}
 					PChatStoredMessage msg;
-					msg.serverID   = serverID;
-					msg.messageId  = msgId;
-					msg.channelId  = static_cast< unsigned int >(chId);
-					msg.timestamp  = ts;
-					msg.senderHash = senderHash;
-					msg.mode       = mode;
-					msg.payload    = payload;
-					msg.replacesId = replacesId;
-					msg.createdAt  = cat;
+					msg.serverID    = serverID;
+					msg.messageId   = msgId;
+					msg.channelId   = static_cast< unsigned int >(chId);
+					msg.timestamp   = ts;
+					msg.senderHash  = senderHash;
+					msg.mode        = mode;
+					msg.payload     = payload;
+					msg.payloadSize = psize;
+					msg.replacesId  = replacesId;
+					msg.createdAt   = cat;
+					if (static_cast<int>(payload.size()) != psize) {
+						fprintf(stderr, "pchat: PAYLOAD TRUNCATION DETECTED for msg id=%s: stored_size=%d actual_size=%zu\n",
+								 msgId.c_str(), psize, payload.size());
+					}
 					result.messages.push_back(std::move(msg));
 					++count;
 				}

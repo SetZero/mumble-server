@@ -399,6 +399,22 @@ namespace server {
 			}
 		}
 
+		void PChatPendingKeyRequestsTable::clearChannel(unsigned int serverID, unsigned int channelId) {
+			try {
+				::mdb::TransactionHolder transaction = ensureTransaction();
+
+				m_sql << "DELETE FROM \"" << NAME << "\" WHERE \"" << column::server_id << "\" = :sid AND \""
+					  << column::channel_id << "\" = :cid",
+					soci::use(serverID), soci::use(channelId);
+
+				transaction.commit();
+			} catch (const soci::soci_error &) {
+				std::throw_with_nested(
+					::mdb::AccessException("Failed to clear pending key requests for channel "
+										   + std::to_string(channelId)));
+			}
+		}
+
 		void PChatPendingKeyRequestsTable::migrate(unsigned int fromSchemaVersion, unsigned int toSchemaVersion) {
 			assert(fromSchemaVersion <= toSchemaVersion);
 			try {

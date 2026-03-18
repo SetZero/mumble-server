@@ -17,67 +17,93 @@ namespace pchat {
 
 ServerBridge::ServerBridge(Server &server) : m_server(server) {}
 
-void ServerBridge::sendPluginData(unsigned int sessionId, const std::string &dataId,
-								  const std::vector< uint8_t > &data) {
+// -- Helper: check if a ServerUser is Fancy v2+ --
+static bool isFancy(const ServerUser *su) {
+	return su->m_FancyVersion.has_value() && su->m_FancyVersion.value() >= Version::fromComponents(0, 2, 0);
+}
+
+// -- Unicast sends --
+
+void ServerBridge::sendPchatAck(unsigned int sessionId, const MumbleProto::PchatAck &msg) {
 	ServerUser *user = m_server.qhUsers.value(sessionId);
-	if (!user || user->sState != ServerUser::Authenticated) {
-		return;
-	}
-
-	MumbleProto::PluginDataTransmission msg;
-	msg.set_sendersession(0); // Server-originated
-	msg.set_dataid(dataId);
-	msg.set_data(data.data(), data.size());
-
+	if (!user || user->sState != ServerUser::Authenticated) return;
 	m_server.sendMessage(user, msg);
 }
 
-void ServerBridge::broadcastPluginDataToFancyClients(unsigned int channelId, const std::string &dataId,
-													 const std::vector< uint8_t > &data,
-													 unsigned int excludeSession) {
-	Channel *c = m_server.qhChannels.value(channelId);
-	if (!c) {
-		return;
-	}
+void ServerBridge::sendPchatFetchResponse(unsigned int sessionId, const MumbleProto::PchatFetchResponse &msg) {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	if (!user || user->sState != ServerUser::Authenticated) return;
+	m_server.sendMessage(user, msg);
+}
 
-	MumbleProto::PluginDataTransmission msg;
-	msg.set_sendersession(0);
-	msg.set_dataid(dataId);
-	msg.set_data(data.data(), data.size());
+void ServerBridge::sendPchatKeyAnnounce(unsigned int sessionId, const MumbleProto::PchatKeyAnnounce &msg) {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	if (!user || user->sState != ServerUser::Authenticated) return;
+	m_server.sendMessage(user, msg);
+}
+
+void ServerBridge::sendPchatKeyExchange(unsigned int sessionId, const MumbleProto::PchatKeyExchange &msg) {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	if (!user || user->sState != ServerUser::Authenticated) return;
+	m_server.sendMessage(user, msg);
+}
+
+void ServerBridge::sendPchatKeyRequest(unsigned int sessionId, const MumbleProto::PchatKeyRequest &msg) {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	if (!user || user->sState != ServerUser::Authenticated) return;
+	m_server.sendMessage(user, msg);
+}
+
+// -- Broadcast sends --
+
+void ServerBridge::broadcastPchatMessageDeliver(unsigned int channelId, const MumbleProto::PchatMessageDeliver &msg,
+												unsigned int excludeSession) {
+	Channel *c = m_server.qhChannels.value(channelId);
+	if (!c) return;
 
 	for (User *pUser : c->qlUsers) {
 		ServerUser *su = static_cast< ServerUser * >(pUser);
-		if (su->uiSession == excludeSession) {
-			continue;
-		}
-		if (su->sState != ServerUser::Authenticated) {
-			continue;
-		}
-		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < Version::fromComponents(0, 2, 0)) {
-			continue;
-		}
+		if (su->uiSession == excludeSession) continue;
+		if (su->sState != ServerUser::Authenticated) continue;
+		if (!isFancy(su)) continue;
 		m_server.sendMessage(su, msg);
 	}
 }
 
-void ServerBridge::broadcastPluginDataToAllFancyClients(const std::string &dataId,
-														const std::vector< uint8_t > &data,
-														unsigned int excludeSession) {
-	MumbleProto::PluginDataTransmission msg;
-	msg.set_sendersession(0);
-	msg.set_dataid(dataId);
-	msg.set_data(data.data(), data.size());
-
+void ServerBridge::broadcastPchatKeyAnnounce(const MumbleProto::PchatKeyAnnounce &msg,
+											 unsigned int excludeSession) {
 	for (ServerUser *su : m_server.qhUsers) {
-		if (su->uiSession == excludeSession) {
-			continue;
-		}
-		if (su->sState != ServerUser::Authenticated) {
-			continue;
-		}
-		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < Version::fromComponents(0, 2, 0)) {
-			continue;
-		}
+		if (su->uiSession == excludeSession) continue;
+		if (su->sState != ServerUser::Authenticated) continue;
+		if (!isFancy(su)) continue;
+		m_server.sendMessage(su, msg);
+	}
+}
+
+void ServerBridge::broadcastPchatKeyRequest(unsigned int channelId, const MumbleProto::PchatKeyRequest &msg,
+											unsigned int excludeSession) {
+	Channel *c = m_server.qhChannels.value(channelId);
+	if (!c) return;
+
+	for (User *pUser : c->qlUsers) {
+		ServerUser *su = static_cast< ServerUser * >(pUser);
+		if (su->uiSession == excludeSession) continue;
+		if (su->sState != ServerUser::Authenticated) continue;
+		if (!isFancy(su)) continue;
+		m_server.sendMessage(su, msg);
+	}
+}
+
+void ServerBridge::broadcastPchatEpochCountersig(unsigned int channelId, const MumbleProto::PchatEpochCountersig &msg,
+												 unsigned int excludeSession) {
+	Channel *c = m_server.qhChannels.value(channelId);
+	if (!c) return;
+
+	for (User *pUser : c->qlUsers) {
+		ServerUser *su = static_cast< ServerUser * >(pUser);
+		if (su->uiSession == excludeSession) continue;
+		if (su->sState != ServerUser::Authenticated) continue;
+		if (!isFancy(su)) continue;
 		m_server.sendMessage(su, msg);
 	}
 }

@@ -48,7 +48,16 @@
 	PROCESS_MUMBLE_TCP_MESSAGE(RequestBlob, 23)         \
 	PROCESS_MUMBLE_TCP_MESSAGE(ServerConfig, 24)        \
 	PROCESS_MUMBLE_TCP_MESSAGE(SuggestConfig, 25)       \
-	PROCESS_MUMBLE_TCP_MESSAGE(PluginDataTransmission, 26)
+	PROCESS_MUMBLE_TCP_MESSAGE(PluginDataTransmission, 26) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatMessage, 100)         \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatFetch, 101)           \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatFetchResponse, 102)   \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatMessageDeliver, 103)  \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyAnnounce, 104)     \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyExchange, 105)     \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyRequest, 106)      \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatAck, 107)             \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatEpochCountersig, 108)
 
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.

@@ -664,3 +664,155 @@ message PluginDataTransmission {
 	// process it or not
 	optional string dataID = 4;
 }
+
+// ---- Persistent Chat (pchat) native protocol messages ----
+
+// Persistence mode used in pchat runtime messages.
+// Mirrors ChannelState.PchatMode but is a top-level type
+// so it can be referenced by standalone pchat messages.
+enum PchatPersistenceMode {
+	PCHAT_MODE_POST_JOIN = 0;
+	PCHAT_MODE_FULL_ARCHIVE = 1;
+}
+
+// Ack status for PchatAck.
+enum PchatAckStatus {
+	PCHAT_ACK_STORED = 0;
+	PCHAT_ACK_REJECTED = 1;
+	PCHAT_ACK_QUOTA_EXCEEDED = 2;
+}
+
+// Encrypted persistent chat message sent from client to server for storage.
+// Also reused as the element type inside PchatFetchResponse.
+message PchatMessage {
+	optional string message_id = 1;
+	optional uint32 channel_id = 2;
+	optional uint64 timestamp = 3;
+	optional string sender_hash = 4;
+	optional PchatPersistenceMode mode = 5;
+	// Encrypted MessageEnvelope (opaque ciphertext bytes)
+	optional bytes envelope = 6;
+	optional uint32 epoch = 7;
+	optional uint32 chain_index = 8;
+	// SHA-256(epoch_key)[0..8]
+	optional bytes epoch_fingerprint = 9;
+	// If set, this message replaces a previous message by ID (epoch fork re-send)
+	optional string replaces_id = 10;
+}
+
+// Request stored messages from the server.
+message PchatFetch {
+	optional uint32 channel_id = 1;
+	// Pagination cursor: fetch messages before this UUID.
+	optional string before_id = 2;
+	// Maximum messages to return (default 50).
+	optional uint32 limit = 3;
+	// Pagination cursor: fetch messages after this UUID.
+	optional string after_id = 4;
+}
+
+// Server response to a PchatFetch request.
+message PchatFetchResponse {
+	optional uint32 channel_id = 1;
+	repeated PchatMessage messages = 2;
+	optional bool has_more = 3;
+	optional uint32 total_stored = 4;
+}
+
+// Server relays a new message to other clients in the channel (real-time delivery).
+message PchatMessageDeliver {
+	optional string message_id = 1;
+	optional uint32 channel_id = 2;
+	optional uint64 timestamp = 3;
+	optional string sender_hash = 4;
+	optional PchatPersistenceMode mode = 5;
+	// Encrypted MessageEnvelope (opaque ciphertext bytes)
+	optional bytes envelope = 6;
+	optional string replaces_id = 7;
+}
+
+// Client announcement of E2EE identity public keys.
+message PchatKeyAnnounce {
+	// Algorithm version. 1 = X25519 + Ed25519.
+	optional uint32 algorithm_version = 1;
+	// Key-agreement public key (X25519 for v1, 32 bytes)
+	optional bytes identity_public = 2;
+	// Signature public key (Ed25519 for v1, 32 bytes)
+	optional bytes signing_public = 3;
+	// TLS certificate hash
+	optional string cert_hash = 4;
+	// Announcement time (Unix epoch millis)
+	optional uint64 timestamp = 5;
+	// Ed25519 signature proving control of signing_public
+	optional bytes signature = 6;
+	// TLS signature proving control of the TLS certificate
+	optional bytes tls_signature = 7;
+}
+
+// Peer-to-peer key exchange relayed through the server.
+message PchatKeyExchange {
+	optional uint32 channel_id = 1;
+	optional PchatPersistenceMode mode = 2;
+	optional uint32 epoch = 3;
+	// Epoch/channel key encrypted to the recipient's X25519 public key
+	optional bytes encrypted_key = 4;
+	// Cert hash of the key distributor
+	optional string sender_hash = 5;
+	// Cert hash of the intended recipient
+	optional string recipient_hash = 6;
+	// References a PchatKeyRequest (for dedup/relay tracking)
+	optional string request_id = 7;
+	// Unix epoch millis
+	optional uint64 timestamp = 8;
+	// Algorithm version (must match sender's key-announce)
+	optional uint32 algorithm_version = 9;
+	// Ed25519 signature over the canonical signed data
+	optional bytes signature = 10;
+	// SHA-256(previous_epoch_key)[0..8], POST_JOIN only
+	optional bytes parent_fingerprint = 11;
+	// SHA-256(distributed_key)[0..8]
+	optional bytes epoch_fingerprint = 12;
+	// Key custodian countersignature
+	optional bytes countersignature = 13;
+	// Cert hash of the countersigning key custodian
+	optional string countersigner_hash = 14;
+}
+
+// Server-broadcast key request when a new member joins a persistent channel.
+message PchatKeyRequest {
+	optional uint32 channel_id = 1;
+	optional PchatPersistenceMode mode = 2;
+	// Cert hash of the user who needs a key
+	optional string requester_hash = 3;
+	// X25519 public key of the requester (32 bytes)
+	optional bytes requester_public = 4;
+	// Server-generated UUID for dedup
+	optional string request_id = 5;
+	// Unix epoch millis
+	optional uint64 timestamp = 6;
+	// Max responses the server will relay
+	optional uint32 relay_cap = 7;
+}
+
+// Server acknowledgement of message storage.
+message PchatAck {
+	optional string message_id = 1;
+	optional PchatAckStatus status = 2;
+	optional string reason = 3;
+}
+
+// Key custodian countersignature on an epoch transition.
+message PchatEpochCountersig {
+	optional uint32 channel_id = 1;
+	optional uint32 epoch = 2;
+	optional bytes epoch_fingerprint = 3;
+	optional bytes parent_fingerprint = 4;
+	// Cert hash of the signer (key custodian)
+	optional string signer_hash = 5;
+	// Cert hash of the key distributor this endorses
+	optional string distributor_hash = 6;
+	// Unix epoch millis
+	optional uint64 timestamp = 7;
+	// Ed25519 countersignature
+	optional bytes countersignature = 8;
+}

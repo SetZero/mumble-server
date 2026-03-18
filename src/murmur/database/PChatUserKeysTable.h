@@ -59,6 +59,10 @@ namespace server {
 
 			void removeKeys(unsigned int serverID, const std::string &certHash);
 
+			/// Delete rows whose binary fields have wrong decoded lengths.
+			/// Call on startup to purge data written before the hex-encoding fix.
+			void cleanupCorruptedKeys(unsigned int serverID);
+
 			void migrate(unsigned int fromSchemaVersion, unsigned int toSchemaVersion) override;
 		};
 

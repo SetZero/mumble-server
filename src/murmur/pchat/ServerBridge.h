@@ -17,16 +17,20 @@ class ServerBridge : public IServerBridge {
 public:
 	explicit ServerBridge(Server &server);
 
-	void sendPluginData(unsigned int sessionId, const std::string &dataId,
-						const std::vector< uint8_t > &data) override;
+	void sendPchatAck(unsigned int sessionId, const MumbleProto::PchatAck &msg) override;
+	void sendPchatFetchResponse(unsigned int sessionId, const MumbleProto::PchatFetchResponse &msg) override;
+	void sendPchatKeyAnnounce(unsigned int sessionId, const MumbleProto::PchatKeyAnnounce &msg) override;
+	void sendPchatKeyExchange(unsigned int sessionId, const MumbleProto::PchatKeyExchange &msg) override;
+	void sendPchatKeyRequest(unsigned int sessionId, const MumbleProto::PchatKeyRequest &msg) override;
 
-	void broadcastPluginDataToFancyClients(unsigned int channelId, const std::string &dataId,
-										   const std::vector< uint8_t > &data,
-										   unsigned int excludeSession = 0) override;
-
-	void broadcastPluginDataToAllFancyClients(const std::string &dataId,
-											  const std::vector< uint8_t > &data,
-											  unsigned int excludeSession = 0) override;
+	void broadcastPchatMessageDeliver(unsigned int channelId, const MumbleProto::PchatMessageDeliver &msg,
+									  unsigned int excludeSession = 0) override;
+	void broadcastPchatKeyAnnounce(const MumbleProto::PchatKeyAnnounce &msg,
+								   unsigned int excludeSession = 0) override;
+	void broadcastPchatKeyRequest(unsigned int channelId, const MumbleProto::PchatKeyRequest &msg,
+								  unsigned int excludeSession = 0) override;
+	void broadcastPchatEpochCountersig(unsigned int channelId, const MumbleProto::PchatEpochCountersig &msg,
+									   unsigned int excludeSession = 0) override;
 
 	std::string getCertHash(unsigned int sessionId) const override;
 	bool isFancyClient(unsigned int sessionId) const override;
