@@ -399,6 +399,47 @@ namespace server {
 			}
 		}
 
+		void PChatPendingKeyRequestsTable::clearForRequester(unsigned int serverID,
+														   const std::string &requesterHash) {
+			try {
+				::mdb::TransactionHolder transaction = ensureTransaction();
+
+				m_sql << "DELETE FROM \"" << NAME << "\" WHERE \"" << column::server_id
+					  << "\" = :sid AND \"" << column::requester_hash << "\" = :rh AND \""
+					  << column::fulfilled_at << "\" IS NULL",
+					soci::use(serverID), soci::use(requesterHash);
+
+				transaction.commit();
+			} catch (const soci::soci_error &) {
+				std::throw_with_nested(
+					::mdb::AccessException("Failed to clear pending key requests for requester "
+										   + requesterHash));
+			}
+		}
+
+		void PChatPendingKeyRequestsTable::fulfillForRequester(unsigned int serverID, unsigned int channelId,
+															   const std::string &requesterHash) {
+			try {
+				::mdb::TransactionHolder transaction = ensureTransaction();
+
+				long long now = std::chrono::duration_cast< std::chrono::milliseconds >(
+									std::chrono::system_clock::now().time_since_epoch())
+									.count();
+
+				m_sql << "UPDATE \"" << NAME << "\" SET \"" << column::fulfilled_at << "\" = :fa WHERE \""
+					  << column::server_id << "\" = :sid AND \"" << column::channel_id << "\" = :cid AND \""
+					  << column::requester_hash << "\" = :rh AND \"" << column::fulfilled_at
+					  << "\" IS NULL",
+					soci::use(now), soci::use(serverID), soci::use(channelId), soci::use(requesterHash);
+
+				transaction.commit();
+			} catch (const soci::soci_error &) {
+				std::throw_with_nested(
+					::mdb::AccessException("Failed to fulfill pending key requests for requester "
+										   + requesterHash + " in channel " + std::to_string(channelId)));
+			}
+		}
+
 		void PChatPendingKeyRequestsTable::clearChannel(unsigned int serverID, unsigned int channelId) {
 			try {
 				::mdb::TransactionHolder transaction = ensureTransaction();

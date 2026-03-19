@@ -2689,6 +2689,42 @@ void Server::msgPchatEpochCountersig(ServerUser *uSource, MumbleProto::PchatEpoc
 	}
 }
 
+void Server::msgPchatKeyHolderReport(ServerUser *uSource, MumbleProto::PchatKeyHolderReport &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatKeyHolderReport(uSource->uiSession, msg);
+	}
+}
+
+void Server::msgPchatKeyHoldersQuery(ServerUser *uSource, MumbleProto::PchatKeyHoldersQuery &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatKeyHoldersQuery(uSource->uiSession, msg);
+	}
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatKeyHoldersList(ServerUser *, MumbleProto::PchatKeyHoldersList &) {
+}
+
+// Server sends PchatKeyChallenge; ignore if received from client
+void Server::msgPchatKeyChallenge(ServerUser *, MumbleProto::PchatKeyChallenge &) {
+}
+
+void Server::msgPchatKeyChallengeResponse(ServerUser *uSource, MumbleProto::PchatKeyChallengeResponse &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatKeyChallengeResponse(uSource->uiSession, msg);
+	}
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatKeyChallengeResult(ServerUser *, MumbleProto::PchatKeyChallengeResult &) {
+}
+
 #undef RATELIMIT
 #undef MSG_SETUP
 #undef MSG_SETUP_NO_UNIDLE

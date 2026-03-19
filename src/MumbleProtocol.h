@@ -57,7 +57,13 @@
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyExchange, 105)     \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyRequest, 106)      \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatAck, 107)             \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatEpochCountersig, 108)
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatEpochCountersig, 108) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyHolderReport, 109) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyHoldersQuery, 110) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyHoldersList, 111)  \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallenge, 112)    \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallengeResponse, 113) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallengeResult, 114)
 
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.

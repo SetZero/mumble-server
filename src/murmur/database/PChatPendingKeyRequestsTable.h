@@ -82,6 +82,13 @@ namespace server {
 
 			unsigned int cleanupFulfilled(unsigned int serverID, int maxAgeHours);
 
+			/// Delete all unfulfilled pending key requests for a specific requester (used on disconnect).
+			void clearForRequester(unsigned int serverID, const std::string &requesterHash);
+
+			/// Mark all unfulfilled pending key requests for a requester in a channel as fulfilled.
+			void fulfillForRequester(unsigned int serverID, unsigned int channelId,
+									const std::string &requesterHash);
+
 			/// Delete all pending key requests for a channel (used when channel is removed).
 			void clearChannel(unsigned int serverID, unsigned int channelId);
 
