@@ -15,6 +15,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mumble {
@@ -24,6 +25,7 @@ namespace server {
 		class PChatUserKeysTable;
 		class PChatMemberJoinTable;
 		class PChatPendingKeyRequestsTable;
+	class PChatKeyHoldersTable;
 	} // namespace db
 } // namespace server
 } // namespace mumble
@@ -75,6 +77,15 @@ struct IServerBridge {
 
 	/// Get the TLS certificate hash for a session.
 	virtual std::string getCertHash(unsigned int sessionId) const = 0;
+
+	/// Send a PchatKeyHoldersList to a specific user session.
+	virtual void sendPchatKeyHoldersList(unsigned int sessionId, const MumbleProto::PchatKeyHoldersList &msg) = 0;
+
+	/// Send a PchatKeyChallenge to a specific user session.
+	virtual void sendPchatKeyChallenge(unsigned int sessionId, const MumbleProto::PchatKeyChallenge &msg) = 0;
+
+	/// Send a PchatKeyChallengeResult to a specific user session.
+	virtual void sendPchatKeyChallengeResult(unsigned int sessionId, const MumbleProto::PchatKeyChallengeResult &msg) = 0;
 
 	/// Check if a session is a Fancy Mumble v2+ client.
 	virtual bool isFancyClient(unsigned int sessionId) const = 0;
@@ -130,6 +141,7 @@ public:
 						  ::mumble::server::db::PChatUserKeysTable &keysTable,
 						  ::mumble::server::db::PChatMemberJoinTable &joinTable,
 						  ::mumble::server::db::PChatPendingKeyRequestsTable &pendingTable,
+						  ::mumble::server::db::PChatKeyHoldersTable &holdersTable,
 						  IServerBridge &bridge,
 						  IRateLimiter &rateLimiter,
 						  Config config);
@@ -138,9 +150,10 @@ public:
 						  ::mumble::server::db::PChatUserKeysTable &keysTable,
 						  ::mumble::server::db::PChatMemberJoinTable &joinTable,
 						  ::mumble::server::db::PChatPendingKeyRequestsTable &pendingTable,
+						  ::mumble::server::db::PChatKeyHoldersTable &holdersTable,
 						  IServerBridge &bridge,
 						  IRateLimiter &rateLimiter)
-		: PersistentChatManager(msgTable, keysTable, joinTable, pendingTable, bridge, rateLimiter, Config{}) {}
+		: PersistentChatManager(msgTable, keysTable, joinTable, pendingTable, holdersTable, bridge, rateLimiter, Config{}) {}
 
 	/// Returns true if the dataID is a pchat message that was handled.
 	/// Returns false if the dataID is not a pchat message (should be forwarded normally).
@@ -162,9 +175,21 @@ public:
 	/// Handle a PchatEpochCountersig (key custodian countersignature).
 	void handlePchatEpochCountersig(unsigned int senderSession, const MumbleProto::PchatEpochCountersig &msg);
 
+	/// Handle a PchatKeyHolderReport (client reports a key holder).
+	void handlePchatKeyHolderReport(unsigned int senderSession, const MumbleProto::PchatKeyHolderReport &msg);
+
+	/// Handle a PchatKeyHoldersQuery (client requests key holders list).
+	void handlePchatKeyHoldersQuery(unsigned int senderSession, const MumbleProto::PchatKeyHoldersQuery &msg);
+
+	/// Handle a PchatKeyChallengeResponse (client proves key possession).
+	void handlePchatKeyChallengeResponse(unsigned int senderSession, const MumbleProto::PchatKeyChallengeResponse &msg);
+
 	/// Called when a Fancy client connects and joins a persistent channel.
 	/// Delivers pending key requests for that channel.
 	void onFancyClientJoinedChannel(unsigned int sessionId, unsigned int channelId);
+
+	/// Called when a user disconnects. Clears their unfulfilled pending key requests.
+	void onUserDisconnected(const std::string &certHash);
 
 	/// Called when a channel is removed. Clears all pchat data for the channel.
 	void onChannelRemoved(unsigned int channelId);
@@ -186,9 +211,23 @@ private:
 	::mumble::server::db::PChatUserKeysTable &m_keysTable;
 	::mumble::server::db::PChatMemberJoinTable &m_joinTable;
 	::mumble::server::db::PChatPendingKeyRequestsTable &m_pendingTable;
+	::mumble::server::db::PChatKeyHoldersTable &m_holdersTable;
 	IServerBridge &m_bridge;
 	IRateLimiter &m_rateLimiter;
 	Config m_config;
+
+	/// In-memory state for the key-possession challenge protocol.
+	/// Maps channel_id to (shared challenge nonce, pending sessions, reference HMAC).
+	struct ChannelChallengeState {
+		/// Shared challenge nonce for the channel (all reporters receive the same nonce
+		/// so their HMAC proofs are comparable).
+		std::vector< uint8_t > sharedChallenge;
+		/// Pending challenge indexed by session ID (value is always sharedChallenge).
+		std::unordered_map< unsigned int, std::vector< uint8_t > > pendingChallenges;
+		/// Reference HMAC set by the first prover (empty if no prover yet).
+		std::vector< uint8_t > referenceHmac;
+	};
+	std::unordered_map< unsigned int, ChannelChallengeState > m_challengeState;
 };
 
 } // namespace pchat

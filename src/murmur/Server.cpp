@@ -262,6 +262,7 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 		m_dbWrapper.getServerDB().getPChatUserKeysTable(),
 		m_dbWrapper.getServerDB().getPChatMemberJoinTable(),
 		m_dbWrapper.getServerDB().getPChatPendingKeyRequestsTable(),
+		m_dbWrapper.getServerDB().getPChatKeyHoldersTable(),
 		*m_pchatBridge, *m_pchatRateLimiter, m_pchatConfig);
 
 	initializeCert();
@@ -1723,6 +1724,11 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 
 		if (u->m_clientType == ClientType::BOT) {
 			m_botCount--;
+		}
+
+		// Notify pchat manager so stale pending key requests are cleaned up.
+		if (m_pchatManager && !u->qsHash.isEmpty()) {
+			m_pchatManager->onUserDisconnected(u->qsHash.toStdString());
 		}
 
 		emit userDisconnected(u);

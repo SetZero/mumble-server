@@ -9,6 +9,7 @@
 #include "database/PChatMessageTable.h"
 #include "database/PChatPendingKeyRequestsTable.h"
 #include "database/PChatUserKeysTable.h"
+#include "database/PChatKeyHoldersTable.h"
 
 #include <QDebug>
 
@@ -33,11 +34,12 @@ PersistentChatManager::PersistentChatManager(msdb::PChatMessageTable &msgTable,
 											 msdb::PChatUserKeysTable &keysTable,
 											 msdb::PChatMemberJoinTable &joinTable,
 											 msdb::PChatPendingKeyRequestsTable &pendingTable,
+											 msdb::PChatKeyHoldersTable &holdersTable,
 											 IServerBridge &bridge,
 											 IRateLimiter &rateLimiter,
 											 Config config)
 	: m_msgTable(msgTable), m_keysTable(keysTable), m_joinTable(joinTable), m_pendingTable(pendingTable),
-	  m_bridge(bridge), m_rateLimiter(rateLimiter), m_config(config) {}
+	  m_holdersTable(holdersTable), m_bridge(bridge), m_rateLimiter(rateLimiter), m_config(config) {}
 
 // ---- Legacy PluginData dispatch (kept for backward compat) ----
 
@@ -47,7 +49,8 @@ bool PersistentChatManager::handlePluginData(unsigned int /*senderSession*/, con
 	// New Fancy clients use native proto messages directly (PchatMessage, PchatFetch, etc.)
 	// which are dispatched by the msg* handlers in Messages.cpp.
 	if (dataId.rfind("fancy-pchat-", 0) == 0) {
-		qWarning("pchat: received legacy PluginData dataId=%s — ignoring (use native proto messages)", dataId.c_str());
+		qWarning("pchat: received legacy PluginData dataId=%s - ignoring (use native messages)",
+				 dataId.c_str());
 		return true; // consume but ignore
 	}
 	return false;
@@ -548,19 +551,35 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 	// If this user has keys announced, check if they need a key request generated
 	auto userKeys = m_keysTable.getKeys(serverNum, certHash);
 	if (userKeys.has_value()) {
-		auto existing = m_pendingTable.getPendingRequests(serverNum, channelId);
-		bool hasPending = std::any_of(existing.begin(), existing.end(), [&](const auto &r) {
-			return r.requesterHash == certHash;
-		});
+		// Skip if the user is already a known key holder for this channel.
+		if (m_holdersTable.isHolder(serverNum, channelId, certHash)) {
+			qDebug("pchat: user %s is already a key holder for channel=%u, skipping key request",
+				   certHash.c_str(), channelId);
+		} else {
+			auto existing = m_pendingTable.getPendingRequests(serverNum, channelId);
+			bool hasPending = std::any_of(existing.begin(), existing.end(), [&](const auto &r) {
+				return r.requesterHash == certHash;
+			});
 
-		if (!hasPending) {
-			const std::string mode = (channelMode == 1) ? "POST_JOIN" : "FULL_ARCHIVE";
-			generateKeyRequest(channelId, certHash, userKeys->identityPublic, mode);
+			if (!hasPending) {
+				const std::string mode = (channelMode == 1) ? "POST_JOIN" : "FULL_ARCHIVE";
+				generateKeyRequest(channelId, certHash, userKeys->identityPublic, mode);
+			}
 		}
 	}
 }
 
-// ---- Channel removal ----
+// ---- Channel removal / user disconnect ----
+
+void PersistentChatManager::onUserDisconnected(const std::string &certHash) {
+	if (!m_config.enabled || certHash.empty())
+		return;
+
+	const auto serverNum = m_bridge.serverNum();
+	m_pendingTable.clearForRequester(serverNum, certHash);
+
+	qDebug("pchat: cleared pending key requests for disconnected user cert_hash=%s", certHash.c_str());
+}
 
 void PersistentChatManager::onChannelRemoved(unsigned int channelId) {
 	const auto serverNum = m_bridge.serverNum();
@@ -570,6 +589,8 @@ void PersistentChatManager::onChannelRemoved(unsigned int channelId) {
 	m_msgTable.clearChannel(serverNum, channelId);
 	m_joinTable.clearChannel(serverNum, channelId);
 	m_pendingTable.clearChannel(serverNum, channelId);
+	m_holdersTable.clearChannel(serverNum, channelId);
+	m_challengeState.erase(channelId);
 }
 
 // ---- Cleanup / UUID ----
@@ -601,4 +622,163 @@ std::string PersistentChatManager::generateUUID() {
 	return std::string(buf);
 }
 
+// ---- Key holder tracking ----
+
+void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSession,
+													   const MumbleProto::PchatKeyHolderReport &msg) {
+	if (!m_config.enabled)
+		return;
+
+	if (!msg.has_channel_id() || !msg.has_cert_hash())
+		return;
+
+	unsigned int channelId = msg.channel_id();
+	const std::string &certHash = msg.cert_hash();
+	unsigned int serverNum = m_bridge.serverNum();
+
+	// Look up the name for this cert hash from online users, or fall back to cert hash.
+	unsigned int holderSession = m_bridge.getSessionForCertHash(certHash);
+	std::string name;
+	if (holderSession != 0) {
+		name = m_bridge.getCertHash(holderSession); // reuse cert hash if no name lookup available
+		// The bridge does not expose a username getter - we store the cert hash as last resort.
+		// However, the query handler resolves online names on the fly.
+	}
+
+	msdb::PChatKeyHolder holder;
+	holder.serverID      = serverNum;
+	holder.channelId     = channelId;
+	holder.certHash      = certHash;
+	holder.lastKnownName = name;
+	holder.reportedAt    = m_bridge.serverTimeMs();
+
+	m_holdersTable.recordHolder(holder);
+
+	// Fulfill the pending key request for this holder since they now have the key.
+	m_pendingTable.fulfillForRequester(serverNum, channelId, certHash);
+
+	// Use a shared challenge nonce per channel so all key holders receive the same
+	// nonce and their HMAC proofs are comparable.  Only generate a new nonce when
+	// the channel has no challenge state yet (first report or after channel removal).
+	auto &state = m_challengeState[channelId];
+	if (state.sharedChallenge.empty()) {
+		state.sharedChallenge.resize(32);
+		std::random_device rd;
+		std::mt19937 gen(rd());
+		std::uniform_int_distribution< int > dist(0, 255);
+		for (auto &b : state.sharedChallenge) {
+			b = static_cast< uint8_t >(dist(gen));
+		}
+	}
+
+	// Store the pending challenge for this session+channel.
+	state.pendingChallenges[senderSession] = state.sharedChallenge;
+
+	MumbleProto::PchatKeyChallenge challengeMsg;
+	challengeMsg.set_channel_id(channelId);
+	challengeMsg.set_challenge(std::string(state.sharedChallenge.begin(), state.sharedChallenge.end()));
+	m_bridge.sendPchatKeyChallenge(senderSession, challengeMsg);
+
+	qDebug("pchat: key holder reported - channel=%u cert_hash=%s by session=%u",
+		   channelId, certHash.c_str(), senderSession);
+}
+
+void PersistentChatManager::handlePchatKeyHoldersQuery(unsigned int senderSession,
+													   const MumbleProto::PchatKeyHoldersQuery &msg) {
+	if (!m_config.enabled)
+		return;
+
+	if (!msg.has_channel_id())
+		return;
+
+	unsigned int channelId = msg.channel_id();
+	unsigned int serverNum = m_bridge.serverNum();
+
+	auto holders = m_holdersTable.getChannelHolders(serverNum, channelId);
+
+	MumbleProto::PchatKeyHoldersList response;
+	response.set_channel_id(channelId);
+
+	for (const auto &h : holders) {
+		auto *entry = response.add_holders();
+		entry->set_cert_hash(h.certHash);
+
+		// Prefer the online username if the user is currently connected.
+		unsigned int session = m_bridge.getSessionForCertHash(h.certHash);
+		if (session != 0) {
+			// The bridge getCertHash returns the hash, not the name.
+			// We store lastKnownName from the DB; the client resolves online names itself.
+			entry->set_name(h.lastKnownName.empty() ? h.certHash : h.lastKnownName);
+		} else {
+			entry->set_name(h.lastKnownName.empty() ? h.certHash : h.lastKnownName);
+		}
+	}
+
+	m_bridge.sendPchatKeyHoldersList(senderSession, response);
+
+	qDebug("pchat: key holders query - channel=%u holders=%d requested by session=%u",
+		   channelId, response.holders_size(), senderSession);
+}
+
+
+void PersistentChatManager::handlePchatKeyChallengeResponse(unsigned int senderSession,
+																			   const MumbleProto::PchatKeyChallengeResponse &msg) {
+	if (!m_config.enabled)
+		return;
+
+	if (!msg.has_channel_id() || !msg.has_proof())
+		return;
+
+	unsigned int channelId = msg.channel_id();
+	const std::string &proof = msg.proof();
+
+	// Look up the pending challenge for this session.
+	auto channelIt = m_challengeState.find(channelId);
+	if (channelIt == m_challengeState.end()) {
+		qWarning("pchat: challenge response for channel %u but no challenge state", channelId);
+		return;
+	}
+
+	auto &state = channelIt->second;
+	auto pendingIt = state.pendingChallenges.find(senderSession);
+	if (pendingIt == state.pendingChallenges.end()) {
+		qWarning("pchat: challenge response from session %u but no pending challenge for channel %u",
+				 senderSession, channelId);
+		return;
+	}
+
+	// Remove the pending challenge (one-shot).
+	state.pendingChallenges.erase(pendingIt);
+
+	std::vector< uint8_t > proofBytes(proof.begin(), proof.end());
+
+	MumbleProto::PchatKeyChallengeResult result;
+	result.set_channel_id(channelId);
+
+	if (state.referenceHmac.empty()) {
+		// First prover sets the reference.
+		state.referenceHmac = proofBytes;
+		result.set_passed(true);
+		qDebug("pchat: challenge for channel %u - first prover (session %u) set reference",
+			   channelId, senderSession);
+	} else if (state.referenceHmac == proofBytes) {
+		// Proof matches.
+		result.set_passed(true);
+		qDebug("pchat: challenge for channel %u - session %u passed", channelId, senderSession);
+	} else {
+		// Proof does not match - the client holds a wrong key.
+		result.set_passed(false);
+
+		// Remove this user as a key holder since their key is invalid.
+		std::string certHash = m_bridge.getCertHash(senderSession);
+		if (!certHash.empty()) {
+			m_holdersTable.removeHolder(m_bridge.serverNum(), channelId, certHash);
+		}
+
+		qWarning("pchat: challenge for channel %u - session %u FAILED (wrong key)",
+				 channelId, senderSession);
+	}
+
+	m_bridge.sendPchatKeyChallengeResult(senderSession, result);
+}
 } // namespace pchat
