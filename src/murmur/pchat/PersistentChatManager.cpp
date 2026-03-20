@@ -140,9 +140,9 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	}
 
 	const std::string &payload = msg.envelope();
-	if (static_cast< int >(payload.size()) > m_config.maxPayloadSize) {
-		qWarning("pchat: REJECTED msgId=%s reason=payload_too_large (size=%d max=%d)",
-			   messageId.c_str(), static_cast< int >(payload.size()), m_config.maxPayloadSize);
+	if (payload.size() > static_cast< size_t >(m_config.maxPayloadSize)) {
+		qWarning("pchat: REJECTED msgId=%s reason=payload_too_large (size=%zu max=%d)",
+			   messageId.c_str(), payload.size(), m_config.maxPayloadSize);
 		sendAck(senderSession, messageId, "rejected", "payload_too_large");
 		return;
 	}
@@ -163,10 +163,10 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 		}
 	}
 
-	long long clientTs = static_cast< long long >(msg.timestamp());
-	long long serverTs = m_bridge.serverTimeMs();
-	if (clientTs <= 0) {
-		clientTs = serverTs;
+	uint64_t clientTs = msg.timestamp();
+	int64_t serverTs = m_bridge.serverTimeMs();
+	if (clientTs == 0) {
+		clientTs = static_cast< uint64_t >(serverTs);
 	}
 
 	const std::string mode = persistenceModeToString(msg.mode());
@@ -175,7 +175,7 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	storedMsg.serverID    = serverNum;
 	storedMsg.messageId   = messageId;
 	storedMsg.channelId   = channelId;
-	storedMsg.timestamp   = clientTs;
+	storedMsg.timestamp   = static_cast< long long >(clientTs);
 	storedMsg.senderHash  = senderHash;
 	storedMsg.mode        = mode;
 	storedMsg.payload     = payload;
@@ -189,8 +189,8 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 		return;
 	}
 
-	qWarning("pchat: stored msg id=%s in channel=%u from hash=%s (payload=%d bytes)",
-		   messageId.c_str(), channelId, senderHash.c_str(), static_cast< int >(payload.size()));
+	qWarning("pchat: stored msg id=%s in channel=%u from hash=%s (payload=%zu bytes)",
+		   messageId.c_str(), channelId, senderHash.c_str(), payload.size());
 	sendAck(senderSession, messageId, "stored");
 
 	// Relay to other Fancy clients in the channel
@@ -262,20 +262,20 @@ void PersistentChatManager::handlePchatFetch(unsigned int senderSession, const M
 	auto result = m_msgTable.fetchMessages(serverNum, channelId, requesterHash, beforeId,
 										   std::min(limit, 100u), joinedAtTs);
 
-	qWarning("pchat: fetchMessages returned %zu messages (hasMore=%d, totalStored=%lld) for channel=%u session=%u",
+	qWarning("pchat: fetchMessages returned %zu messages (hasMore=%d, totalStored=%u) for channel=%u session=%u",
 			 result.messages.size(), result.hasMore ? 1 : 0, result.totalStored, channelId, senderSession);
 
 	// Build response
 	MumbleProto::PchatFetchResponse resp;
 	resp.set_channel_id(channelId);
 	resp.set_has_more(result.hasMore);
-	resp.set_total_stored(static_cast< uint32_t >(result.totalStored));
+	resp.set_total_stored(result.totalStored);
 
 	for (const auto &storedMsg : result.messages) {
 		auto *m = resp.add_messages();
 		m->set_message_id(storedMsg.messageId);
 		m->set_channel_id(storedMsg.channelId);
-		m->set_timestamp(storedMsg.timestamp);
+		m->set_timestamp(static_cast< uint64_t >(storedMsg.timestamp));
 		m->set_sender_hash(storedMsg.senderHash);
 		// Convert stored mode string back to enum
 		if (storedMsg.mode == "POST_JOIN") {
@@ -320,7 +320,7 @@ void PersistentChatManager::handlePchatKeyAnnounce(unsigned int senderSession, c
 
 	// Anti-rollback: check existing timestamp
 	auto existingKeys = m_keysTable.getKeys(serverNum, sessionCertHash);
-	long long incomingTimestamp = static_cast< long long >(msg.timestamp());
+	int64_t incomingTimestamp = static_cast< int64_t >(msg.timestamp());
 	if (existingKeys.has_value() && existingKeys->updatedAt >= incomingTimestamp) {
 		return;
 	}
@@ -345,11 +345,11 @@ void PersistentChatManager::handlePchatKeyAnnounce(unsigned int senderSession, c
 		}
 
 		MumbleProto::PchatKeyAnnounce keyMsg;
-		keyMsg.set_algorithm_version(k.algorithmVersion);
+		keyMsg.set_algorithm_version(static_cast< uint32_t >(k.algorithmVersion));
 		keyMsg.set_identity_public(k.identityPublic);
 		keyMsg.set_signing_public(k.signingPublic);
 		keyMsg.set_cert_hash(k.certHash);
-		keyMsg.set_timestamp(k.updatedAt);
+		keyMsg.set_timestamp(static_cast< uint64_t >(k.updatedAt));
 		keyMsg.set_signature(k.signature);
 
 		m_bridge.sendPchatKeyAnnounce(senderSession, keyMsg);
@@ -461,17 +461,17 @@ void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std
 	}
 
 	// Determine relay_cap
-	int relayCap;
+	unsigned int relayCap;
 	if (mode == "POST_JOIN") {
 		relayCap = 3;
 	} else {
 		unsigned int onlineMembers = m_bridge.countFancyClientsInChannel(channelId);
-		int base = static_cast< int >(onlineMembers) / 2;
-		relayCap = std::clamp(base, 1, 5) + 2;
+		unsigned int base = onlineMembers / 2;
+		relayCap = std::clamp(base, 1u, 5u) + 2;
 	}
 
 	std::string requestId = generateUUID();
-	long long now = m_bridge.serverTimeMs();
+	int64_t now = m_bridge.serverTimeMs();
 
 	msdb::PChatPendingKeyRequest req;
 	req.serverID        = serverNum;
@@ -480,7 +480,7 @@ void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std
 	req.mode            = mode;
 	req.requesterHash   = requesterHash;
 	req.requesterPublic = requesterPublic;
-	req.relayCap        = relayCap;
+	req.relayCap        = static_cast< int >(relayCap);
 	req.relaysSent      = 0;
 	req.createdAt       = now;
 
@@ -493,7 +493,7 @@ void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std
 	keyReq.set_requester_hash(requesterHash);
 	keyReq.set_requester_public(requesterPublic);
 	keyReq.set_request_id(requestId);
-	keyReq.set_timestamp(now);
+	keyReq.set_timestamp(static_cast< uint64_t >(now));
 	keyReq.set_relay_cap(relayCap);
 
 	unsigned int requesterSession = m_bridge.getSessionForCertHash(requesterHash);
@@ -542,8 +542,8 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 		keyReq.set_requester_hash(req.requesterHash);
 		keyReq.set_requester_public(req.requesterPublic);
 		keyReq.set_request_id(req.requestId);
-		keyReq.set_timestamp(req.createdAt);
-		keyReq.set_relay_cap(req.relayCap);
+		keyReq.set_timestamp(static_cast< uint64_t >(req.createdAt));
+		keyReq.set_relay_cap(static_cast< uint32_t >(req.relayCap));
 
 		m_bridge.sendPchatKeyRequest(sessionId, keyReq);
 	}
