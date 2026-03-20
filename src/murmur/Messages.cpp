@@ -483,6 +483,9 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 	if (!uSource->qsHash.isEmpty())
 		mpus.set_hash(u8(uSource->qsHash));
 
+	if (uSource->m_FancyVersion.has_value())
+		mpus.add_client_features(MumbleProto::UserState::FEATURE_PCHAT_E2EE);
+
 	mpus.set_channel_id(uSource->cChannel->iId);
 
 	sendAll(mpus, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
@@ -542,6 +545,8 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		if (!u->qsHash.isEmpty())
 			mpus.set_hash(u8(u->qsHash));
 
+		if (u->m_FancyVersion.has_value())
+			mpus.add_client_features(MumbleProto::UserState::FEATURE_PCHAT_E2EE);
 
 		for (unsigned int channelID : m_channelListenerManager.getListenedChannelsForUser(u->uiSession)) {
 			mpus.add_listening_channel_add(channelID);
