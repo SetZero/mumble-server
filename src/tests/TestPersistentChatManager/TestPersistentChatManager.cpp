@@ -1,0 +1,901 @@
+// Copyright The Mumble Developers. All rights reserved.
+// Use of this source code is governed by a BSD-style license
+// that can be found in the LICENSE file at the root of the
+// Mumble source tree or at <https://www.mumble.info/LICENSE>.
+
+#include <QtCore>
+#include <QtTest>
+
+#include "pchat/PersistentChatManager.h"
+
+#include "database/ServerDatabase.h"
+#include "database/ServerTable.h"
+#include "database/PChatMessageTable.h"
+#include "database/PChatUserKeysTable.h"
+#include "database/PChatMemberJoinTable.h"
+#include "database/PChatPendingKeyRequestsTable.h"
+#include "database/PChatKeyHoldersTable.h"
+#include "database/SQLiteConnectionParameter.h"
+
+#include "Mumble.pb.h"
+
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace msdb = ::mumble::server::db;
+
+// ---- Mock IServerBridge ----
+
+class MockBridge : public pchat::IServerBridge {
+public:
+	// Tracking structures for sent messages
+	std::vector< std::pair< unsigned int, MumbleProto::PchatAck > > sentAcks;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatFetchResponse > > sentFetchResponses;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyAnnounce > > sentKeyAnnounces;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyExchange > > sentKeyExchanges;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyRequest > > sentKeyRequests;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatMessageDeliver > > sentDelivers;
+	std::vector< MumbleProto::PchatKeyAnnounce > broadcastedKeyAnnounces;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyRequest > > broadcastedKeyRequests;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatEpochCountersig > > broadcastedCountersigs;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyChallenge > > sentChallenges;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyChallengeResult > > sentChallengeResults;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyHoldersList > > sentHoldersLists;
+
+	// Configurable return values
+	std::unordered_map< unsigned int, std::string > certHashes;
+	std::unordered_map< unsigned int, bool > fancyClients;
+	std::unordered_map< unsigned int, bool > registeredUsers;
+	std::unordered_map< unsigned int, bool > writePerms;
+	std::unordered_map< unsigned int, bool > enterPerms;
+	std::unordered_map< unsigned int, uint32_t > channelModes;
+	std::unordered_map< unsigned int, std::vector< std::string > > channelCustodians;
+	std::unordered_map< unsigned int, unsigned int > fancyCountPerChannel;
+	std::unordered_map< std::string, unsigned int > hashToSession;
+	int64_t currentTimeMs = 1000000;
+	unsigned int serverNumber = 1;
+
+	void sendPchatAck(unsigned int sessionId, const MumbleProto::PchatAck &msg) override {
+		sentAcks.push_back({ sessionId, msg });
+	}
+	void sendPchatFetchResponse(unsigned int sessionId, const MumbleProto::PchatFetchResponse &msg) override {
+		sentFetchResponses.push_back({ sessionId, msg });
+	}
+	void sendPchatKeyAnnounce(unsigned int sessionId, const MumbleProto::PchatKeyAnnounce &msg) override {
+		sentKeyAnnounces.push_back({ sessionId, msg });
+	}
+	void sendPchatKeyExchange(unsigned int sessionId, const MumbleProto::PchatKeyExchange &msg) override {
+		sentKeyExchanges.push_back({ sessionId, msg });
+	}
+	void sendPchatKeyRequest(unsigned int sessionId, const MumbleProto::PchatKeyRequest &msg) override {
+		sentKeyRequests.push_back({ sessionId, msg });
+	}
+	void sendPchatMessageDeliver(unsigned int sessionId, const MumbleProto::PchatMessageDeliver &msg) override {
+		sentDelivers.push_back({ sessionId, msg });
+	}
+	void broadcastPchatMessageDeliver(unsigned int channelId, const MumbleProto::PchatMessageDeliver &msg,
+									  unsigned int /*excludeSession*/) override {
+		sentDelivers.push_back({ channelId, msg });
+	}
+	void broadcastPchatKeyAnnounce(const MumbleProto::PchatKeyAnnounce &msg,
+								   unsigned int /*excludeSession*/) override {
+		broadcastedKeyAnnounces.push_back(msg);
+	}
+	void broadcastPchatKeyRequest(unsigned int channelId, const MumbleProto::PchatKeyRequest &msg,
+								  unsigned int /*excludeSession*/) override {
+		broadcastedKeyRequests.push_back({ channelId, msg });
+	}
+	void broadcastPchatEpochCountersig(unsigned int channelId, const MumbleProto::PchatEpochCountersig &msg,
+									   unsigned int /*excludeSession*/) override {
+		broadcastedCountersigs.push_back({ channelId, msg });
+	}
+	std::string getCertHash(unsigned int sessionId) const override {
+		auto it = certHashes.find(sessionId);
+		return (it != certHashes.end()) ? it->second : "";
+	}
+	void sendPchatKeyHoldersList(unsigned int sessionId, const MumbleProto::PchatKeyHoldersList &msg) override {
+		sentHoldersLists.push_back({ sessionId, msg });
+	}
+	void sendPchatKeyChallenge(unsigned int sessionId, const MumbleProto::PchatKeyChallenge &msg) override {
+		sentChallenges.push_back({ sessionId, msg });
+	}
+	void sendPchatKeyChallengeResult(unsigned int sessionId, const MumbleProto::PchatKeyChallengeResult &msg) override {
+		sentChallengeResults.push_back({ sessionId, msg });
+	}
+	bool isFancyClient(unsigned int sessionId) const override {
+		auto it = fancyClients.find(sessionId);
+		return (it != fancyClients.end()) ? it->second : false;
+	}
+	bool hasWritePermission(unsigned int sessionId, unsigned int /*channelId*/) const override {
+		auto it = writePerms.find(sessionId);
+		return (it != writePerms.end()) ? it->second : true;
+	}
+	bool hasEnterPermission(unsigned int sessionId, unsigned int /*channelId*/) const override {
+		auto it = enterPerms.find(sessionId);
+		return (it != enterPerms.end()) ? it->second : true;
+	}
+	uint32_t getChannelPChatMode(unsigned int channelId) const override {
+		auto it = channelModes.find(channelId);
+		return (it != channelModes.end()) ? it->second : 0;
+	}
+	std::vector< std::string > getChannelKeyCustodians(unsigned int channelId) const override {
+		auto it = channelCustodians.find(channelId);
+		return (it != channelCustodians.end()) ? it->second : std::vector< std::string >{};
+	}
+	unsigned int countFancyClientsInChannel(unsigned int channelId) const override {
+		auto it = fancyCountPerChannel.find(channelId);
+		return (it != fancyCountPerChannel.end()) ? it->second : 0;
+	}
+	int64_t serverTimeMs() const override { return currentTimeMs; }
+	unsigned int serverNum() const override { return serverNumber; }
+	bool isUserRegistered(unsigned int sessionId) const override {
+		auto it = registeredUsers.find(sessionId);
+		return (it != registeredUsers.end()) ? it->second : true;
+	}
+	unsigned int getSessionForCertHash(const std::string &certHash) const override {
+		auto it = hashToSession.find(certHash);
+		return (it != hashToSession.end()) ? it->second : 0;
+	}
+
+	void reset() {
+		sentAcks.clear();
+		sentFetchResponses.clear();
+		sentKeyAnnounces.clear();
+		sentKeyExchanges.clear();
+		sentKeyRequests.clear();
+		sentDelivers.clear();
+		broadcastedKeyAnnounces.clear();
+		broadcastedKeyRequests.clear();
+		broadcastedCountersigs.clear();
+		sentChallenges.clear();
+		sentChallengeResults.clear();
+		sentHoldersLists.clear();
+	}
+};
+
+// ---- Mock IRateLimiter ----
+
+class MockRateLimiter : public pchat::IRateLimiter {
+public:
+	bool allowAll = true;
+
+	bool allow(const std::string & /*key*/, const std::string & /*operation*/) override { return allowAll; }
+	void reset(const std::string & /*key*/) override {}
+};
+
+// ---- Test helper: ServerDatabase subclass for in-memory SQLite ----
+
+class TestDB : public msdb::ServerDatabase {
+public:
+	using msdb::ServerDatabase::ServerDatabase;
+
+	void setup() {
+		::mumble::db::SQLiteConnectionParameter param(":memory:");
+		init(param);
+	}
+
+	~TestDB() override {
+		try {
+			destroyTables();
+		} catch (...) {
+		}
+	}
+};
+
+// ---- Test class ----
+
+class TestPersistentChatManager : public QObject {
+	Q_OBJECT
+
+private:
+	std::unique_ptr< TestDB > m_db;
+	std::unique_ptr< MockBridge > m_bridge;
+	std::unique_ptr< MockRateLimiter > m_limiter;
+	std::unique_ptr< pchat::PersistentChatManager > m_mgr;
+
+	void setupManager(pchat::PersistentChatManager::Config config = {}) {
+		m_db = std::make_unique< TestDB >(::mumble::db::Backend::SQLite);
+		m_db->setup();
+
+		// Register a server so FK constraints are satisfied
+		m_db->getServerTable().addServer(1);
+
+		m_bridge = std::make_unique< MockBridge >();
+		m_limiter = std::make_unique< MockRateLimiter >();
+
+		m_mgr = std::make_unique< pchat::PersistentChatManager >(
+			m_db->getPChatMessageTable(), m_db->getPChatUserKeysTable(), m_db->getPChatMemberJoinTable(),
+			m_db->getPChatPendingKeyRequestsTable(), m_db->getPChatKeyHoldersTable(), *m_bridge, *m_limiter, config);
+	}
+
+	/// Helper: set up bridge so session 10 maps to cert hash "abc123" in channel 42 (FULL_ARCHIVE).
+	void setupDefaultSession() {
+		m_bridge->certHashes[10]     = "abc123";
+		m_bridge->channelModes[42]   = 2; // FULL_ARCHIVE
+		m_bridge->hashToSession["abc123"] = 10;
+		m_bridge->fancyClients[10]   = true;
+		m_bridge->registeredUsers[10] = true;
+		m_bridge->fancyCountPerChannel[42] = 3;
+	}
+
+	/// Helper: build a valid PchatMessage proto for the default session.
+	MumbleProto::PchatMessage makeValidMessage(const std::string &msgId = "msg-001") {
+		MumbleProto::PchatMessage msg;
+		msg.set_message_id(msgId);
+		msg.set_channel_id(42);
+		msg.set_sender_hash("abc123");
+		msg.set_mode(MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
+		msg.set_envelope("encrypted-payload");
+		msg.set_timestamp(static_cast< uint64_t >(m_bridge->currentTimeMs));
+		return msg;
+	}
+
+	/// Helper: make session 10 pass the key-possession challenge for channel 42.
+	void passChallenge(unsigned int session, unsigned int channelId) {
+		// Report a key holder to trigger challenge state creation.
+		MumbleProto::PchatKeyHolderReport report;
+		report.set_channel_id(channelId);
+		report.set_cert_hash(m_bridge->certHashes.at(session));
+		m_mgr->handlePchatKeyHolderReport(session, report);
+
+		// The manager sent a PchatKeyChallenge; extract the nonce.
+		QVERIFY(!m_bridge->sentChallenges.empty());
+		const auto &challenge = m_bridge->sentChallenges.back().second;
+		std::string nonce = challenge.challenge();
+
+		// Send back a response with a deterministic "proof".
+		MumbleProto::PchatKeyChallengeResponse resp;
+		resp.set_channel_id(channelId);
+		resp.set_proof(nonce); // first prover sets the reference
+		m_mgr->handlePchatKeyChallengeResponse(session, resp);
+
+		QVERIFY(!m_bridge->sentChallengeResults.empty());
+		QVERIFY(m_bridge->sentChallengeResults.back().second.passed());
+
+		m_bridge->reset();
+	}
+
+	/// Helper: store user keys with correctly-sized binary fields (identity=32, signing=32, sig=64)
+	/// so that the DB validation (getKeys / cleanupCorruptedKeys) doesn't reject them.
+	void storeValidUserKeys(const std::string &certHash) {
+		msdb::PChatUserKeys keys;
+		keys.serverID         = 1;
+		keys.certHash         = certHash;
+		keys.algorithmVersion = 1;
+		keys.identityPublic   = std::string(32, '\x01'); // 32 bytes
+		keys.signingPublic    = std::string(32, '\x02'); // 32 bytes
+		keys.signature        = std::string(64, '\x03'); // 64 bytes
+		keys.updatedAt        = 500000;
+		m_db->getPChatUserKeysTable().storeKeys(keys);
+	}
+
+private slots:
+	// ---- handlePchatMessage tests ----
+
+	void handlePchatMessage_rejectsWhenDisabled();
+	void handlePchatMessage_rejectsUnregisteredWhenRequired();
+	void handlePchatMessage_rejectsSenderHashMismatch();
+	void handlePchatMessage_rejectsMissingFields();
+	void handlePchatMessage_rejectsNonPersistentChannel();
+	void handlePchatMessage_rejectsModeMismatch();
+	void handlePchatMessage_rejectsMissingEnvelope();
+	void handlePchatMessage_rejectsPayloadTooLarge();
+	void handlePchatMessage_rejectsChallengeNotPassed();
+	void handlePchatMessage_storesAndBroadcasts();
+	void handlePchatMessage_timestampFallback();
+	void handlePchatMessage_skipsUnverifiedRecipients();
+
+	// ---- handlePchatFetch tests ----
+
+	void handlePchatFetch_rejectsUnverifiedSession();
+	void handlePchatFetch_allowsVerifiedSession();
+
+	// ---- Challenge verification (contains() refactor) tests ----
+
+	void challenge_firstProverSetsReference();
+	void challenge_matchingProofPasses();
+	void challenge_mismatchedProofFails();
+	void challenge_disconnectClearsVerifiedSession();
+	void challenge_noChallengeStateRejectsMessage();
+	void challenge_autoFetchesStoredMessages();
+
+	// ---- generateKeyRequest / relay cap tests ----
+
+	void generateKeyRequest_postJoinMode_relayCap3();
+	void generateKeyRequest_fullArchive_clampLow();
+	void generateKeyRequest_fullArchive_clampHigh();
+	void generateKeyRequest_perUserLimitEnforced();
+
+	// ---- Rate limiter integration ----
+
+	void handlePchatMessage_rateLimited();
+
+	// ---- Channel removal cleanup ----
+
+	void onChannelRemoved_clearsChallengeState();
+
+	// ---- isSessionVerified ----
+
+	void isSessionVerified_returnsFalseNoState();
+	void isSessionVerified_returnsFalseNotVerified();
+	void isSessionVerified_returnsTrueAfterChallenge();
+
+	// ---- onPersistentChannelCreated ----
+
+	void onPersistentChannelCreated_autoVerifiesCreator();
+};
+
+// ---- handlePchatMessage tests ----
+
+void TestPersistentChatManager::handlePchatMessage_rejectsWhenDisabled() {
+	pchat::PersistentChatManager::Config cfg;
+	cfg.enabled = false;
+	setupManager(cfg);
+	setupDefaultSession();
+
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QVERIFY(m_bridge->sentAcks.empty()); // silently ignored
+}
+
+void TestPersistentChatManager::handlePchatMessage_rejectsUnregisteredWhenRequired() {
+	pchat::PersistentChatManager::Config cfg;
+	cfg.requireRegistration = true;
+	setupManager(cfg);
+	setupDefaultSession();
+	m_bridge->registeredUsers[10] = false;
+
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QVERIFY(m_bridge->sentAcks.empty()); // silently ignored
+}
+
+void TestPersistentChatManager::handlePchatMessage_rejectsSenderHashMismatch() {
+	setupManager();
+	setupDefaultSession();
+
+	auto msg = makeValidMessage();
+	msg.set_sender_hash("wrong_hash");
+
+	m_mgr->handlePchatMessage(10, msg);
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_REJECTED);
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("sender_hash_mismatch"));
+}
+
+void TestPersistentChatManager::handlePchatMessage_rejectsMissingFields() {
+	setupManager();
+	setupDefaultSession();
+
+	MumbleProto::PchatMessage msg;
+	msg.set_sender_hash("abc123");
+	// missing message_id, channel_id, mode
+
+	m_mgr->handlePchatMessage(10, msg);
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("missing_fields"));
+}
+
+void TestPersistentChatManager::handlePchatMessage_rejectsNonPersistentChannel() {
+	setupManager();
+	setupDefaultSession();
+	m_bridge->channelModes[42] = 0; // not persistent
+
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("channel_not_persistent"));
+}
+
+void TestPersistentChatManager::handlePchatMessage_rejectsModeMismatch() {
+	setupManager();
+	setupDefaultSession();
+	m_bridge->channelModes[42] = 1; // POST_JOIN but msg says FULL_ARCHIVE
+
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("mode_mismatch"));
+}
+
+void TestPersistentChatManager::handlePchatMessage_rejectsMissingEnvelope() {
+	setupManager();
+	setupDefaultSession();
+
+	MumbleProto::PchatMessage msg;
+	msg.set_message_id("msg-001");
+	msg.set_channel_id(42);
+	msg.set_sender_hash("abc123");
+	msg.set_mode(MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
+	// no envelope set
+
+	m_mgr->handlePchatMessage(10, msg);
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("missing_envelope"));
+}
+
+void TestPersistentChatManager::handlePchatMessage_rejectsPayloadTooLarge() {
+	pchat::PersistentChatManager::Config cfg;
+	cfg.maxPayloadSize = 10; // very small
+	setupManager(cfg);
+	setupDefaultSession();
+	passChallenge(10, 42);
+
+	auto msg = makeValidMessage();
+	msg.set_envelope(std::string(11, 'X')); // 11 bytes > 10 limit
+
+	m_mgr->handlePchatMessage(10, msg);
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("payload_too_large"));
+}
+
+void TestPersistentChatManager::handlePchatMessage_rejectsChallengeNotPassed() {
+	setupManager();
+	setupDefaultSession();
+	// Do NOT call passChallenge - session has not proven key possession
+
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("key_challenge_not_passed"));
+}
+
+void TestPersistentChatManager::handlePchatMessage_storesAndBroadcasts() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+
+	// Add a second verified session so it receives the delivery
+	m_bridge->certHashes[20] = "def456";
+	m_bridge->fancyClients[20] = true;
+	m_bridge->registeredUsers[20] = true;
+	passChallenge(20, 42);
+
+	auto msg = makeValidMessage();
+	m_mgr->handlePchatMessage(10, msg);
+
+	// Should get a "stored" ack
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
+	QCOMPARE(m_bridge->sentAcks[0].first, 10u);
+
+	// Should deliver to the other verified session (not the sender)
+	QCOMPARE(m_bridge->sentDelivers.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentDelivers[0].first, 20u);
+	QCOMPARE(m_bridge->sentDelivers[0].second.message_id(), std::string("msg-001"));
+	QCOMPARE(m_bridge->sentDelivers[0].second.sender_hash(), std::string("abc123"));
+	QCOMPARE(m_bridge->sentDelivers[0].second.envelope(), std::string("encrypted-payload"));
+}
+
+void TestPersistentChatManager::handlePchatMessage_timestampFallback() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+
+	// Add a second verified session so it receives the delivery
+	m_bridge->certHashes[20] = "def456";
+	m_bridge->fancyClients[20] = true;
+	m_bridge->registeredUsers[20] = true;
+	passChallenge(20, 42);
+
+	auto msg = makeValidMessage();
+	msg.set_timestamp(0); // client timestamp is 0 => should use server time
+	m_mgr->handlePchatMessage(10, msg);
+
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
+
+	// The deliver should have the server time as timestamp
+	QCOMPARE(m_bridge->sentDelivers.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentDelivers[0].second.timestamp(),
+			 static_cast< uint64_t >(m_bridge->currentTimeMs));
+}
+
+void TestPersistentChatManager::handlePchatMessage_skipsUnverifiedRecipients() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+
+	// Session 20 is fancy but has NOT passed the challenge
+	m_bridge->certHashes[20] = "def456";
+	m_bridge->fancyClients[20] = true;
+	m_bridge->registeredUsers[20] = true;
+
+	auto msg = makeValidMessage();
+	m_mgr->handlePchatMessage(10, msg);
+
+	// Message is stored
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
+
+	// No deliveries — the sender is excluded and session 20 is not verified
+	QCOMPARE(m_bridge->sentDelivers.size(), static_cast< size_t >(0));
+}
+
+// ---- handlePchatFetch tests ----
+
+void TestPersistentChatManager::handlePchatFetch_rejectsUnverifiedSession() {
+	setupManager();
+	setupDefaultSession();
+	storeValidUserKeys("abc123");
+
+	// Verify session 10 and send a message so there's data to fetch
+	passChallenge(10, 42);
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
+	m_bridge->reset();
+
+	// Session 20 is fancy but NOT verified
+	m_bridge->certHashes[20] = "def456";
+	m_bridge->fancyClients[20] = true;
+	m_bridge->registeredUsers[20] = true;
+
+	MumbleProto::PchatFetch fetch;
+	fetch.set_channel_id(42);
+	fetch.set_limit(50);
+	m_mgr->handlePchatFetch(20, fetch);
+
+	// No fetch response should be sent
+	QCOMPARE(m_bridge->sentFetchResponses.size(), static_cast< size_t >(0));
+}
+
+void TestPersistentChatManager::handlePchatFetch_allowsVerifiedSession() {
+	setupManager();
+	setupDefaultSession();
+	storeValidUserKeys("abc123");
+
+	// Verify session 10 and send a message
+	passChallenge(10, 42);
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
+	m_bridge->reset();
+
+	// Session 20 IS verified
+	m_bridge->certHashes[20] = "def456";
+	m_bridge->fancyClients[20] = true;
+	m_bridge->registeredUsers[20] = true;
+	passChallenge(20, 42);
+
+	MumbleProto::PchatFetch fetch;
+	fetch.set_channel_id(42);
+	fetch.set_limit(50);
+	m_mgr->handlePchatFetch(20, fetch);
+
+	// Should receive a fetch response with the stored message
+	QCOMPARE(m_bridge->sentFetchResponses.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentFetchResponses[0].first, 20u);
+	QVERIFY(m_bridge->sentFetchResponses[0].second.messages_size() >= 1);
+	QCOMPARE(m_bridge->sentFetchResponses[0].second.messages(0).message_id(), std::string("msg-001"));
+}
+
+// ---- Challenge verification (contains() refactor) tests ----
+
+void TestPersistentChatManager::challenge_firstProverSetsReference() {
+	setupManager();
+	setupDefaultSession();
+
+	MumbleProto::PchatKeyHolderReport report;
+	report.set_channel_id(42);
+	report.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(10, report);
+
+	QCOMPARE(m_bridge->sentChallenges.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentChallenges[0].first, 10u);
+
+	std::string nonce = m_bridge->sentChallenges[0].second.challenge();
+	QVERIFY(!nonce.empty());
+
+	MumbleProto::PchatKeyChallengeResponse resp;
+	resp.set_channel_id(42);
+	resp.set_proof("proof-data");
+	m_mgr->handlePchatKeyChallengeResponse(10, resp);
+
+	// First prover always passes
+	QCOMPARE(m_bridge->sentChallengeResults.size(), static_cast< size_t >(1));
+	QVERIFY(m_bridge->sentChallengeResults[0].second.passed());
+}
+
+void TestPersistentChatManager::challenge_matchingProofPasses() {
+	setupManager();
+	setupDefaultSession();
+
+	// Add a second session
+	m_bridge->certHashes[20] = "def456";
+	m_bridge->hashToSession["def456"] = 20;
+
+	// Session 10 reports and becomes first prover
+	MumbleProto::PchatKeyHolderReport report1;
+	report1.set_channel_id(42);
+	report1.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(10, report1);
+
+	MumbleProto::PchatKeyChallengeResponse resp1;
+	resp1.set_channel_id(42);
+	resp1.set_proof("shared-proof");
+	m_mgr->handlePchatKeyChallengeResponse(10, resp1);
+	QVERIFY(m_bridge->sentChallengeResults.back().second.passed());
+
+	// Session 20 reports and submits matching proof
+	MumbleProto::PchatKeyHolderReport report2;
+	report2.set_channel_id(42);
+	report2.set_cert_hash("def456");
+	m_mgr->handlePchatKeyHolderReport(20, report2);
+
+	MumbleProto::PchatKeyChallengeResponse resp2;
+	resp2.set_channel_id(42);
+	resp2.set_proof("shared-proof"); // same proof as first prover
+	m_mgr->handlePchatKeyChallengeResponse(20, resp2);
+
+	QVERIFY(m_bridge->sentChallengeResults.back().second.passed());
+}
+
+void TestPersistentChatManager::challenge_mismatchedProofFails() {
+	setupManager();
+	setupDefaultSession();
+
+	m_bridge->certHashes[20] = "def456";
+	m_bridge->hashToSession["def456"] = 20;
+
+	// Session 10 is first prover
+	MumbleProto::PchatKeyHolderReport report1;
+	report1.set_channel_id(42);
+	report1.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(10, report1);
+
+	MumbleProto::PchatKeyChallengeResponse resp1;
+	resp1.set_channel_id(42);
+	resp1.set_proof("correct-proof");
+	m_mgr->handlePchatKeyChallengeResponse(10, resp1);
+
+	// Session 20 submits WRONG proof
+	MumbleProto::PchatKeyHolderReport report2;
+	report2.set_channel_id(42);
+	report2.set_cert_hash("def456");
+	m_mgr->handlePchatKeyHolderReport(20, report2);
+
+	MumbleProto::PchatKeyChallengeResponse resp2;
+	resp2.set_channel_id(42);
+	resp2.set_proof("wrong-proof");
+	m_mgr->handlePchatKeyChallengeResponse(20, resp2);
+
+	QVERIFY(!m_bridge->sentChallengeResults.back().second.passed());
+}
+
+void TestPersistentChatManager::challenge_disconnectClearsVerifiedSession() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+
+	// Session 10 is now verified - confirm by storing a message
+	m_mgr->handlePchatMessage(10, makeValidMessage("before-disconnect"));
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
+	m_bridge->reset();
+
+	// Disconnect session 10
+	m_mgr->onUserDisconnected(10, "abc123");
+
+	// Now session 10 tries to send another message - should be rejected
+	m_mgr->handlePchatMessage(10, makeValidMessage("after-disconnect"));
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("key_challenge_not_passed"));
+}
+
+void TestPersistentChatManager::challenge_noChallengeStateRejectsMessage() {
+	setupManager();
+	setupDefaultSession();
+	// No challenge state at all for channel 42
+
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("key_challenge_not_passed"));
+}
+
+// ---- generateKeyRequest / relay cap tests ----
+
+void TestPersistentChatManager::generateKeyRequest_postJoinMode_relayCap3() {
+	setupManager();
+	setupDefaultSession();
+	m_bridge->channelModes[42] = 1; // POST_JOIN
+
+	storeValidUserKeys("abc123");
+
+	m_mgr->onFancyClientJoinedChannel(10, 42);
+
+	// Should broadcast a key request
+	QCOMPARE(m_bridge->broadcastedKeyRequests.size(), static_cast< size_t >(1));
+	// POST_JOIN mode => relay_cap = 3
+	QCOMPARE(m_bridge->broadcastedKeyRequests[0].second.relay_cap(), 3u);
+}
+
+void TestPersistentChatManager::generateKeyRequest_fullArchive_clampLow() {
+	setupManager();
+	setupDefaultSession();
+	m_bridge->channelModes[42] = 2; // FULL_ARCHIVE
+	m_bridge->fancyCountPerChannel[42] = 1; // 1 online => base=0 => clamp(0,1,5)=1 => +2 = 3
+
+	storeValidUserKeys("abc123");
+
+	m_mgr->onFancyClientJoinedChannel(10, 42);
+
+	QCOMPARE(m_bridge->broadcastedKeyRequests.size(), static_cast< size_t >(1));
+	// base = 1/2 = 0, clamp(0, 1, 5) = 1, +2 = 3
+	QCOMPARE(m_bridge->broadcastedKeyRequests[0].second.relay_cap(), 3u);
+}
+
+void TestPersistentChatManager::generateKeyRequest_fullArchive_clampHigh() {
+	setupManager();
+	setupDefaultSession();
+	m_bridge->channelModes[42] = 2; // FULL_ARCHIVE
+	m_bridge->fancyCountPerChannel[42] = 20; // 20 online => base=10 => clamp(10,1,5)=5 => +2 = 7
+
+	storeValidUserKeys("abc123");
+
+	m_mgr->onFancyClientJoinedChannel(10, 42);
+
+	QCOMPARE(m_bridge->broadcastedKeyRequests.size(), static_cast< size_t >(1));
+	// base = 20/2 = 10, clamp(10, 1, 5) = 5, +2 = 7
+	QCOMPARE(m_bridge->broadcastedKeyRequests[0].second.relay_cap(), 7u);
+}
+
+void TestPersistentChatManager::generateKeyRequest_perUserLimitEnforced() {
+	pchat::PersistentChatManager::Config cfg;
+	cfg.perUserPendingLimit = 1;
+	setupManager(cfg);
+	setupDefaultSession();
+	m_bridge->channelModes[42] = 2;
+	m_bridge->channelModes[43] = 2;
+
+	storeValidUserKeys("abc123");
+
+	// First channel join creates a key request (count=0 < limit=1)
+	m_mgr->onFancyClientJoinedChannel(10, 42);
+	QCOMPARE(m_bridge->broadcastedKeyRequests.size(), static_cast< size_t >(1));
+
+	// Second channel join should be rejected (count=1 >= limit=1)
+	m_mgr->onFancyClientJoinedChannel(10, 43);
+	// Should get a "key_request_limit_exceeded" ack
+	bool limitExceeded = false;
+	for (const auto &a : m_bridge->sentAcks) {
+		if (a.second.reason() == "key_request_limit_exceeded") {
+			limitExceeded = true;
+			break;
+		}
+	}
+	QVERIFY(limitExceeded);
+	// Still only 1 broadcast, the second was rejected
+	QCOMPARE(m_bridge->broadcastedKeyRequests.size(), static_cast< size_t >(1));
+}
+
+// ---- Rate limiter integration ----
+
+void TestPersistentChatManager::handlePchatMessage_rateLimited() {
+	setupManager();
+	setupDefaultSession();
+	m_limiter->allowAll = false;
+
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QVERIFY(m_bridge->sentAcks.empty()); // silently dropped
+}
+
+// ---- Channel removal cleanup ----
+
+void TestPersistentChatManager::onChannelRemoved_clearsChallengeState() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+
+	// Verify the session can send before removal
+	m_mgr->handlePchatMessage(10, makeValidMessage("before-removal"));
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
+	m_bridge->reset();
+
+	// Remove the channel
+	m_mgr->onChannelRemoved(42);
+
+	// Now the challenge state is gone - message should be rejected
+	m_mgr->handlePchatMessage(10, makeValidMessage("after-removal"));
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("key_challenge_not_passed"));
+}
+
+// ---- isSessionVerified ----
+
+void TestPersistentChatManager::isSessionVerified_returnsFalseNoState() {
+	setupManager();
+	// No challenge state exists for any channel
+	QVERIFY(!m_mgr->isSessionVerified(42, 10));
+}
+
+void TestPersistentChatManager::isSessionVerified_returnsFalseNotVerified() {
+	setupManager();
+	setupDefaultSession();
+	// Challenge state exists (session joined a pchat channel) but hasn't passed challenge
+	// Trigger challenge state creation by sending a message (which will be rejected but creates state)
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	// The session hasn't passed the challenge yet
+	QVERIFY(!m_mgr->isSessionVerified(42, 10));
+}
+
+void TestPersistentChatManager::isSessionVerified_returnsTrueAfterChallenge() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+	QVERIFY(m_mgr->isSessionVerified(42, 10));
+	// Different session should still be false
+	QVERIFY(!m_mgr->isSessionVerified(42, 99));
+	// Different channel should still be false
+	QVERIFY(!m_mgr->isSessionVerified(999, 10));
+}
+
+// ---- onPersistentChannelCreated ----
+
+void TestPersistentChatManager::onPersistentChannelCreated_autoVerifiesCreator() {
+	setupManager();
+	setupDefaultSession();
+
+	// Creator should not be verified yet
+	QVERIFY(!m_mgr->isSessionVerified(42, 10));
+
+	// Simulate channel creation
+	m_mgr->onPersistentChannelCreated(42, 10);
+
+	// Creator is now auto-verified
+	QVERIFY(m_mgr->isSessionVerified(42, 10));
+
+	// Other sessions are not verified
+	QVERIFY(!m_mgr->isSessionVerified(42, 99));
+
+	// Creator can now send messages without passing the challenge
+	storeValidUserKeys("abc123");
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
+}
+
+void TestPersistentChatManager::challenge_autoFetchesStoredMessages() {
+	setupManager();
+	setupDefaultSession();
+	storeValidUserKeys("abc123");
+
+	// Verify session 10 (first prover) and store a message
+	passChallenge(10, 42);
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
+	m_bridge->reset();
+
+	// Set up session 20 (not yet verified)
+	m_bridge->certHashes[20] = "def456";
+	m_bridge->hashToSession["def456"] = 20;
+	m_bridge->fancyClients[20] = true;
+	m_bridge->registeredUsers[20] = true;
+
+	// Session 20 reports as key holder → triggers challenge
+	MumbleProto::PchatKeyHolderReport report;
+	report.set_channel_id(42);
+	report.set_cert_hash("def456");
+	m_mgr->handlePchatKeyHolderReport(20, report);
+
+	QVERIFY(!m_bridge->sentChallenges.empty());
+	std::string nonce = m_bridge->sentChallenges.back().second.challenge();
+
+	// Session 20 submits matching proof → passes verification
+	MumbleProto::PchatKeyChallengeResponse resp;
+	resp.set_channel_id(42);
+	resp.set_proof(nonce); // matches first prover's proof
+	m_mgr->handlePchatKeyChallengeResponse(20, resp);
+
+	// Verification passed
+	QVERIFY(!m_bridge->sentChallengeResults.empty());
+	QVERIFY(m_bridge->sentChallengeResults.back().second.passed());
+
+	// Auto-fetch should have delivered stored messages to session 20
+	QCOMPARE(m_bridge->sentFetchResponses.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentFetchResponses[0].first, 20u);
+	QVERIFY(m_bridge->sentFetchResponses[0].second.messages_size() >= 1);
+	QCOMPARE(m_bridge->sentFetchResponses[0].second.messages(0).message_id(), std::string("msg-001"));
+}
+
+QTEST_MAIN(TestPersistentChatManager)
+#include "TestPersistentChatManager.moc"

@@ -77,6 +77,8 @@ public:
 	/// TLS certificate hashes of persistent chat key custodians.
 	QStringList qslPChatKeyCustodians;
 
+	bool isPersistentChat() const { return uiPChatMode > 0; }
+
 	Channel(unsigned int id, const QString &name, QObject *p = nullptr);
 	~Channel();
 
@@ -112,6 +114,7 @@ public:
 	bool isLinked(Channel *c) const;
 	void link(Channel *c);
 	void unlink(Channel *c = nullptr);
+
 
 	QSet< Channel * > allLinks();
 	QSet< Channel * > allChildren();

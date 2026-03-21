@@ -410,7 +410,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 		mpcs.set_max_users(c->uiMaxUsers);
 
-		if (c->uiPChatMode > 0) {
+		if (c->isPersistentChat()) {
 			mpcs.set_pchat_mode(
 				static_cast< MumbleProto::ChannelState_PchatMode >(c->uiPChatMode));
 			mpcs.set_pchat_max_history(c->uiPChatMaxHistory);
@@ -1452,6 +1452,11 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		log(uSource, QString("Added channel %1 under %2").arg(QString(*c), QString(*p)));
 		emit channelCreated(c);
 
+		if (c->isPersistentChat() && m_pchatManager) {
+			m_pchatManager->onPersistentChannelCreated(
+				static_cast< unsigned int >(c->iId), uSource->uiSession);
+		}
+
 		sendAll(msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
 		if (!c->qbaDescHash.isEmpty()) {
 			msg.clear_description();
@@ -1749,6 +1754,12 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 			return;
 		}
 
+		if (c->isPersistentChat() && m_pchatManager
+			&& !m_pchatManager->isSessionVerified(id, uSource->uiSession)) {
+			PERM_DENIED(uSource, c, ChanACL::TextMessage);
+			return;
+		}
+
 		// Users directly in that channel
 		for (User *p : c->qlUsers) {
 			users.insert(static_cast< ServerUser * >(p));
@@ -1780,6 +1791,12 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 			return;
 		}
 
+		if (c->isPersistentChat() && m_pchatManager
+			&& !m_pchatManager->isSessionVerified(id, uSource->uiSession)) {
+			PERM_DENIED(uSource, c, ChanACL::TextMessage);
+			return;
+		}
+
 		q.enqueue(c);
 
 		tm.qlTrees.append(id);
@@ -1790,7 +1807,10 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	// Sub-channels are enqued so they are also checked by a later loop-iteration
 	while (!q.isEmpty()) {
 		Channel *c = q.dequeue();
-		if (ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
+		if (ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)
+			&& !(c->isPersistentChat() && m_pchatManager
+				 && !m_pchatManager->isSessionVerified(static_cast< unsigned int >(c->iId),
+													   uSource->uiSession))) {
 			for (Channel *sub : c->qlChannels) {
 				q.enqueue(sub);
 			}

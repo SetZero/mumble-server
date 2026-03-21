@@ -54,6 +54,12 @@ void ServerBridge::sendPchatKeyRequest(unsigned int sessionId, const MumbleProto
 	m_server.sendMessage(user, msg);
 }
 
+void ServerBridge::sendPchatMessageDeliver(unsigned int sessionId, const MumbleProto::PchatMessageDeliver &msg) {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	if (!user || user->sState != ServerUser::Authenticated) return;
+	m_server.sendMessage(user, msg);
+}
+
 void ServerBridge::sendPchatKeyHoldersList(unsigned int sessionId, const MumbleProto::PchatKeyHoldersList &msg) {
 	ServerUser *user = m_server.qhUsers.value(sessionId);
 	if (!user || user->sState != ServerUser::Authenticated) return;
