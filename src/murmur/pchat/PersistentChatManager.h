@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mumble {
@@ -54,6 +55,9 @@ struct IServerBridge {
 
 	/// Send a PchatKeyRequest to a specific user session.
 	virtual void sendPchatKeyRequest(unsigned int sessionId, const MumbleProto::PchatKeyRequest &msg) = 0;
+
+	/// Send a PchatMessageDeliver to a specific user session.
+	virtual void sendPchatMessageDeliver(unsigned int sessionId, const MumbleProto::PchatMessageDeliver &msg) = 0;
 
 	/// Broadcast a PchatMessageDeliver to all Fancy Mumble v2+ sessions in a channel,
 	/// optionally excluding one session.
@@ -188,14 +192,22 @@ public:
 	/// Delivers pending key requests for that channel.
 	void onFancyClientJoinedChannel(unsigned int sessionId, unsigned int channelId);
 
-	/// Called when a user disconnects. Clears their unfulfilled pending key requests.
-	void onUserDisconnected(const std::string &certHash);
+	/// Called when a user disconnects. Clears their unfulfilled pending key requests
+	/// and removes them from any channel challenge verified-sessions sets.
+	void onUserDisconnected(unsigned int sessionId, const std::string &certHash);
+
+	/// Called when a persistent channel is first created.
+	/// Auto-verifies the creator so they can send messages immediately.
+	void onPersistentChannelCreated(unsigned int channelId, unsigned int creatorSession);
 
 	/// Called when a channel is removed. Clears all pchat data for the channel.
 	void onChannelRemoved(unsigned int channelId);
 
 	/// Run periodic cleanup (retention, expired key requests).
 	void runCleanup();
+
+	/// Check if a session has passed the key-possession challenge for a channel.
+	bool isSessionVerified(unsigned int channelId, unsigned int sessionId) const;
 
 private:
 	void sendAck(unsigned int sessionId, const std::string &messageId,
@@ -226,6 +238,8 @@ private:
 		std::unordered_map< unsigned int, std::vector< uint8_t > > pendingChallenges;
 		/// Reference HMAC set by the first prover (empty if no prover yet).
 		std::vector< uint8_t > referenceHmac;
+		/// Sessions that have passed the key-possession challenge.
+		std::unordered_set< unsigned int > verifiedSessions;
 	};
 	std::unordered_map< unsigned int, ChannelChallengeState > m_challengeState;
 };

@@ -22,6 +22,7 @@ public:
 	void sendPchatKeyAnnounce(unsigned int sessionId, const MumbleProto::PchatKeyAnnounce &msg) override;
 	void sendPchatKeyExchange(unsigned int sessionId, const MumbleProto::PchatKeyExchange &msg) override;
 	void sendPchatKeyRequest(unsigned int sessionId, const MumbleProto::PchatKeyRequest &msg) override;
+	void sendPchatMessageDeliver(unsigned int sessionId, const MumbleProto::PchatMessageDeliver &msg) override;
 	void sendPchatKeyHoldersList(unsigned int sessionId, const MumbleProto::PchatKeyHoldersList &msg) override;
 void sendPchatKeyChallenge(unsigned int sessionId, const MumbleProto::PchatKeyChallenge &msg) override;
 void sendPchatKeyChallengeResult(unsigned int sessionId, const MumbleProto::PchatKeyChallengeResult &msg) override;

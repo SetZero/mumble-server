@@ -147,6 +147,15 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 		return;
 	}
 
+	// Verify sender has passed the key-possession challenge for this channel
+	if (!m_challengeState.contains(channelId)
+		|| !m_challengeState.at(channelId).verifiedSessions.contains(senderSession)) {
+		qWarning("pchat: REJECTED msgId=%s reason=key_challenge_not_passed session=%u channel=%u",
+			   messageId.c_str(), senderSession, channelId);
+		sendAck(senderSession, messageId, "rejected", "key_challenge_not_passed");
+		return;
+	}
+
 	// Check for duplicate
 	if (m_msgTable.messageExists(serverNum, channelId, senderHash, messageId)) {
 		qWarning("pchat: REJECTED msgId=%s reason=duplicate", messageId.c_str());
@@ -205,7 +214,15 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 		deliver.set_replaces_id(replacesId);
 	}
 
-	m_bridge.broadcastPchatMessageDeliver(channelId, deliver, senderSession);
+	// Relay to verified Fancy clients in the channel (skip unverified sessions
+	// that cannot decrypt the message).
+	if (m_challengeState.contains(channelId)) {
+		for (unsigned int session : m_challengeState.at(channelId).verifiedSessions) {
+			if (session == senderSession)
+				continue;
+			m_bridge.sendPchatMessageDeliver(session, deliver);
+		}
+	}
 }
 
 // ---- handlePchatFetch ----
@@ -231,6 +248,13 @@ void PersistentChatManager::handlePchatFetch(unsigned int senderSession, const M
 		   senderSession, channelId, limit, requesterHash.c_str());
 
 	if (!msg.has_channel_id()) {
+		return;
+	}
+
+	// Only serve messages to sessions that have passed the key-possession challenge.
+	if (!isSessionVerified(channelId, senderSession)) {
+		qWarning("pchat: REJECTED fetch session=%u channel=%u reason=key_challenge_not_passed",
+				 senderSession, channelId);
 		return;
 	}
 
@@ -571,14 +595,33 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 
 // ---- Channel removal / user disconnect ----
 
-void PersistentChatManager::onUserDisconnected(const std::string &certHash) {
+void PersistentChatManager::onUserDisconnected(unsigned int sessionId, const std::string &certHash) {
 	if (!m_config.enabled || certHash.empty())
 		return;
 
 	const auto serverNum = m_bridge.serverNum();
 	m_pendingTable.clearForRequester(serverNum, certHash);
 
-	qDebug("pchat: cleared pending key requests for disconnected user cert_hash=%s", certHash.c_str());
+	// Remove the disconnected session from all channel verified-sessions sets
+	// so the session ID cannot be reused by a different user to bypass the challenge.
+	for (auto &[chId, state] : m_challengeState) {
+		state.verifiedSessions.erase(sessionId);
+		state.pendingChallenges.erase(sessionId);
+	}
+
+	qDebug("pchat: cleared pending key requests and verified sessions for disconnected user session=%u cert_hash=%s",
+		   sessionId, certHash.c_str());
+}
+
+void PersistentChatManager::onPersistentChannelCreated(unsigned int channelId, unsigned int creatorSession) {
+	if (!m_config.enabled)
+		return;
+
+	auto &state = m_challengeState[channelId];
+	state.verifiedSessions.insert(creatorSession);
+
+	qDebug("pchat: auto-verified creator session=%u for new persistent channel=%u",
+		   creatorSession, channelId);
 }
 
 void PersistentChatManager::onChannelRemoved(unsigned int channelId) {
@@ -602,6 +645,13 @@ void PersistentChatManager::runCleanup() {
 	// Remove corrupted key rows that were written before the hex-encoding fix.
 	// Safe to call repeatedly -- only deletes rows with wrong decoded lengths.
 	m_keysTable.cleanupCorruptedKeys(serverNum);
+}
+
+bool PersistentChatManager::isSessionVerified(unsigned int channelId, unsigned int sessionId) const {
+	if (!m_challengeState.contains(channelId)) {
+		return false;
+	}
+	return m_challengeState.at(channelId).verifiedSessions.contains(sessionId);
 }
 
 std::string PersistentChatManager::generateUUID() {
@@ -758,11 +808,13 @@ void PersistentChatManager::handlePchatKeyChallengeResponse(unsigned int senderS
 	if (state.referenceHmac.empty()) {
 		// First prover sets the reference.
 		state.referenceHmac = proofBytes;
+		state.verifiedSessions.insert(senderSession);
 		result.set_passed(true);
 		qDebug("pchat: challenge for channel %u - first prover (session %u) set reference",
 			   channelId, senderSession);
 	} else if (state.referenceHmac == proofBytes) {
 		// Proof matches.
+		state.verifiedSessions.insert(senderSession);
 		result.set_passed(true);
 		qDebug("pchat: challenge for channel %u - session %u passed", channelId, senderSession);
 	} else {
@@ -780,5 +832,14 @@ void PersistentChatManager::handlePchatKeyChallengeResponse(unsigned int senderS
 	}
 
 	m_bridge.sendPchatKeyChallengeResult(senderSession, result);
+
+	// After successful verification, automatically deliver stored messages.
+	// The client's initial PchatFetch was likely rejected before the challenge completed.
+	if (result.passed()) {
+		MumbleProto::PchatFetch autoFetch;
+		autoFetch.set_channel_id(channelId);
+		autoFetch.set_limit(50);
+		handlePchatFetch(senderSession, autoFetch);
+	}
 }
 } // namespace pchat

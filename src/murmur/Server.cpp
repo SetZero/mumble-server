@@ -1728,7 +1728,7 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 
 		// Notify pchat manager so stale pending key requests are cleaned up.
 		if (m_pchatManager && !u->qsHash.isEmpty()) {
-			m_pchatManager->onUserDisconnected(u->qsHash.toStdString());
+			m_pchatManager->onUserDisconnected(u->uiSession, u->qsHash.toStdString());
 		}
 
 		emit userDisconnected(u);
