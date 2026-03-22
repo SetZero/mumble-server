@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <random>
+#include <limits>
 
 namespace msdb = ::mumble::server::db;
 
@@ -59,17 +60,10 @@ bool PersistentChatManager::handlePluginData(unsigned int /*senderSession*/, con
 // ---- Helper: send ack ----
 
 void PersistentChatManager::sendAck(unsigned int sessionId, const std::string &messageId,
-									const std::string &status, const std::string &reason) {
+									MumbleProto::PchatAckStatus status, const std::string &reason) {
 	MumbleProto::PchatAck ack;
-	ack.set_message_id(messageId);
-
-	if (status == "stored") {
-		ack.set_status(MumbleProto::PCHAT_ACK_STORED);
-	} else if (status == "quota_exceeded") {
-		ack.set_status(MumbleProto::PCHAT_ACK_QUOTA_EXCEEDED);
-	} else {
-		ack.set_status(MumbleProto::PCHAT_ACK_REJECTED);
-	}
+	ack.add_message_ids(messageId);
+	ack.set_status(status);
 
 	if (!reason.empty()) {
 		ack.set_reason(reason);
@@ -103,14 +97,14 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	if (msg.sender_hash() != senderHash) {
 		qWarning("pchat: REJECTED msgId=%s reason=sender_hash_mismatch (got=%s expected=%s)",
 			   messageId.c_str(), msg.sender_hash().c_str(), senderHash.c_str());
-		sendAck(senderSession, messageId, "rejected", "sender_hash_mismatch");
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "sender_hash_mismatch");
 		return;
 	}
 
 	if (messageId.empty() || !msg.has_channel_id() || !msg.has_mode()) {
 		qWarning("pchat: REJECTED msgId=%s reason=missing_fields (id_empty=%d has_channel=%d has_mode=%d)",
 			   messageId.c_str(), messageId.empty(), msg.has_channel_id(), msg.has_mode());
-		sendAck(senderSession, messageId, "rejected", "missing_fields");
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "missing_fields");
 		return;
 	}
 
@@ -119,7 +113,7 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	if (channelMode == 0) {
 		qWarning("pchat: REJECTED msgId=%s reason=channel_not_persistent channelId=%u",
 			   messageId.c_str(), channelId);
-		sendAck(senderSession, messageId, "rejected", "channel_not_persistent");
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "channel_not_persistent");
 		return;
 	}
 
@@ -128,14 +122,14 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	if (msg.mode() != expectedMode) {
 		qWarning("pchat: REJECTED msgId=%s reason=mode_mismatch (got=%d expected=%d)",
 			   messageId.c_str(), msg.mode(), expectedMode);
-		sendAck(senderSession, messageId, "rejected", "mode_mismatch");
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "mode_mismatch");
 		return;
 	}
 
 	// Check for envelope
 	if (!msg.has_envelope()) {
 		qWarning("pchat: REJECTED msgId=%s reason=missing_envelope", messageId.c_str());
-		sendAck(senderSession, messageId, "rejected", "missing_envelope");
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "missing_envelope");
 		return;
 	}
 
@@ -143,7 +137,7 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	if (payload.size() > static_cast< size_t >(m_config.maxPayloadSize)) {
 		qWarning("pchat: REJECTED msgId=%s reason=payload_too_large (size=%zu max=%d)",
 			   messageId.c_str(), payload.size(), m_config.maxPayloadSize);
-		sendAck(senderSession, messageId, "rejected", "payload_too_large");
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "payload_too_large");
 		return;
 	}
 
@@ -152,14 +146,14 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 		|| !m_challengeState.at(channelId).verifiedSessions.contains(senderSession)) {
 		qWarning("pchat: REJECTED msgId=%s reason=key_challenge_not_passed session=%u channel=%u",
 			   messageId.c_str(), senderSession, channelId);
-		sendAck(senderSession, messageId, "rejected", "key_challenge_not_passed");
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "key_challenge_not_passed");
 		return;
 	}
 
 	// Check for duplicate
 	if (m_msgTable.messageExists(serverNum, channelId, senderHash, messageId)) {
 		qWarning("pchat: REJECTED msgId=%s reason=duplicate", messageId.c_str());
-		sendAck(senderSession, messageId, "rejected", "duplicate");
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "duplicate");
 		return;
 	}
 
@@ -194,13 +188,13 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 
 	if (!m_msgTable.storeMessage(storedMsg)) {
 		qWarning("pchat: REJECTED msgId=%s reason=store_failed", messageId.c_str());
-		sendAck(senderSession, messageId, "rejected", "store_failed");
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "store_failed");
 		return;
 	}
 
 	qWarning("pchat: stored msg id=%s in channel=%u from hash=%s (payload=%zu bytes)",
 		   messageId.c_str(), channelId, senderHash.c_str(), payload.size());
-	sendAck(senderSession, messageId, "stored");
+	sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_STORED);
 
 	// Relay to other Fancy clients in the channel
 	MumbleProto::PchatMessageDeliver deliver;
@@ -473,7 +467,7 @@ void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std
 	if (userCount >= static_cast< unsigned int >(m_config.perUserPendingLimit)) {
 		unsigned int requesterSession = m_bridge.getSessionForCertHash(requesterHash);
 		if (requesterSession > 0) {
-			sendAck(requesterSession, "", "rejected", "key_request_limit_exceeded");
+			sendAck(requesterSession, "", MumbleProto::PCHAT_ACK_REJECTED, "key_request_limit_exceeded");
 		}
 		return;
 	}
@@ -841,5 +835,68 @@ void PersistentChatManager::handlePchatKeyChallengeResponse(unsigned int senderS
 		autoFetch.set_limit(50);
 		handlePchatFetch(senderSession, autoFetch);
 	}
+}
+
+// ---- handlePchatDeleteMessages ----
+
+void PersistentChatManager::handlePchatDeleteMessages(unsigned int senderSession, const MumbleProto::PchatDeleteMessages &msg) {
+	if (!m_config.enabled) {
+		return;
+	}
+
+	if (!msg.has_channel_id()) {
+		qWarning("pchat: deleteMessages rejected - missing channel_id session=%u", senderSession);
+		return;
+	}
+
+	const unsigned int channelId = msg.channel_id();
+	const auto serverNum = m_bridge.serverNum();
+
+	// Permission check: DeleteMessage
+	if (!m_bridge.hasDeleteMessagePermission(senderSession, channelId)) {
+		qWarning("pchat: deleteMessages rejected - no permission session=%u channel=%u", senderSession, channelId);
+		return;
+	}
+
+	// Verify channel is persistent
+	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
+	if (channelMode == 0) {
+		qWarning("pchat: deleteMessages rejected - channel not persistent session=%u channel=%u", senderSession, channelId);
+		return;
+	}
+
+	unsigned int deletedCount = 0;
+	std::vector< std::string > deletedIds;
+
+	if (msg.message_ids_size() > 0) {
+		std::vector< std::string > ids(msg.message_ids().begin(), msg.message_ids().end());
+		deletedCount += m_msgTable.deleteByIds(serverNum, channelId, ids);
+		deletedIds.insert(deletedIds.end(), ids.begin(), ids.end());
+	}
+
+	if (msg.has_time_range()) {
+		const auto &tr = msg.time_range();
+		long long fromMs = tr.has_from() ? static_cast< long long >(tr.from()) : 0;
+		long long toMs = tr.has_to() ? static_cast< long long >(tr.to()) : std::numeric_limits< long long >::max();
+		deletedCount += m_msgTable.deleteByTimeRange(serverNum, channelId, fromMs, toMs);
+	}
+
+	if (msg.has_sender_hash()) {
+		deletedCount += m_msgTable.deleteBySender(serverNum, channelId, msg.sender_hash());
+	}
+
+	qWarning("pchat: deleted %u messages in channel=%u by session=%u", deletedCount, channelId, senderSession);
+
+	// Send ack to requester
+	MumbleProto::PchatAck ack;
+	ack.set_status(MumbleProto::PCHAT_ACK_DELETED);
+	for (const auto &id : deletedIds) {
+		ack.add_message_ids(id);
+	}
+	ack.set_reason(std::to_string(deletedCount));
+	m_bridge.sendPchatAck(senderSession, ack);
+
+	// Broadcast deletion to other Fancy clients in the channel
+	m_bridge.broadcastPchatDeleteMessages(channelId, msg, senderSession);
 }
 } // namespace pchat

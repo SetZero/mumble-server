@@ -120,6 +120,20 @@ void ServerBridge::broadcastPchatEpochCountersig(unsigned int channelId, const M
 	}
 }
 
+void ServerBridge::broadcastPchatDeleteMessages(unsigned int channelId, const MumbleProto::PchatDeleteMessages &msg,
+                                                unsigned int excludeSession) {
+	Channel *c = m_server.qhChannels.value(channelId);
+	if (!c) return;
+
+	for (User *pUser : c->qlUsers) {
+		ServerUser *su = static_cast< ServerUser * >(pUser);
+		if (su->uiSession == excludeSession) continue;
+		if (su->sState != ServerUser::Authenticated) continue;
+		if (!isFancy(su)) continue;
+		m_server.sendMessage(su, msg);
+	}
+}
+
 std::string ServerBridge::getCertHash(unsigned int sessionId) const {
 	ServerUser *user = m_server.qhUsers.value(sessionId);
 	if (!user) {
@@ -152,6 +166,15 @@ bool ServerBridge::hasEnterPermission(unsigned int sessionId, unsigned int chann
 		return false;
 	}
 	return m_server.hasPermission(user, c, ChanACL::Enter);
+}
+
+bool ServerBridge::hasDeleteMessagePermission(unsigned int sessionId, unsigned int channelId) const {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	Channel *c       = m_server.qhChannels.value(channelId);
+	if (!user || !c) {
+		return false;
+	}
+	return m_server.hasPermission(user, c, ChanACL::DeleteMessage);
 }
 
 uint32_t ServerBridge::getChannelPChatMode(unsigned int channelId) const {

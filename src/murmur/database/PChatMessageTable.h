@@ -85,6 +85,18 @@ namespace server {
 
 			void clearUser(unsigned int serverID, const std::string &senderHash);
 
+			/// Delete specific messages by their IDs. Returns count of deleted rows.
+			unsigned int deleteByIds(unsigned int serverID, unsigned int channelId,
+										const std::vector< std::string > &messageIds);
+
+			/// Delete messages in a time range (inclusive bounds, millis). Returns count of deleted rows.
+			unsigned int deleteByTimeRange(unsigned int serverID, unsigned int channelId,
+											long long fromMs, long long toMs);
+
+			/// Delete all messages by a specific sender hash. Returns count of deleted rows.
+			unsigned int deleteBySender(unsigned int serverID, unsigned int channelId,
+										const std::string &senderHash);
+
 			void migrate(unsigned int fromSchemaVersion, unsigned int toSchemaVersion) override;
 		};
 
