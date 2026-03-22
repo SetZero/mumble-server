@@ -2746,6 +2746,29 @@ void Server::msgPchatKeyChallengeResponse(ServerUser *uSource, MumbleProto::Pcha
 	}
 }
 
+
+void Server::msgPchatDeleteMessages(ServerUser *uSource, MumbleProto::PchatDeleteMessages &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (!msg.has_channel_id()) {
+		return;
+	}
+
+	Channel *c = qhChannels.value(msg.channel_id());
+	if (!c) {
+		return;
+	}
+
+	if (!hasPermission(uSource, c, ChanACL::DeleteMessage)) {
+		PERM_DENIED(uSource, c, ChanACL::DeleteMessage);
+		return;
+	}
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatDeleteMessages(uSource->uiSession, msg);
+	}
+}
+
 // Server -> Client only; ignore if received from client
 void Server::msgPchatKeyChallengeResult(ServerUser *, MumbleProto::PchatKeyChallengeResult &) {
 }

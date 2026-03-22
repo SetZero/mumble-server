@@ -35,11 +35,14 @@ void sendPchatKeyChallengeResult(unsigned int sessionId, const MumbleProto::Pcha
 								  unsigned int excludeSession = 0) override;
 	void broadcastPchatEpochCountersig(unsigned int channelId, const MumbleProto::PchatEpochCountersig &msg,
 									   unsigned int excludeSession = 0) override;
+	void broadcastPchatDeleteMessages(unsigned int channelId, const MumbleProto::PchatDeleteMessages &msg,
+	                                  unsigned int excludeSession = 0) override;
 
 	std::string getCertHash(unsigned int sessionId) const override;
 	bool isFancyClient(unsigned int sessionId) const override;
 	bool hasWritePermission(unsigned int sessionId, unsigned int channelId) const override;
 	bool hasEnterPermission(unsigned int sessionId, unsigned int channelId) const override;
+	bool hasDeleteMessagePermission(unsigned int sessionId, unsigned int channelId) const override;
 	uint32_t getChannelPChatMode(unsigned int channelId) const override;
 	std::vector< std::string > getChannelKeyCustodians(unsigned int channelId) const override;
 	unsigned int countFancyClientsInChannel(unsigned int channelId) const override;

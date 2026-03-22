@@ -79,6 +79,11 @@ struct IServerBridge {
 	virtual void broadcastPchatEpochCountersig(unsigned int channelId, const MumbleProto::PchatEpochCountersig &msg,
 											   unsigned int excludeSession = 0) = 0;
 
+	/// Broadcast a PchatDeleteMessages to all Fancy Mumble v2+ sessions in a channel,
+	/// optionally excluding one session.
+	virtual void broadcastPchatDeleteMessages(unsigned int channelId, const MumbleProto::PchatDeleteMessages &msg,
+	                                           unsigned int excludeSession = 0) = 0;
+
 	/// Get the TLS certificate hash for a session.
 	virtual std::string getCertHash(unsigned int sessionId) const = 0;
 
@@ -99,6 +104,9 @@ struct IServerBridge {
 
 	/// Check if a user has Enter permission on a channel.
 	virtual bool hasEnterPermission(unsigned int sessionId, unsigned int channelId) const = 0;
+
+	/// Check if a user has DeleteMessage permission on a channel.
+	virtual bool hasDeleteMessagePermission(unsigned int sessionId, unsigned int channelId) const = 0;
 
 	/// Get the channel mode for a channel (from Channel object).
 	virtual uint32_t getChannelPChatMode(unsigned int channelId) const = 0;
@@ -188,6 +196,9 @@ public:
 	/// Handle a PchatKeyChallengeResponse (client proves key possession).
 	void handlePchatKeyChallengeResponse(unsigned int senderSession, const MumbleProto::PchatKeyChallengeResponse &msg);
 
+	/// Handle a PchatDeleteMessages (client wants to delete stored messages).
+	void handlePchatDeleteMessages(unsigned int senderSession, const MumbleProto::PchatDeleteMessages &msg);
+
 	/// Called when a Fancy client connects and joins a persistent channel.
 	/// Delivers pending key requests for that channel.
 	void onFancyClientJoinedChannel(unsigned int sessionId, unsigned int channelId);
@@ -211,7 +222,7 @@ public:
 
 private:
 	void sendAck(unsigned int sessionId, const std::string &messageId,
-				 const std::string &status, const std::string &reason = "");
+				 MumbleProto::PchatAckStatus status, const std::string &reason = "");
 
 	/// Generate and broadcast a key request for a new user in a persistent channel.
 	void generateKeyRequest(unsigned int channelId, const std::string &requesterHash,

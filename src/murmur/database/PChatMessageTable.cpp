@@ -315,6 +315,66 @@ namespace server {
 			}
 		}
 
+		unsigned int PChatMessageTable::deleteByIds(unsigned int serverID, unsigned int channelId,
+											const std::vector< std::string > &messageIds) {
+			if (messageIds.empty()) {
+				return 0;
+			}
+			try {
+				::mdb::TransactionHolder transaction = ensureTransaction();
+
+				for (const auto &mid : messageIds) {
+					m_sql << "DELETE FROM \"" << NAME << "\" WHERE \""
+							<< column::server_id << "\" = :sid AND \""
+							<< column::channel_id << "\" = :cid AND \""
+							<< column::message_id << "\" = :mid",
+						soci::use(serverID), soci::use(channelId), soci::use(mid);
+				}
+
+				transaction.commit();
+				return static_cast< unsigned int >(messageIds.size());
+			} catch (const soci::soci_error &) {
+				return 0;
+			}
+		}
+
+		unsigned int PChatMessageTable::deleteByTimeRange(unsigned int serverID, unsigned int channelId,
+											long long fromMs, long long toMs) {
+			try {
+				::mdb::TransactionHolder transaction = ensureTransaction();
+
+				m_sql << "DELETE FROM \"" << NAME << "\" WHERE \""
+							<< column::server_id << "\" = :sid AND \""
+							<< column::channel_id << "\" = :cid AND \""
+							<< column::timestamp << "\" >= :from_ms AND \""
+							<< column::timestamp << "\" <= :to_ms",
+						soci::use(serverID), soci::use(channelId), soci::use(fromMs), soci::use(toMs);
+
+				transaction.commit();
+				return 0;
+			} catch (const soci::soci_error &) {
+				return 0;
+			}
+		}
+
+		unsigned int PChatMessageTable::deleteBySender(unsigned int serverID, unsigned int channelId,
+											const std::string &senderHash) {
+			try {
+				::mdb::TransactionHolder transaction = ensureTransaction();
+
+				m_sql << "DELETE FROM \"" << NAME << "\" WHERE \""
+							<< column::server_id << "\" = :sid AND \""
+							<< column::channel_id << "\" = :cid AND \""
+							<< column::sender_hash << "\" = :sh",
+						soci::use(serverID), soci::use(channelId), soci::use(senderHash);
+
+				transaction.commit();
+				return 0;
+			} catch (const soci::soci_error &) {
+				return 0;
+			}
+		}
+
 		void PChatMessageTable::migrate(unsigned int fromSchemaVersion, unsigned int toSchemaVersion) {
 			assert(fromSchemaVersion <= toSchemaVersion);
 			try {

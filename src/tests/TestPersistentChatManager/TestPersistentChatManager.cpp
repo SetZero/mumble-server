@@ -43,6 +43,7 @@ public:
 	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyChallenge > > sentChallenges;
 	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyChallengeResult > > sentChallengeResults;
 	std::vector< std::pair< unsigned int, MumbleProto::PchatKeyHoldersList > > sentHoldersLists;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatDeleteMessages > > broadcastedDeleteMessages;
 
 	// Configurable return values
 	std::unordered_map< unsigned int, std::string > certHashes;
@@ -50,6 +51,7 @@ public:
 	std::unordered_map< unsigned int, bool > registeredUsers;
 	std::unordered_map< unsigned int, bool > writePerms;
 	std::unordered_map< unsigned int, bool > enterPerms;
+	std::unordered_map< unsigned int, bool > deleteMessagePerms;
 	std::unordered_map< unsigned int, uint32_t > channelModes;
 	std::unordered_map< unsigned int, std::vector< std::string > > channelCustodians;
 	std::unordered_map< unsigned int, unsigned int > fancyCountPerChannel;
@@ -91,6 +93,10 @@ public:
 									   unsigned int /*excludeSession*/) override {
 		broadcastedCountersigs.push_back({ channelId, msg });
 	}
+	void broadcastPchatDeleteMessages(unsigned int channelId, const MumbleProto::PchatDeleteMessages &msg,
+									  unsigned int /*excludeSession*/) override {
+		broadcastedDeleteMessages.push_back({ channelId, msg });
+	}
 	std::string getCertHash(unsigned int sessionId) const override {
 		auto it = certHashes.find(sessionId);
 		return (it != certHashes.end()) ? it->second : "";
@@ -115,6 +121,10 @@ public:
 	bool hasEnterPermission(unsigned int sessionId, unsigned int /*channelId*/) const override {
 		auto it = enterPerms.find(sessionId);
 		return (it != enterPerms.end()) ? it->second : true;
+	}
+	bool hasDeleteMessagePermission(unsigned int sessionId, unsigned int /*channelId*/) const override {
+		auto it = deleteMessagePerms.find(sessionId);
+		return (it != deleteMessagePerms.end()) ? it->second : true;
 	}
 	uint32_t getChannelPChatMode(unsigned int channelId) const override {
 		auto it = channelModes.find(channelId);
@@ -152,6 +162,7 @@ public:
 		sentChallenges.clear();
 		sentChallengeResults.clear();
 		sentHoldersLists.clear();
+		broadcastedDeleteMessages.clear();
 	}
 };
 
