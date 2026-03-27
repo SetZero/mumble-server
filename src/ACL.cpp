@@ -314,6 +314,10 @@ QString ChanACL::whatsThis(Perm p) {
 		case Listen:
 			return tr("This represents the permission to use the listen-feature allowing to listen to a channel "
 					  "without being in it.");
+		case KeyOwner:
+			return tr("This represents the permission to take over key ownership of a persistent channel. "
+					  "The key owner can reset the channel encryption key, removing all stored messages "
+					  "and known key holders.");
 		default:
 			break;
 	}
@@ -369,6 +373,8 @@ QString ChanACL::permName(Perm p) {
 			return tr("Register Self");
 		case Listen:
 			return tr("Listen");
+		case KeyOwner:
+			return tr("Key Owner");
 		default:
 			break;
 	}
