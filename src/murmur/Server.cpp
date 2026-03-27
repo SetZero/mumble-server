@@ -2255,7 +2255,14 @@ void Server::clearACLCache(User *p) {
 			ChanACL::ChanCache *h = acCache.take(p);
 			delete h;
 
-			flushClientPermissionCache(static_cast< ServerUser * >(p), mppq);
+			// Guard: do not send to a user whose session has already been
+			// removed from qhUsers (e.g. a ghost disconnected during
+			// msgAuthenticate).  Writing to a destroyed socket causes a
+			// SIGSEGV in QRingBuffer::reserve().
+			ServerUser *su = static_cast< ServerUser * >(p);
+			if (qhUsers.contains(su->uiSession)) {
+				flushClientPermissionCache(su, mppq);
+			}
 		} else {
 			for (ChanACL::ChanCache *h : acCache) {
 				delete h;
@@ -2287,7 +2294,10 @@ void Server::clearACLCache(User *p) {
 		};
 
 		if (p) {
-			processingFunction(static_cast< ServerUser * >(p));
+			ServerUser *su = static_cast< ServerUser * >(p);
+			if (qhUsers.contains(su->uiSession)) {
+				processingFunction(su);
+			}
 		} else {
 			for (ServerUser *currentUser : qhUsers) {
 				processingFunction(currentUser);
