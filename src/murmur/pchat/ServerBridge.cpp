@@ -177,6 +177,15 @@ bool ServerBridge::hasDeleteMessagePermission(unsigned int sessionId, unsigned i
 	return m_server.hasPermission(user, c, ChanACL::DeleteMessage);
 }
 
+bool ServerBridge::hasKeyOwnerPermission(unsigned int sessionId, unsigned int channelId) const {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	Channel *c       = m_server.qhChannels.value(channelId);
+	if (!user || !c) {
+		return false;
+	}
+	return m_server.hasPermission(user, c, ChanACL::KeyOwner);
+}
+
 uint32_t ServerBridge::getChannelPChatMode(unsigned int channelId) const {
 	Channel *c = m_server.qhChannels.value(channelId);
 	if (!c) {
@@ -250,6 +259,18 @@ void ServerBridge::sendPchatKeyChallengeResult(unsigned int sessionId, const Mum
 	ServerUser *user = m_server.qhUsers.value(sessionId);
 	if (!user || user->sState != ServerUser::Authenticated) return;
 	m_server.sendMessage(user, msg);
+}
+
+void ServerBridge::sendPermissionDenied(unsigned int sessionId, unsigned int channelId, unsigned int permission) {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	if (!user || user->sState != ServerUser::Authenticated) return;
+
+	MumbleProto::PermissionDenied mppd;
+	mppd.set_permission(permission);
+	mppd.set_channel_id(channelId);
+	mppd.set_session(sessionId);
+	mppd.set_type(MumbleProto::PermissionDenied_DenyType_Permission);
+	m_server.sendMessage(user, mppd);
 }
 
 } // namespace pchat

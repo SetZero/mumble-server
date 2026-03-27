@@ -40,10 +40,12 @@ public:
 		Register         = 0x40000,
 		SelfRegister     = 0x80000,
 		ResetUserContent = 0x100000,
+		KeyOwner         = 0x200000,
 
 		Cached = 0x8000000,
 		All = Write + Traverse + Enter + Speak + MuteDeafen + Move + MakeChannel + LinkChannel + Whisper + TextMessage
 			  + MakeTempChannel + Listen + DeleteMessage + Kick + Ban + Register + SelfRegister + ResetUserContent
+			  + KeyOwner
 	};
 
 	Q_DECLARE_FLAGS(Permissions, Perm)

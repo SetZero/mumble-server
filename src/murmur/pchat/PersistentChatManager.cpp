@@ -5,6 +5,8 @@
 
 #include "PersistentChatManager.h"
 
+#include "ACL.h"
+#include "crypto/CryptographicRandom.h"
 #include "database/PChatMemberJoinTable.h"
 #include "database/PChatMessageTable.h"
 #include "database/PChatPendingKeyRequestsTable.h"
@@ -15,7 +17,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <random>
 #include <limits>
 
 namespace msdb = ::mumble::server::db;
@@ -649,13 +650,10 @@ bool PersistentChatManager::isSessionVerified(unsigned int channelId, unsigned i
 }
 
 std::string PersistentChatManager::generateUUID() {
-	static std::random_device rd;
-	static std::mt19937 gen(rd());
-	static std::uniform_int_distribution< uint32_t > dist(0, 0xFFFFFFFF);
+	uint32_t parts[4];
+	CryptographicRandom::fillBuffer(parts, sizeof(parts));
 
-	auto r = [&]() { return dist(gen); };
-
-	uint32_t a = r(), b = r(), c = r(), d = r();
+	uint32_t a = parts[0], b = parts[1], c = parts[2], d = parts[3];
 	b = (b & 0xFFFF0FFF) | 0x00004000;
 	c = (c & 0x3FFFFFFF) | 0x80000000;
 
@@ -668,6 +666,83 @@ std::string PersistentChatManager::generateUUID() {
 
 // ---- Key holder tracking ----
 
+void PersistentChatManager::broadcastKeyHoldersList(unsigned int channelId) {
+	unsigned int serverNum = m_bridge.serverNum();
+	auto holders = m_holdersTable.getChannelHolders(serverNum, channelId);
+
+	MumbleProto::PchatKeyHoldersList response;
+	response.set_channel_id(channelId);
+
+	for (const auto &h : holders) {
+		auto *entry = response.add_holders();
+		entry->set_cert_hash(h.certHash);
+		entry->set_name(h.lastKnownName.empty() ? h.certHash : h.lastKnownName);
+	}
+
+	auto channelIt = m_challengeState.find(channelId);
+	if (channelIt == m_challengeState.end())
+		return;
+
+	for (unsigned int session : channelIt->second.verifiedSessions) {
+		m_bridge.sendPchatKeyHoldersList(session, response);
+	}
+}
+
+void PersistentChatManager::handleKeyOwnerTakeover(unsigned int senderSession, unsigned int channelId,
+												   const std::string &certHash,
+												   MumbleProto::PchatKeyHolderReport::KeyTakeoverMode mode) {
+	if (!m_bridge.hasKeyOwnerPermission(senderSession, channelId)) {
+		qWarning("pchat: takeover rejected - no KeyOwner permission session=%u channel=%u",
+				 senderSession, channelId);
+		m_bridge.sendPermissionDenied(senderSession, channelId,
+									  static_cast< unsigned int >(ChanACL::KeyOwner));
+		return;
+	}
+
+	const bool fullWipe = (mode == MumbleProto::PchatKeyHolderReport::FULL_WIPE);
+	unsigned int serverNum = m_bridge.serverNum();
+
+	qWarning("pchat: KeyOwner takeover (%s) - channel=%u by session=%u cert_hash=%s",
+			 fullWipe ? "FULL_WIPE" : "KEY_ONLY",
+			 channelId, senderSession, certHash.c_str());
+
+	if (fullWipe) {
+		m_msgTable.clearChannel(serverNum, channelId);
+	}
+
+	m_holdersTable.clearChannel(serverNum, channelId);
+
+	m_challengeState.erase(channelId);
+
+	msdb::PChatKeyHolder holder;
+	holder.serverID      = serverNum;
+	holder.channelId     = channelId;
+	holder.certHash      = certHash;
+	holder.lastKnownName = {};
+	holder.reportedAt    = m_bridge.serverTimeMs();
+	m_holdersTable.recordHolder(holder);
+
+	auto &state = m_challengeState[channelId];
+	state.sharedChallenge.resize(32);
+	CryptographicRandom::fillBuffer(state.sharedChallenge.data(), static_cast< int >(state.sharedChallenge.size()));
+	state.pendingChallenges[senderSession] = state.sharedChallenge;
+
+	MumbleProto::PchatKeyChallenge challengeMsg;
+	challengeMsg.set_channel_id(channelId);
+	challengeMsg.set_challenge(std::string(state.sharedChallenge.begin(), state.sharedChallenge.end()));
+	m_bridge.sendPchatKeyChallenge(senderSession, challengeMsg);
+
+	MumbleProto::PchatKeyHoldersList response;
+	response.set_channel_id(channelId);
+	auto *entry = response.add_holders();
+	entry->set_cert_hash(certHash);
+	entry->set_name(certHash);
+	m_bridge.sendPchatKeyHoldersList(senderSession, response);
+
+	qDebug("pchat: takeover complete - channel=%u new sole holder=%s",
+		   channelId, certHash.c_str());
+}
+
 void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSession,
 													   const MumbleProto::PchatKeyHolderReport &msg) {
 	if (!m_config.enabled)
@@ -679,6 +754,13 @@ void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSessio
 	unsigned int channelId = msg.channel_id();
 	const std::string &certHash = msg.cert_hash();
 	unsigned int serverNum = m_bridge.serverNum();
+
+	if (msg.has_takeover_mode()) {
+		handleKeyOwnerTakeover(senderSession, channelId, certHash, msg.takeover_mode());
+		return;
+	}
+
+	// ---- Normal key holder report path ----
 
 	// Look up the name for this cert hash from online users, or fall back to cert hash.
 	unsigned int holderSession = m_bridge.getSessionForCertHash(certHash);
@@ -707,12 +789,7 @@ void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSessio
 	auto &state = m_challengeState[channelId];
 	if (state.sharedChallenge.empty()) {
 		state.sharedChallenge.resize(32);
-		std::random_device rd;
-		std::mt19937 gen(rd());
-		std::uniform_int_distribution< int > dist(0, 255);
-		for (auto &b : state.sharedChallenge) {
-			b = static_cast< uint8_t >(dist(gen));
-		}
+		CryptographicRandom::fillBuffer(state.sharedChallenge.data(), static_cast< int >(state.sharedChallenge.size()));
 	}
 
 	// Store the pending challenge for this session+channel.
@@ -835,6 +912,11 @@ void PersistentChatManager::handlePchatKeyChallengeResponse(unsigned int senderS
 		autoFetch.set_limit(50);
 		handlePchatFetch(senderSession, autoFetch);
 	}
+
+	// Broadcast the current holders list to all verified sessions so every
+	// client stays in sync (e.g. after a takeover cleared the old list and
+	// new holders gradually reconnect).
+	broadcastKeyHoldersList(channelId);
 }
 
 // ---- handlePchatDeleteMessages ----

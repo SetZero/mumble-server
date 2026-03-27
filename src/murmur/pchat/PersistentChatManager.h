@@ -108,6 +108,12 @@ struct IServerBridge {
 	/// Check if a user has DeleteMessage permission on a channel.
 	virtual bool hasDeleteMessagePermission(unsigned int sessionId, unsigned int channelId) const = 0;
 
+	/// Check if a user has KeyOwner permission on a channel.
+	virtual bool hasKeyOwnerPermission(unsigned int sessionId, unsigned int channelId) const = 0;
+
+	/// Send a PermissionDenied message to a specific user session.
+	virtual void sendPermissionDenied(unsigned int sessionId, unsigned int channelId, unsigned int permission) = 0;
+
 	/// Get the channel mode for a channel (from Channel object).
 	virtual uint32_t getChannelPChatMode(unsigned int channelId) const = 0;
 
@@ -223,6 +229,14 @@ public:
 private:
 	void sendAck(unsigned int sessionId, const std::string &messageId,
 				 MumbleProto::PchatAckStatus status, const std::string &reason = "");
+
+	/// Handle a KeyOwner takeover request for a channel.
+	void handleKeyOwnerTakeover(unsigned int senderSession, unsigned int channelId,
+								const std::string &certHash,
+								MumbleProto::PchatKeyHolderReport::KeyTakeoverMode mode);
+
+	/// Send the current key holders list to all verified sessions in a channel.
+	void broadcastKeyHoldersList(unsigned int channelId);
 
 	/// Generate and broadcast a key request for a new user in a persistent channel.
 	void generateKeyRequest(unsigned int channelId, const std::string &requesterHash,
