@@ -30,7 +30,7 @@ namespace server {
 			unsigned int channelId = 0;
 			long long timestamp    = 0;
 			std::string senderHash;
-			std::string mode; // "POST_JOIN" or "FULL_ARCHIVE"
+			std::string protocol; // "FANCY_V1_POST_JOIN" or "FANCY_V1_FULL_ARCHIVE"
 			std::string payload;  // opaque bytes stored as blob
 			int payloadSize       = 0;
 			std::string supersededBy;

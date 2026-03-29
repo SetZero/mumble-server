@@ -186,12 +186,12 @@ bool ServerBridge::hasKeyOwnerPermission(unsigned int sessionId, unsigned int ch
 	return m_server.hasPermission(user, c, ChanACL::KeyOwner);
 }
 
-uint32_t ServerBridge::getChannelPChatMode(unsigned int channelId) const {
+uint32_t ServerBridge::getChannelPChatProtocol(unsigned int channelId) const {
 	Channel *c = m_server.qhChannels.value(channelId);
 	if (!c) {
 		return 0;
 	}
-	return c->uiPChatMode;
+	return c->uiPChatProtocol;
 }
 
 std::vector< std::string > ServerBridge::getChannelKeyCustodians(unsigned int channelId) const {

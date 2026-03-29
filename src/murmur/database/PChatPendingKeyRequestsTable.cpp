@@ -108,7 +108,7 @@ namespace server {
 					  << column::relays_sent << "\", \"" << column::created_at
 					  << "\") VALUES (:sid, :rid, :cid, :mode, :rh, :rp, :rc, :rs, :ca)",
 					soci::use(request.serverID), soci::use(request.requestId),
-					soci::use(request.channelId), soci::use(request.mode),
+					soci::use(request.channelId), soci::use(request.protocol),
 					soci::use(request.requesterHash), soci::use(request.requesterPublic),
 					soci::use(request.relayCap), soci::use(request.relaysSent),
 					soci::use(request.createdAt);
@@ -247,7 +247,7 @@ namespace server {
 					req.serverID        = serverID;
 					req.requestId       = row.get< std::string >(0);
 						req.channelId       = static_cast< unsigned int >(row.get< int >(1));
-					req.mode            = row.get< std::string >(2);
+					req.protocol            = row.get< std::string >(2);
 					req.requesterHash   = row.get< std::string >(3);
 					req.requesterPublic = row.get< std::string >(4, "");
 					req.relayCap        = row.get< int >(5);

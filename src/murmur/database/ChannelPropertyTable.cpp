@@ -191,6 +191,28 @@ namespace server {
 					// Use default implementation to handle migration without change of format
 					mdb::Table::migrate(fromSchemaVersion, toSchemaVersion);
 				}
+
+				if (fromSchemaVersion < 14) {
+					// v14: PchatPersistenceMode was unified into PchatProtocol with shifted
+					// enum values.  The old enum was:
+					//   PCHAT_MODE_POST_JOIN    = 0
+					//   PCHAT_MODE_FULL_ARCHIVE = 1
+					// The new enum is:
+					//   PCHAT_PROTOCOL_NONE               = 0
+					//   PCHAT_PROTOCOL_FANCY_V1_POST_JOIN  = 1
+					//   PCHAT_PROTOCOL_FANCY_V1_FULL_ARCHIVE = 2
+					//   PCHAT_PROTOCOL_SERVER_MANAGED      = 3
+					//
+					// Remap stored integer values: old 1 -> new 2, then old 0 -> new 1.
+					// Order matters to avoid double-remapping.
+					// Property key 3 = ChannelProperty::PChatProtocol.
+					m_sql << "UPDATE \"" << NAME << "\" SET \"" << column::value
+						  << "\" = '2' WHERE \"" << column::key << "\" = 3 AND \""
+						  << column::value << "\" = '1'";
+					m_sql << "UPDATE \"" << NAME << "\" SET \"" << column::value
+						  << "\" = '1' WHERE \"" << column::key << "\" = 3 AND \""
+						  << column::value << "\" = '0'";
+				}
 			} catch (const soci::soci_error &) {
 				std::throw_with_nested(::mdb::MigrationException(
 					std::string("Failed at migrating table \"") + NAME + "\" from schema version "

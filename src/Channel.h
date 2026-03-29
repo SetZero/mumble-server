@@ -68,8 +68,8 @@ public:
 	/// setting.
 	unsigned int uiMaxUsers;
 
-	/// Persistent chat mode: 0=NONE, 1=POST_JOIN, 2=FULL_ARCHIVE, 3=SERVER_MANAGED (future).
-	uint32_t uiPChatMode = 0;
+	/// Persistent chat protocol: 0=NONE, 1=FANCY_V1_POST_JOIN, 2=FANCY_V1_FULL_ARCHIVE, 3=SERVER_MANAGED.
+	uint32_t uiPChatProtocol = 0;
 	/// Maximum number of stored persistent chat messages (0=unlimited).
 	uint32_t uiPChatMaxHistory = 0;
 	/// Auto-delete persistent chat messages after N days (0=forever).
@@ -77,7 +77,7 @@ public:
 	/// TLS certificate hashes of persistent chat key custodians.
 	QStringList qslPChatKeyCustodians;
 
-	bool isPersistentChat() const { return uiPChatMode > 0; }
+	bool isPersistentChat() const { return uiPChatProtocol > 0; }
 
 	Channel(unsigned int id, const QString &name, QObject *p = nullptr);
 	~Channel();

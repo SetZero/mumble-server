@@ -411,14 +411,14 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		mpcs.set_max_users(c->uiMaxUsers);
 
 		if (c->isPersistentChat()) {
-			mpcs.set_pchat_mode(
-				static_cast< MumbleProto::ChannelState_PchatMode >(c->uiPChatMode));
+			mpcs.set_pchat_protocol(
+				static_cast< MumbleProto::PchatProtocol >(c->uiPChatProtocol));
 			mpcs.set_pchat_max_history(c->uiPChatMaxHistory);
 			mpcs.set_pchat_retention_days(c->uiPChatRetentionDays);
 			for (const auto &kc : c->qslPChatKeyCustodians)
 				mpcs.add_pchat_key_custodians(u8(kc));
-			qWarning("pchat: sending channel tree for channelId=%d pchat_mode=%u to session=%u",
-				   c->iId, c->uiPChatMode, uSource->uiSession);
+			qWarning("pchat: sending channel tree for channelId=%d pchat_protocol=%u to session=%u",
+				   c->iId, c->uiPChatProtocol, uSource->uiSession);
 		}
 
 		// Include info about enter restrictions of this channel
@@ -1410,8 +1410,8 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		c = createNewChannel(p, qsName, msg.temporary(), msg.position(), msg.max_users());
 		hashAssign(c->qsDesc, c->qbaDescHash, qsDesc);
 
-		if (msg.has_pchat_mode()) {
-			c->uiPChatMode = static_cast< uint32_t >(msg.pchat_mode());
+		if (msg.has_pchat_protocol()) {
+			c->uiPChatProtocol = static_cast< uint32_t >(msg.pchat_protocol());
 		}
 		if (msg.has_pchat_max_history()) {
 			c->uiPChatMaxHistory = msg.pchat_max_history();
@@ -1575,7 +1575,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			}
 		}
 
-		if (msg.has_pchat_mode() || msg.has_pchat_max_history() || msg.has_pchat_retention_days()
+		if (msg.has_pchat_protocol() || msg.has_pchat_max_history() || msg.has_pchat_retention_days()
 			|| msg.pchat_key_custodians_size() > 0) {
 			if (!hasPermission(uSource, c, ChanACL::Write)) {
 				PERM_DENIED(uSource, c, ChanACL::Write);
@@ -1615,9 +1615,9 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		if (msg.has_max_users())
 			c->uiMaxUsers = msg.max_users();
 
-		if (msg.has_pchat_mode()) {
-			c->uiPChatMode = static_cast< uint32_t >(msg.pchat_mode());
-			log(uSource, QString("pchat: set channel %1 pchat_mode=%2").arg(c->iId).arg(c->uiPChatMode));
+		if (msg.has_pchat_protocol()) {
+			c->uiPChatProtocol = static_cast< uint32_t >(msg.pchat_protocol());
+			log(uSource, QString("pchat: set channel %1 pchat_protocol=%2").arg(c->iId).arg(c->uiPChatProtocol));
 		}
 		if (msg.has_pchat_max_history()) {
 			c->uiPChatMaxHistory = msg.pchat_max_history();

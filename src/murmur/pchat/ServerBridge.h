@@ -45,7 +45,7 @@ void sendPchatKeyChallengeResult(unsigned int sessionId, const MumbleProto::Pcha
 	bool hasDeleteMessagePermission(unsigned int sessionId, unsigned int channelId) const override;
 	bool hasKeyOwnerPermission(unsigned int sessionId, unsigned int channelId) const override;
 	void sendPermissionDenied(unsigned int sessionId, unsigned int channelId, unsigned int permission) override;
-	uint32_t getChannelPChatMode(unsigned int channelId) const override;
+	uint32_t getChannelPChatProtocol(unsigned int channelId) const override;
 	std::vector< std::string > getChannelKeyCustodians(unsigned int channelId) const override;
 	unsigned int countFancyClientsInChannel(unsigned int channelId) const override;
 	int64_t serverTimeMs() const override;

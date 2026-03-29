@@ -23,13 +23,19 @@ namespace msdb = ::mumble::server::db;
 
 namespace pchat {
 
-// Helper to convert ChannelState pchat_mode (1=POST_JOIN, 2=FULL_ARCHIVE) to proto enum
-static MumbleProto::PchatPersistenceMode channelModeToPersistenceMode(uint32_t channelMode) {
-	return (channelMode == 1) ? MumbleProto::PCHAT_MODE_POST_JOIN : MumbleProto::PCHAT_MODE_FULL_ARCHIVE;
+// Helper to convert ChannelState pchat_protocol (1=FANCY_V1_POST_JOIN, 2=FANCY_V1_FULL_ARCHIVE) to proto enum
+static MumbleProto::PchatProtocol channelProtocolToProto(uint32_t channelProtocol) {
+	return (channelProtocol == 1) ? MumbleProto::PCHAT_PROTOCOL_FANCY_V1_POST_JOIN : MumbleProto::PCHAT_PROTOCOL_FANCY_V1_FULL_ARCHIVE;
 }
 
-static std::string persistenceModeToString(MumbleProto::PchatPersistenceMode mode) {
-	return (mode == MumbleProto::PCHAT_MODE_POST_JOIN) ? "POST_JOIN" : "FULL_ARCHIVE";
+static std::string protocolToString(MumbleProto::PchatProtocol protocol) {
+	return (protocol == MumbleProto::PCHAT_PROTOCOL_FANCY_V1_POST_JOIN) ? "FANCY_V1_POST_JOIN" : "FANCY_V1_FULL_ARCHIVE";
+}
+
+// Backward compatibility: accept both legacy ("POST_JOIN", "FULL_ARCHIVE")
+// and current ("FANCY_V1_POST_JOIN", "FANCY_V1_FULL_ARCHIVE") string values.
+static bool isPostJoinProtocol(const std::string &s) {
+	return s == "FANCY_V1_POST_JOIN" || s == "POST_JOIN";
 }
 
 PersistentChatManager::PersistentChatManager(msdb::PChatMessageTable &msgTable,
@@ -102,16 +108,16 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 		return;
 	}
 
-	if (messageId.empty() || !msg.has_channel_id() || !msg.has_mode()) {
-		qWarning("pchat: REJECTED msgId=%s reason=missing_fields (id_empty=%d has_channel=%d has_mode=%d)",
-			   messageId.c_str(), messageId.empty(), msg.has_channel_id(), msg.has_mode());
+	if (messageId.empty() || !msg.has_channel_id() || !msg.has_protocol()) {
+		qWarning("pchat: REJECTED msgId=%s reason=missing_fields (id_empty=%d has_channel=%d has_protocol=%d)",
+			   messageId.c_str(), messageId.empty(), msg.has_channel_id(), msg.has_protocol());
 		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "missing_fields");
 		return;
 	}
 
 	// Validate channel exists and has the claimed mode
-	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
-	if (channelMode == 0) {
+	uint32_t channelProtocol = m_bridge.getChannelPChatProtocol(channelId);
+	if (channelProtocol == 0) {
 		qWarning("pchat: REJECTED msgId=%s reason=channel_not_persistent channelId=%u",
 			   messageId.c_str(), channelId);
 		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "channel_not_persistent");
@@ -119,11 +125,11 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	}
 
 	// Validate mode matches
-	MumbleProto::PchatPersistenceMode expectedMode = channelModeToPersistenceMode(channelMode);
-	if (msg.mode() != expectedMode) {
-		qWarning("pchat: REJECTED msgId=%s reason=mode_mismatch (got=%d expected=%d)",
-			   messageId.c_str(), msg.mode(), expectedMode);
-		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "mode_mismatch");
+	MumbleProto::PchatProtocol expectedMode = channelProtocolToProto(channelProtocol);
+	if (msg.protocol() != expectedMode) {
+		qWarning("pchat: REJECTED msgId=%s reason=protocol_mismatch (got=%d expected=%d)",
+			   messageId.c_str(), msg.protocol(), expectedMode);
+		sendAck(senderSession, messageId, MumbleProto::PCHAT_ACK_REJECTED, "protocol_mismatch");
 		return;
 	}
 
@@ -173,7 +179,7 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 		clientTs = static_cast< uint64_t >(serverTs);
 	}
 
-	const std::string mode = persistenceModeToString(msg.mode());
+	const std::string mode = protocolToString(msg.protocol());
 
 	msdb::PChatStoredMessage storedMsg;
 	storedMsg.serverID    = serverNum;
@@ -181,7 +187,7 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	storedMsg.channelId   = channelId;
 	storedMsg.timestamp   = static_cast< long long >(clientTs);
 	storedMsg.senderHash  = senderHash;
-	storedMsg.mode        = mode;
+	storedMsg.protocol        = mode;
 	storedMsg.payload     = payload;
 	storedMsg.payloadSize = static_cast< int >(payload.size());
 	storedMsg.replacesId  = replacesId;
@@ -203,7 +209,7 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	deliver.set_channel_id(channelId);
 	deliver.set_timestamp(clientTs);
 	deliver.set_sender_hash(senderHash);
-	deliver.set_mode(msg.mode());
+	deliver.set_protocol(msg.protocol());
 	deliver.set_envelope(payload);
 	if (!replacesId.empty()) {
 		deliver.set_replaces_id(replacesId);
@@ -258,14 +264,14 @@ void PersistentChatManager::handlePchatFetch(unsigned int senderSession, const M
 		return;
 	}
 
-	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
-	if (channelMode == 0) {
+	uint32_t channelProtocol = m_bridge.getChannelPChatProtocol(channelId);
+	if (channelProtocol == 0) {
 		return;
 	}
 
-	// Mode-based filtering: POST_JOIN uses joined_at timestamp
+	// Protocol-based filtering: FANCY_V1_POST_JOIN uses joined_at timestamp
 	long long joinedAtTs = 0;
-	if (channelMode == 1) { // POST_JOIN
+	if (channelProtocol == 1) { // FANCY_V1_POST_JOIN
 		auto joinRecord = m_joinTable.getJoinRecord(serverNum, channelId, requesterHash);
 		if (!joinRecord.has_value()) {
 			return;
@@ -296,11 +302,11 @@ void PersistentChatManager::handlePchatFetch(unsigned int senderSession, const M
 		m->set_channel_id(storedMsg.channelId);
 		m->set_timestamp(static_cast< uint64_t >(storedMsg.timestamp));
 		m->set_sender_hash(storedMsg.senderHash);
-		// Convert stored mode string back to enum
-		if (storedMsg.mode == "POST_JOIN") {
-			m->set_mode(MumbleProto::PCHAT_MODE_POST_JOIN);
+		// Convert stored protocol string back to enum (accepts legacy values)
+		if (isPostJoinProtocol(storedMsg.protocol)) {
+			m->set_protocol(MumbleProto::PCHAT_PROTOCOL_FANCY_V1_POST_JOIN);
 		} else {
-			m->set_mode(MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
+			m->set_protocol(MumbleProto::PCHAT_PROTOCOL_FANCY_V1_FULL_ARCHIVE);
 		}
 		m->set_envelope(storedMsg.payload);
 		if (!storedMsg.replacesId.empty()) {
@@ -333,7 +339,9 @@ void PersistentChatManager::handlePchatKeyAnnounce(unsigned int senderSession, c
 	}
 
 	// Validate algorithm_version
-	if (msg.algorithm_version() != 1) {
+	if (!m_config.supportedAlgorithmVersions.empty()
+		&& m_config.supportedAlgorithmVersions.find(msg.algorithm_version())
+			   == m_config.supportedAlgorithmVersions.end()) {
 		return;
 	}
 
@@ -481,7 +489,7 @@ void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std
 
 	// Determine relay_cap
 	unsigned int relayCap;
-	if (mode == "POST_JOIN") {
+	if (isPostJoinProtocol(mode)) {
 		relayCap = 3;
 	} else {
 		unsigned int onlineMembers = m_bridge.countFancyClientsInChannel(channelId);
@@ -496,7 +504,7 @@ void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std
 	req.serverID        = serverNum;
 	req.requestId       = requestId;
 	req.channelId       = channelId;
-	req.mode            = mode;
+	req.protocol            = mode;
 	req.requesterHash   = requesterHash;
 	req.requesterPublic = requesterPublic;
 	req.relayCap        = static_cast< int >(relayCap);
@@ -508,7 +516,7 @@ void PersistentChatManager::generateKeyRequest(unsigned int channelId, const std
 	// Build and broadcast key request
 	MumbleProto::PchatKeyRequest keyReq;
 	keyReq.set_channel_id(channelId);
-	keyReq.set_mode((mode == "POST_JOIN") ? MumbleProto::PCHAT_MODE_POST_JOIN : MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
+	keyReq.set_protocol(isPostJoinProtocol(mode) ? MumbleProto::PCHAT_PROTOCOL_FANCY_V1_POST_JOIN : MumbleProto::PCHAT_PROTOCOL_FANCY_V1_FULL_ARCHIVE);
 	keyReq.set_requester_hash(requesterHash);
 	keyReq.set_requester_public(requesterPublic);
 	keyReq.set_request_id(requestId);
@@ -528,17 +536,17 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 
 	const auto serverNum = m_bridge.serverNum();
 	const std::string certHash = m_bridge.getCertHash(sessionId);
-	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
+	uint32_t channelProtocol = m_bridge.getChannelPChatProtocol(channelId);
 
 	qWarning("pchat: onFancyClientJoinedChannel session=%u channel=%u mode=%u hash=%s",
-		   sessionId, channelId, channelMode, certHash.c_str());
+		   sessionId, channelId, channelProtocol, certHash.c_str());
 
-	if (channelMode == 0) {
+	if (channelProtocol == 0) {
 		return;
 	}
 
-	// Record member join for POST_JOIN mode
-	if (channelMode == 1) {
+	// Record member join for FANCY_V1_POST_JOIN protocol
+	if (channelProtocol == 1) {
 		msdb::PChatMemberJoin join;
 		join.serverID  = serverNum;
 		join.channelId = channelId;
@@ -557,7 +565,7 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 
 		MumbleProto::PchatKeyRequest keyReq;
 		keyReq.set_channel_id(req.channelId);
-		keyReq.set_mode((req.mode == "POST_JOIN") ? MumbleProto::PCHAT_MODE_POST_JOIN : MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
+		keyReq.set_protocol(isPostJoinProtocol(req.protocol) ? MumbleProto::PCHAT_PROTOCOL_FANCY_V1_POST_JOIN : MumbleProto::PCHAT_PROTOCOL_FANCY_V1_FULL_ARCHIVE);
 		keyReq.set_requester_hash(req.requesterHash);
 		keyReq.set_requester_public(req.requesterPublic);
 		keyReq.set_request_id(req.requestId);
@@ -581,7 +589,7 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 			});
 
 			if (!hasPending) {
-				const std::string mode = (channelMode == 1) ? "POST_JOIN" : "FULL_ARCHIVE";
+				const std::string mode = (channelProtocol == 1) ? "FANCY_V1_POST_JOIN" : "FANCY_V1_FULL_ARCHIVE";
 				generateKeyRequest(channelId, certHash, userKeys->identityPublic, mode);
 			}
 		}
@@ -941,8 +949,8 @@ void PersistentChatManager::handlePchatDeleteMessages(unsigned int senderSession
 	}
 
 	// Verify channel is persistent
-	uint32_t channelMode = m_bridge.getChannelPChatMode(channelId);
-	if (channelMode == 0) {
+	uint32_t channelProtocol = m_bridge.getChannelPChatProtocol(channelId);
+	if (channelProtocol == 0) {
 		qWarning("pchat: deleteMessages rejected - channel not persistent session=%u channel=%u", senderSession, channelId);
 		return;
 	}

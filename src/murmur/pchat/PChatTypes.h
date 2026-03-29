@@ -13,11 +13,12 @@
 
 namespace pchat {
 
-/// Persistent chat mode matching protobuf pchat_mode values.
-enum class Mode : uint32_t {
-	None        = 0,
-	PostJoin    = 1,
-	FullArchive = 2,
+/// Persistent chat protocol matching protobuf PchatProtocol values.
+enum class Protocol : uint32_t {
+	None             = 0,
+	FancyV1PostJoin  = 1,
+	FancyV1FullArchive = 2,
+	ServerManaged    = 3,
 };
 
 /// A stored persistent chat message (opaque ciphertext).
@@ -26,7 +27,7 @@ struct StoredMessage {
 	uint32_t channelId = 0;
 	int64_t timestamp  = 0;
 	std::string senderHash;
-	Mode mode = Mode::None;
+	Protocol protocol = Protocol::None;
 	std::vector< uint8_t > payload;
 	std::optional< std::string > replacesId;
 	std::optional< std::string > supersededBy;
@@ -36,7 +37,7 @@ struct StoredMessage {
 /// Channel persistence configuration.
 struct ChannelConfig {
 	uint32_t channelId      = 0;
-	Mode mode               = Mode::None;
+	Protocol protocol          = Protocol::None;
 	uint32_t maxHistory     = 5000;
 	uint32_t retentionDays  = 90;
 };
@@ -51,7 +52,7 @@ struct UserKeys {
 	int64_t updatedAt = 0;
 };
 
-/// POST_JOIN member join record.
+/// FANCY_V1_POST_JOIN member join record.
 struct MemberJoin {
 	uint32_t channelId = 0;
 	std::string certHash;
@@ -63,7 +64,7 @@ struct MemberJoin {
 struct PendingKeyRequest {
 	std::string requestId;
 	uint32_t channelId = 0;
-	Mode mode          = Mode::None;
+	Protocol protocol  = Protocol::None;
 	std::string requesterHash;
 	std::vector< uint8_t > requesterPublic;
 	uint32_t relayCap  = 7;
