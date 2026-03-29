@@ -64,7 +64,8 @@
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallenge, 112)    \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallengeResponse, 113) \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallengeResult, 114)  \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatDeleteMessages, 115)
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatDeleteMessages, 115) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatOfflineQueueDrain, 116)
 
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.

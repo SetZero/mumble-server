@@ -19,6 +19,7 @@
 #include "PChatPendingKeyRequestsTable.h"
 #include "PChatUserKeysTable.h"
 #include "PChatKeyHoldersTable.h"
+#include "PChatOfflineQueueTable.h"
 #include "ServerTable.h"
 #include "UserProperty.h"
 #include "UserPropertyTable.h"
@@ -56,6 +57,7 @@ namespace server {
 				PChatMemberJoinTable,
 				PChatPendingKeyRequestsTable,
 				PChatKeyHoldersTable,
+				PChatOfflineQueueTable,
 			};
 		}
 
@@ -138,6 +140,9 @@ namespace server {
 			id = addTable(std::make_unique< PChatKeyHoldersTable >(m_sql, m_backend, getServerTable()));
 			assert(id == TableIndex::PChatKeyHoldersTable);
 
+			id = addTable(std::make_unique< PChatOfflineQueueTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::PChatOfflineQueueTable);
+
 			// Mark id as unused in case the asserts are disabled (e.g. in release builds)
 			(void) id;
 		}
@@ -175,6 +180,7 @@ namespace server {
 		GET_TABLE_IMPL(PChatMemberJoinTable)
 		GET_TABLE_IMPL(PChatPendingKeyRequestsTable)
 		GET_TABLE_IMPL(PChatKeyHoldersTable)
+		GET_TABLE_IMPL(PChatOfflineQueueTable)
 
 #undef GET_TABLE_IMPL
 

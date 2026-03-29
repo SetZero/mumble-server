@@ -41,6 +41,7 @@ add_library(mumble_server_object_lib OBJECT
 	"DBWrapper.cpp"
 
 	"pchat/PersistentChatManager.cpp"
+	"pchat/PchatProtocolHandlers.cpp"
 	"pchat/ServerBridge.cpp"
 	"pchat/TokenBucketRateLimiter.cpp"
 

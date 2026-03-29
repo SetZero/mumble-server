@@ -26,6 +26,7 @@ public:
 	void sendPchatKeyHoldersList(unsigned int sessionId, const MumbleProto::PchatKeyHoldersList &msg) override;
 void sendPchatKeyChallenge(unsigned int sessionId, const MumbleProto::PchatKeyChallenge &msg) override;
 void sendPchatKeyChallengeResult(unsigned int sessionId, const MumbleProto::PchatKeyChallengeResult &msg) override;
+	void sendPchatOfflineQueueDrain(unsigned int sessionId, const MumbleProto::PchatOfflineQueueDrain &msg) override;
 
 	void broadcastPchatMessageDeliver(unsigned int channelId, const MumbleProto::PchatMessageDeliver &msg,
 									  unsigned int excludeSession = 0) override;
@@ -45,7 +46,7 @@ void sendPchatKeyChallengeResult(unsigned int sessionId, const MumbleProto::Pcha
 	bool hasDeleteMessagePermission(unsigned int sessionId, unsigned int channelId) const override;
 	bool hasKeyOwnerPermission(unsigned int sessionId, unsigned int channelId) const override;
 	void sendPermissionDenied(unsigned int sessionId, unsigned int channelId, unsigned int permission) override;
-	uint32_t getChannelPChatProtocol(unsigned int channelId) const override;
+	Protocol getChannelPChatProtocol(unsigned int channelId) const override;
 	std::vector< std::string > getChannelKeyCustodians(unsigned int channelId) const override;
 	unsigned int countFancyClientsInChannel(unsigned int channelId) const override;
 	int64_t serverTimeMs() const override;

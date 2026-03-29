@@ -15,6 +15,7 @@
 #include "database/PChatMemberJoinTable.h"
 #include "database/PChatPendingKeyRequestsTable.h"
 #include "database/PChatKeyHoldersTable.h"
+#include "database/PChatOfflineQueueTable.h"
 #include "database/SQLiteConnectionParameter.h"
 
 #include "Mumble.pb.h"
@@ -135,10 +136,12 @@ public:
 	void sendPermissionDenied(unsigned int sessionId, unsigned int channelId, unsigned int permission) override {
 		sentPermissionDenied.push_back({ sessionId, channelId, permission });
 	}
-	uint32_t getChannelPChatProtocol(unsigned int channelId) const override {
+	pchat::Protocol getChannelPChatProtocol(unsigned int channelId) const override {
 		auto it = channelModes.find(channelId);
-		return (it != channelModes.end()) ? it->second : 0;
+		return (it != channelModes.end()) ? static_cast< pchat::Protocol >(it->second) : pchat::Protocol::None;
 	}
+	void sendPchatOfflineQueueDrain(unsigned int /*sessionId*/,
+									const MumbleProto::PchatOfflineQueueDrain & /*msg*/) override {}
 	std::vector< std::string > getChannelKeyCustodians(unsigned int channelId) const override {
 		auto it = channelCustodians.find(channelId);
 		return (it != channelCustodians.end()) ? it->second : std::vector< std::string >{};
@@ -228,7 +231,8 @@ private:
 
 		m_mgr = std::make_unique< pchat::PersistentChatManager >(
 			m_db->getPChatMessageTable(), m_db->getPChatUserKeysTable(), m_db->getPChatMemberJoinTable(),
-			m_db->getPChatPendingKeyRequestsTable(), m_db->getPChatKeyHoldersTable(), *m_bridge, *m_limiter, config);
+			m_db->getPChatPendingKeyRequestsTable(), m_db->getPChatKeyHoldersTable(),
+			m_db->getPChatOfflineQueueTable(), *m_bridge, *m_limiter, config);
 	}
 
 	/// Helper: set up bridge so session 10 maps to cert hash "abc123" in channel 42 (FULL_ARCHIVE).

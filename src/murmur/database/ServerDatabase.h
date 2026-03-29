@@ -34,6 +34,7 @@ namespace server {
 		class PChatMemberJoinTable;
 		class PChatPendingKeyRequestsTable;
 		class PChatKeyHoldersTable;
+		class PChatOfflineQueueTable;
 
 		class ServerDatabase : public ::mumble::db::Database {
 		public:
@@ -70,6 +71,7 @@ namespace server {
 			PChatMemberJoinTable &getPChatMemberJoinTable();
 			PChatPendingKeyRequestsTable &getPChatPendingKeyRequestsTable();
 			PChatKeyHoldersTable &getPChatKeyHoldersTable();
+			PChatOfflineQueueTable &getPChatOfflineQueueTable();
 
 		protected:
 			void setupStandardTables() override;
