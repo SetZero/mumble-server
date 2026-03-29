@@ -135,7 +135,7 @@ public:
 	void sendPermissionDenied(unsigned int sessionId, unsigned int channelId, unsigned int permission) override {
 		sentPermissionDenied.push_back({ sessionId, channelId, permission });
 	}
-	uint32_t getChannelPChatMode(unsigned int channelId) const override {
+	uint32_t getChannelPChatProtocol(unsigned int channelId) const override {
 		auto it = channelModes.find(channelId);
 		return (it != channelModes.end()) ? it->second : 0;
 	}
@@ -247,7 +247,7 @@ private:
 		msg.set_message_id(msgId);
 		msg.set_channel_id(42);
 		msg.set_sender_hash("abc123");
-		msg.set_mode(MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
+		msg.set_protocol(MumbleProto::PCHAT_PROTOCOL_FANCY_V1_FULL_ARCHIVE);
 		msg.set_envelope("encrypted-payload");
 		msg.set_timestamp(static_cast< uint64_t >(m_bridge->currentTimeMs));
 		return msg;
@@ -421,7 +421,7 @@ void TestPersistentChatManager::handlePchatMessage_rejectsModeMismatch() {
 
 	m_mgr->handlePchatMessage(10, makeValidMessage());
 	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
-	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("mode_mismatch"));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("protocol_mismatch"));
 }
 
 void TestPersistentChatManager::handlePchatMessage_rejectsMissingEnvelope() {
@@ -432,7 +432,7 @@ void TestPersistentChatManager::handlePchatMessage_rejectsMissingEnvelope() {
 	msg.set_message_id("msg-001");
 	msg.set_channel_id(42);
 	msg.set_sender_hash("abc123");
-	msg.set_mode(MumbleProto::PCHAT_MODE_FULL_ARCHIVE);
+	msg.set_protocol(MumbleProto::PCHAT_PROTOCOL_FANCY_V1_FULL_ARCHIVE);
 	// no envelope set
 
 	m_mgr->handlePchatMessage(10, msg);

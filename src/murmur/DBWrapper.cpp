@@ -436,8 +436,8 @@ void DBWrapper::initializeChannelDetails(Server &server) {
 			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::MaxUsers);
 
 		// Read persistent chat properties
-		currentChannel->uiPChatMode = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
-			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::PChatMode);
+		currentChannel->uiPChatProtocol = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::PChatProtocol);
 
 		currentChannel->uiPChatMaxHistory = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
 			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::PChatMaxHistory);
@@ -647,8 +647,8 @@ void DBWrapper::updateChannelData(unsigned int serverID, const Channel &channel)
 													 std::to_string(channel.uiMaxUsers));
 
 	// Update persistent chat properties
-	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::PChatMode,
-													 std::to_string(channel.uiPChatMode));
+	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::PChatProtocol,
+													 std::to_string(channel.uiPChatProtocol));
 
 	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::PChatMaxHistory,
 													 std::to_string(channel.uiPChatMaxHistory));

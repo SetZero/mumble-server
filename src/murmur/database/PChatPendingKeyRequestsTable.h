@@ -28,7 +28,7 @@ namespace server {
 			unsigned int serverID = 0;
 			std::string requestId;
 			unsigned int channelId = 0;
-			std::string mode; // "POST_JOIN" or "FULL_ARCHIVE"
+			std::string protocol; // "FANCY_V1_POST_JOIN" or "FANCY_V1_FULL_ARCHIVE"
 			std::string requesterHash;
 			std::string requesterPublic; // X25519 public key (32 bytes)
 			int relayCap    = 7;

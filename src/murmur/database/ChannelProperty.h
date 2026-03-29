@@ -17,7 +17,7 @@ namespace server {
 			Description,
 			Position,
 			MaxUsers,
-			PChatMode,
+			PChatProtocol,
 			PChatMaxHistory,
 			PChatRetentionDays,
 			PChatKeyCustodians,

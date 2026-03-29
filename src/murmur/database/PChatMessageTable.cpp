@@ -102,7 +102,7 @@ namespace server {
 					  << column::payload_size << "\", \"" << column::replaces_id << "\", \"" << column::created_at
 					  << "\") VALUES (:sid, :mid, :cid, :ts, :sh, :mode, :payload, :psize, :rid, :cat)",
 					soci::use(msg.serverID), soci::use(msg.messageId), soci::use(msg.channelId),
-					soci::use(msg.timestamp), soci::use(msg.senderHash), soci::use(msg.mode),
+					soci::use(msg.timestamp), soci::use(msg.senderHash), soci::use(msg.protocol),
 					soci::use(msg.payload), soci::use(msg.payloadSize), soci::use(msg.replacesId),
 					soci::use(createdAt);
 
@@ -201,7 +201,7 @@ namespace server {
 					msg.channelId   = static_cast< unsigned int >(chId);
 					msg.timestamp   = ts;
 					msg.senderHash  = senderHash;
-					msg.mode        = mode;
+					msg.protocol        = mode;
 					msg.payload     = payload;
 					msg.payloadSize = psize;
 					msg.replacesId  = replacesId;
@@ -382,6 +382,18 @@ namespace server {
 					// Table introduced in schema version 12, nothing to migrate from
 				} else {
 					mdb::Table::migrate(fromSchemaVersion, toSchemaVersion);
+				}
+
+				if (fromSchemaVersion >= 12 && fromSchemaVersion < 14) {
+					// v14: Rename legacy protocol string values in the mode column.
+					// Old values: "POST_JOIN", "FULL_ARCHIVE"
+					// New values: "FANCY_V1_POST_JOIN", "FANCY_V1_FULL_ARCHIVE"
+					m_sql << "UPDATE \"" << NAME << "\" SET \"" << column::mode
+						  << "\" = 'FANCY_V1_POST_JOIN' WHERE \"" << column::mode
+						  << "\" = 'POST_JOIN'";
+					m_sql << "UPDATE \"" << NAME << "\" SET \"" << column::mode
+						  << "\" = 'FANCY_V1_FULL_ARCHIVE' WHERE \"" << column::mode
+						  << "\" = 'FULL_ARCHIVE'";
 				}
 			} catch (const soci::soci_error &) {
 				std::throw_with_nested(::mdb::MigrationException(

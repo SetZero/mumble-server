@@ -114,8 +114,8 @@ struct IServerBridge {
 	/// Send a PermissionDenied message to a specific user session.
 	virtual void sendPermissionDenied(unsigned int sessionId, unsigned int channelId, unsigned int permission) = 0;
 
-	/// Get the channel mode for a channel (from Channel object).
-	virtual uint32_t getChannelPChatMode(unsigned int channelId) const = 0;
+	/// Get the channel protocol for a channel (from Channel object).
+	virtual uint32_t getChannelPChatProtocol(unsigned int channelId) const = 0;
 
 	/// Get the key custodians list for a channel.
 	virtual std::vector< std::string > getChannelKeyCustodians(unsigned int channelId) const = 0;
@@ -153,6 +153,8 @@ public:
 		int pendingFulfilledMaxHours  = 24;
 		int perUserPendingLimit       = 5;
 		int perChannelPendingSoftCap  = 100;
+		/// Accepted E2EE algorithm versions. Empty means accept all.
+		std::unordered_set< uint32_t > supportedAlgorithmVersions = { 1 };
 	};
 
 	PersistentChatManager(::mumble::server::db::PChatMessageTable &msgTable,
