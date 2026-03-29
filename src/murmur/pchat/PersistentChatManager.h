@@ -6,6 +6,7 @@
 #ifndef MUMBLE_MURMUR_PCHAT_PERSISTENTCHATMANAGER_H_
 #define MUMBLE_MURMUR_PCHAT_PERSISTENTCHATMANAGER_H_
 
+#include "IPchatProtocolHandler.h"
 #include "IRateLimiter.h"
 #include "PChatTypes.h"
 
@@ -13,6 +14,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -27,6 +29,7 @@ namespace server {
 		class PChatMemberJoinTable;
 		class PChatPendingKeyRequestsTable;
 	class PChatKeyHoldersTable;
+	class PChatOfflineQueueTable;
 	} // namespace db
 } // namespace server
 } // namespace mumble
@@ -96,6 +99,9 @@ struct IServerBridge {
 	/// Send a PchatKeyChallengeResult to a specific user session.
 	virtual void sendPchatKeyChallengeResult(unsigned int sessionId, const MumbleProto::PchatKeyChallengeResult &msg) = 0;
 
+	/// Send a PchatOfflineQueueDrain to a specific user session.
+	virtual void sendPchatOfflineQueueDrain(unsigned int sessionId, const MumbleProto::PchatOfflineQueueDrain &msg) = 0;
+
 	/// Check if a session is a Fancy Mumble v2+ client.
 	virtual bool isFancyClient(unsigned int sessionId) const = 0;
 
@@ -115,7 +121,7 @@ struct IServerBridge {
 	virtual void sendPermissionDenied(unsigned int sessionId, unsigned int channelId, unsigned int permission) = 0;
 
 	/// Get the channel protocol for a channel (from Channel object).
-	virtual uint32_t getChannelPChatProtocol(unsigned int channelId) const = 0;
+	virtual Protocol getChannelPChatProtocol(unsigned int channelId) const = 0;
 
 	/// Get the key custodians list for a channel.
 	virtual std::vector< std::string > getChannelKeyCustodians(unsigned int channelId) const = 0;
@@ -155,6 +161,10 @@ public:
 		int perChannelPendingSoftCap  = 100;
 		/// Accepted E2EE algorithm versions. Empty means accept all.
 		std::unordered_set< uint32_t > supportedAlgorithmVersions = { 1 };
+		/// Maximum number of queued offline messages per (cert_hash, channel).
+		int offlineQueueMaxCapacity   = 1000;
+		/// Maximum age of queued offline messages in days before expiry.
+		int offlineQueueMaxAgeDays    = 30;
 	};
 
 	PersistentChatManager(::mumble::server::db::PChatMessageTable &msgTable,
@@ -162,6 +172,7 @@ public:
 						  ::mumble::server::db::PChatMemberJoinTable &joinTable,
 						  ::mumble::server::db::PChatPendingKeyRequestsTable &pendingTable,
 						  ::mumble::server::db::PChatKeyHoldersTable &holdersTable,
+						  ::mumble::server::db::PChatOfflineQueueTable &queueTable,
 						  IServerBridge &bridge,
 						  IRateLimiter &rateLimiter,
 						  Config config);
@@ -171,9 +182,10 @@ public:
 						  ::mumble::server::db::PChatMemberJoinTable &joinTable,
 						  ::mumble::server::db::PChatPendingKeyRequestsTable &pendingTable,
 						  ::mumble::server::db::PChatKeyHoldersTable &holdersTable,
+						  ::mumble::server::db::PChatOfflineQueueTable &queueTable,
 						  IServerBridge &bridge,
 						  IRateLimiter &rateLimiter)
-		: PersistentChatManager(msgTable, keysTable, joinTable, pendingTable, holdersTable, bridge, rateLimiter, Config{}) {}
+		: PersistentChatManager(msgTable, keysTable, joinTable, pendingTable, holdersTable, queueTable, bridge, rateLimiter, Config{}) {}
 
 	/// Returns true if the dataID is a pchat message that was handled.
 	/// Returns false if the dataID is not a pchat message (should be forwarded normally).
@@ -206,6 +218,9 @@ public:
 
 	/// Handle a PchatDeleteMessages (client wants to delete stored messages).
 	void handlePchatDeleteMessages(unsigned int senderSession, const MumbleProto::PchatDeleteMessages &msg);
+
+	/// Handle a PchatAck from a client (e.g. offline queue acknowledgement).
+	void handlePchatAck(unsigned int senderSession, const MumbleProto::PchatAck &msg);
 
 	/// Called when a Fancy client connects and joins a persistent channel.
 	/// Delivers pending key requests for that channel.
@@ -242,7 +257,17 @@ private:
 
 	/// Generate and broadcast a key request for a new user in a persistent channel.
 	void generateKeyRequest(unsigned int channelId, const std::string &requesterHash,
-							const std::string &requesterPublic, const std::string &mode);
+							const std::string &requesterPublic, IPchatProtocolHandler &handler);
+
+	/// Look up the protocol handler for a channel protocol value. Returns nullptr for unknown protocols.
+	IPchatProtocolHandler *getHandler(Protocol channelProtocol);
+
+	/// Enqueue a relay message for all verified offline recipients in a channel.
+	void enqueueForOfflineRecipients(unsigned int channelId, unsigned int senderSession,
+									 const MumbleProto::PchatMessageDeliver &deliver);
+
+	/// Drain the offline queue for a user/channel and send the PchatOfflineQueueDrain.
+	void drainOfflineQueue(unsigned int sessionId, unsigned int channelId, const std::string &certHash);
 
 	std::string generateUUID();
 
@@ -251,9 +276,13 @@ private:
 	::mumble::server::db::PChatMemberJoinTable &m_joinTable;
 	::mumble::server::db::PChatPendingKeyRequestsTable &m_pendingTable;
 	::mumble::server::db::PChatKeyHoldersTable &m_holdersTable;
+	::mumble::server::db::PChatOfflineQueueTable &m_queueTable;
 	IServerBridge &m_bridge;
 	IRateLimiter &m_rateLimiter;
 	Config m_config;
+
+	/// Protocol handlers keyed by channel protocol value.
+	std::unordered_map< Protocol, std::unique_ptr< IPchatProtocolHandler > > m_handlers;
 
 	/// In-memory state for the key-possession challenge protocol.
 	/// Maps channel_id to (shared challenge nonce, pending sessions, reference HMAC).

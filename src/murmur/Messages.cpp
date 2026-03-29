@@ -2702,8 +2702,13 @@ void Server::msgPchatKeyExchange(ServerUser *uSource, MumbleProto::PchatKeyExcha
 void Server::msgPchatKeyRequest(ServerUser *, MumbleProto::PchatKeyRequest &) {
 }
 
-// Server -> Client only; ignore if received from client
-void Server::msgPchatAck(ServerUser *, MumbleProto::PchatAck &) {
+// PchatAck is primarily Server -> Client, but clients also send it
+// to acknowledge offline queue drains.
+void Server::msgPchatAck(ServerUser *uSource, MumbleProto::PchatAck &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatAck(uSource->uiSession, msg);
+	}
 }
 
 void Server::msgPchatEpochCountersig(ServerUser *uSource, MumbleProto::PchatEpochCountersig &msg) {
@@ -2771,6 +2776,10 @@ void Server::msgPchatDeleteMessages(ServerUser *uSource, MumbleProto::PchatDelet
 
 // Server -> Client only; ignore if received from client
 void Server::msgPchatKeyChallengeResult(ServerUser *, MumbleProto::PchatKeyChallengeResult &) {
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatOfflineQueueDrain(ServerUser *, MumbleProto::PchatOfflineQueueDrain &) {
 }
 
 #undef RATELIMIT

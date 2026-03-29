@@ -19,6 +19,7 @@ enum class Protocol : uint32_t {
 	FancyV1PostJoin  = 1,
 	FancyV1FullArchive = 2,
 	ServerManaged    = 3,
+	SignalV1         = 4,
 };
 
 /// A stored persistent chat message (opaque ciphertext).
@@ -74,18 +75,22 @@ struct PendingKeyRequest {
 	std::optional< std::string > fulfilledBy;
 };
 
-/// Result of a fetch operation.
-struct FetchResult {
-	std::vector< StoredMessage > messages;
-	bool hasMore      = false;
-	uint32_t totalStored = 0;
-};
-
 /// Acknowledgement sent back to the client.
 struct Ack {
 	std::string messageId;
 	std::string status; // "stored", "rejected"
 	std::string reason; // optional reason for rejection
+};
+
+/// An offline-queued message awaiting delivery on reconnect.
+struct QueuedMessage {
+	std::string certHash;
+	uint32_t channelId  = 0;
+	std::string messageId;
+	std::string senderHash;
+	int64_t timestamp   = 0;
+	std::string envelope;
+	int64_t createdAt   = 0;
 };
 
 } // namespace pchat

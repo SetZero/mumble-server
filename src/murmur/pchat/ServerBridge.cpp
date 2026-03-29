@@ -186,12 +186,12 @@ bool ServerBridge::hasKeyOwnerPermission(unsigned int sessionId, unsigned int ch
 	return m_server.hasPermission(user, c, ChanACL::KeyOwner);
 }
 
-uint32_t ServerBridge::getChannelPChatProtocol(unsigned int channelId) const {
+Protocol ServerBridge::getChannelPChatProtocol(unsigned int channelId) const {
 	Channel *c = m_server.qhChannels.value(channelId);
 	if (!c) {
-		return 0;
+		return Protocol::None;
 	}
-	return c->uiPChatProtocol;
+	return static_cast< Protocol >(c->uiPChatProtocol);
 }
 
 std::vector< std::string > ServerBridge::getChannelKeyCustodians(unsigned int channelId) const {
@@ -256,6 +256,12 @@ void ServerBridge::sendPchatKeyChallenge(unsigned int sessionId, const MumblePro
 }
 
 void ServerBridge::sendPchatKeyChallengeResult(unsigned int sessionId, const MumbleProto::PchatKeyChallengeResult &msg) {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	if (!user || user->sState != ServerUser::Authenticated) return;
+	m_server.sendMessage(user, msg);
+}
+
+void ServerBridge::sendPchatOfflineQueueDrain(unsigned int sessionId, const MumbleProto::PchatOfflineQueueDrain &msg) {
 	ServerUser *user = m_server.qhUsers.value(sessionId);
 	if (!user || user->sState != ServerUser::Authenticated) return;
 	m_server.sendMessage(user, msg);
