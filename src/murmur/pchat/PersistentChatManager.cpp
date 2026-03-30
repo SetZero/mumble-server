@@ -722,11 +722,16 @@ void PersistentChatManager::enqueueForOfflineRecipients(unsigned int channelId, 
 		entry.envelope  = serialized;
 		entry.createdAt = now;
 
-		m_queueTable.enqueue(entry);
+		try {
+			m_queueTable.enqueue(entry);
 
-		// Enforce capacity limit (FIFO eviction).
-		m_queueTable.enforceCapacity(serverNum, holder.certHash, channelId,
-									 static_cast< unsigned int >(m_config.offlineQueueMaxCapacity));
+			// Enforce capacity limit (FIFO eviction).
+			m_queueTable.enforceCapacity(serverNum, holder.certHash, channelId,
+										 static_cast< unsigned int >(m_config.offlineQueueMaxCapacity));
+		} catch (const std::exception &e) {
+			qWarning("pchat: failed to enqueue offline message for cert_hash=%s channel=%u: %s",
+					 holder.certHash.c_str(), channelId, e.what());
+		}
 	}
 }
 
@@ -736,7 +741,14 @@ void PersistentChatManager::drainOfflineQueue(unsigned int sessionId, unsigned i
 											  const std::string &certHash) {
 	const auto serverNum = m_bridge.serverNum();
 
-	auto queued = m_queueTable.fetchQueue(serverNum, certHash, channelId);
+	std::vector< ::mumble::server::db::PChatOfflineQueueEntry > queued;
+	try {
+		queued = m_queueTable.fetchQueue(serverNum, certHash, channelId);
+	} catch (const std::exception &e) {
+		qWarning("pchat: failed to fetch offline queue for cert_hash=%s channel=%u: %s",
+				 certHash.c_str(), channelId, e.what());
+		return;
+	}
 	if (queued.empty()) {
 		return;
 	}
@@ -789,7 +801,12 @@ void PersistentChatManager::handlePchatAck(unsigned int senderSession, const Mum
 	qDebug("pchat: offline queue ack from session=%u cert_hash=%s channel=%u ids=%d",
 		   senderSession, certHash.c_str(), channelId, static_cast< int >(ids.size()));
 
-	m_queueTable.deleteByIds(serverNum, certHash, channelId, ids);
+	try {
+		m_queueTable.deleteByIds(serverNum, certHash, channelId, ids);
+	} catch (const std::exception &e) {
+		qWarning("pchat: failed to delete offline queue entries for cert_hash=%s channel=%u: %s",
+				 certHash.c_str(), channelId, e.what());
+	}
 }
 
 std::string PersistentChatManager::generateUUID() {
