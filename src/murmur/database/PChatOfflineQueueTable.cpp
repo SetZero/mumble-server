@@ -297,8 +297,8 @@ namespace server {
 		void PChatOfflineQueueTable::migrate(unsigned int fromSchemaVersion, unsigned int toSchemaVersion) {
 			assert(fromSchemaVersion <= toSchemaVersion);
 			try {
-				if (fromSchemaVersion < 13) {
-					// Table introduced in schema version 13
+				if (fromSchemaVersion < 15) {
+					// Table introduced in schema version 15 — nothing to migrate from older schemas.
 				} else {
 					mdb::Table::migrate(fromSchemaVersion, toSchemaVersion);
 				}
