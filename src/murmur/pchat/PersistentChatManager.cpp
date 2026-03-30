@@ -965,8 +965,10 @@ void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSessio
 		autoFetch.set_limit(50);
 		handlePchatFetch(senderSession, autoFetch);
 
-		// Drain any offline-queued messages for this user/channel.
-		drainOfflineQueue(senderSession, channelId, certHash);
+
+		if (!handler->storesMessages()) {
+			drainOfflineQueue(senderSession, channelId, certHash);
+		}
 
 		broadcastKeyHoldersList(channelId);
 		return;
@@ -1101,9 +1103,14 @@ void PersistentChatManager::handlePchatKeyChallengeResponse(unsigned int senderS
 		autoFetch.set_limit(50);
 		handlePchatFetch(senderSession, autoFetch);
 
-		// Drain any offline-queued messages for this user/channel.
-		std::string certHash = m_bridge.getCertHash(senderSession);
-		drainOfflineQueue(senderSession, channelId, certHash);
+		// Drain offline-queued messages only for protocols that don't persist
+		// messages server-side.  Fancy E2EE channels are already covered by
+		// handlePchatFetch above.
+		auto *handler = getHandler(m_bridge.getChannelPChatProtocol(channelId));
+		if (handler && !handler->storesMessages()) {
+			std::string certHash = m_bridge.getCertHash(senderSession);
+			drainOfflineQueue(senderSession, channelId, certHash);
+		}
 	}
 
 	// Broadcast the current holders list to all verified sessions so every
