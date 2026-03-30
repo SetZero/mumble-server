@@ -965,7 +965,10 @@ void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSessio
 		autoFetch.set_limit(50);
 		handlePchatFetch(senderSession, autoFetch);
 
-
+		// Drain offline-queued messages only for protocols that don't persist
+		// messages server-side (e.g. SignalV1).  For Fancy E2EE channels the
+		// messages are already stored in the message table and delivered by
+		// handlePchatFetch above.
 		if (!handler->storesMessages()) {
 			drainOfflineQueue(senderSession, channelId, certHash);
 		}
