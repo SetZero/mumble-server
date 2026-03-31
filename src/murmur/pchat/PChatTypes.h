@@ -82,6 +82,18 @@ struct Ack {
 	std::string reason; // optional reason for rejection
 };
 
+/// A stored emoji reaction on a persistent message.
+struct StoredReaction {
+        std::string messageId;
+        uint32_t channelId = 0;
+        std::string emoji;
+        bool isServerEmoji   = false;
+        std::string senderHash;
+        std::string senderName;
+        int64_t timestamp    = 0;
+        int64_t createdAt    = 0;
+};
+
 /// An offline-queued message awaiting delivery on reconnect.
 struct QueuedMessage {
 	std::string certHash;

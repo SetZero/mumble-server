@@ -267,6 +267,35 @@ void ServerBridge::sendPchatOfflineQueueDrain(unsigned int sessionId, const Mumb
 	m_server.sendMessage(user, msg);
 }
 
+void ServerBridge::sendPchatReactionDeliver(unsigned int sessionId, const MumbleProto::PchatReactionDeliver &msg) {
+        ServerUser *user = m_server.qhUsers.value(sessionId);
+        if (!user || user->sState != ServerUser::Authenticated) return;
+        m_server.sendMessage(user, msg);
+}
+
+void ServerBridge::sendPchatReactionFetchResponse(unsigned int sessionId, const MumbleProto::PchatReactionFetchResponse &msg) {
+        ServerUser *user = m_server.qhUsers.value(sessionId);
+        if (!user || user->sState != ServerUser::Authenticated) return;
+        m_server.sendMessage(user, msg);
+}
+
+void ServerBridge::broadcastPchatReactionDeliver(unsigned int channelId, const MumbleProto::PchatReactionDeliver &msg,
+                                                 unsigned int excludeSession) {
+        Channel *c = m_server.qhChannels.value(channelId);
+        if (!c) return;
+
+        for (ServerUser *pUser : c->qlUsers
+                | std::views::transform([](User *u) {
+                         return static_cast< ServerUser * >(u);
+                })
+                | std::views::filter([excludeSession](ServerUser *su) {
+                        return su->uiSession != excludeSession && su->sState == ServerUser::Authenticated && isFancy(su);
+                })
+        ) {
+                m_server.sendMessage(pUser, msg);
+        }
+}
+
 void ServerBridge::sendPermissionDenied(unsigned int sessionId, unsigned int channelId, unsigned int permission) {
 	ServerUser *user = m_server.qhUsers.value(sessionId);
 	if (!user || user->sState != ServerUser::Authenticated) return;

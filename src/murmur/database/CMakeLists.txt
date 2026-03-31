@@ -36,6 +36,7 @@ add_library(mumble_server_database STATIC
 	"PChatPendingKeyRequestsTable.cpp"
 	"PChatKeyHoldersTable.cpp"
 	"PChatOfflineQueueTable.cpp"
+    "PChatReactionTable.cpp"
 )
 
 set_property(TARGET mumble_server_database PROPERTY INTERPROCEDURAL_OPTIMIZATION ${lto})

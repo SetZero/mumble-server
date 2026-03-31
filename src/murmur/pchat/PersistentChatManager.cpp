@@ -14,6 +14,7 @@
 #include "database/PChatPendingKeyRequestsTable.h"
 #include "database/PChatUserKeysTable.h"
 #include "database/PChatKeyHoldersTable.h"
+#include "database/PChatReactionTable.h"
 
 #include <QDebug>
 
@@ -57,11 +58,12 @@ PersistentChatManager::PersistentChatManager(msdb::PChatMessageTable &msgTable,
 											 msdb::PChatPendingKeyRequestsTable &pendingTable,
 											 msdb::PChatKeyHoldersTable &holdersTable,
 											 msdb::PChatOfflineQueueTable &queueTable,
+                                                                                msdb::PChatReactionTable &reactionTable,
 											 IServerBridge &bridge,
 											 IRateLimiter &rateLimiter,
 											 Config config)
 	: m_msgTable(msgTable), m_keysTable(keysTable), m_joinTable(joinTable), m_pendingTable(pendingTable),
-	  m_holdersTable(holdersTable), m_queueTable(queueTable), m_bridge(bridge), m_rateLimiter(rateLimiter), m_config(config) {
+	  m_holdersTable(holdersTable), m_queueTable(queueTable), m_reactionTable(reactionTable), m_bridge(bridge), m_rateLimiter(rateLimiter), m_config(config) {
 	m_handlers[Protocol::FancyV1PostJoin] = std::make_unique< PostJoinProtocolHandler >(m_msgTable, m_joinTable);
 	m_handlers[Protocol::FancyV1FullArchive] = std::make_unique< FullArchiveProtocolHandler >(m_msgTable);
 	m_handlers[Protocol::ServerManaged] = std::make_unique< ServerManagedProtocolHandler >(m_msgTable);
@@ -643,6 +645,7 @@ void PersistentChatManager::onChannelRemoved(unsigned int channelId) {
 	m_pendingTable.clearChannel(serverNum, channelId);
 	m_holdersTable.clearChannel(serverNum, channelId);
 	m_queueTable.clearChannel(serverNum, channelId);
+	m_reactionTable.clearChannel(serverNum, channelId);
 	m_challengeState.erase(channelId);
 }
 
@@ -1183,5 +1186,92 @@ void PersistentChatManager::handlePchatDeleteMessages(unsigned int senderSession
 
 	// Broadcast deletion to other Fancy clients in the channel
 	m_bridge.broadcastPchatDeleteMessages(channelId, msg, senderSession);
+}
+
+// ---- Emoji Reactions ----
+
+void PersistentChatManager::handlePchatReaction(unsigned int senderSession, const MumbleProto::PchatReaction &msg) {
+        if (!msg.has_channel_id() || !msg.has_message_id() || !msg.has_action()) {
+                return;
+        }
+
+        const auto channelId = msg.channel_id();
+        const auto &messageId = msg.message_id();
+
+        if (m_bridge.getChannelPChatProtocol(channelId) == Protocol::None) {
+                return;
+        }
+
+        // Validate sender cert hash
+        std::string certHash = m_bridge.getCertHash(senderSession);
+        if (certHash.empty()) {
+                return;
+        }
+
+        // Verify the message exists in storage
+        unsigned int serverNum = m_bridge.serverNum();
+
+        // Extract emoji string and type from the oneof
+        std::string emojiStr;
+        bool isServerEmoji = false;
+
+        MumbleProto::PchatReactionDeliver deliver;
+        deliver.set_channel_id(channelId);
+        deliver.set_message_id(messageId);
+
+        switch (msg.emoji_case()) {
+                case MumbleProto::PchatReaction::kUnicodeEmoji:
+                        emojiStr = msg.unicode_emoji().grapheme();
+                        deliver.mutable_unicode_emoji()->set_grapheme(emojiStr);
+                        break;
+                case MumbleProto::PchatReaction::kServerEmoji:
+                        emojiStr = msg.server_emoji().shortcode();
+                        isServerEmoji = true;
+                        deliver.mutable_server_emoji()->set_shortcode(emojiStr);
+                        break;
+                default:
+                        return; // No emoji specified
+        }
+
+		if(emojiStr.empty()) {
+			return;
+		}
+
+        int64_t now = m_bridge.serverTimeMs();
+
+        deliver.set_sender_hash(certHash);
+        deliver.set_timestamp(static_cast< uint64_t >(now));
+
+        // Look up sender display name
+        // (ServerUser name is available via the bridge's getCertHash session lookup)
+        // We store the cert hash as sender name fallback; the bridge will fill the real name.
+        deliver.set_sender_name(certHash);
+
+        if (msg.action() == MumbleProto::REACTION_ADD) {
+                deliver.set_action(MumbleProto::REACTION_ADD);
+
+                // Store in DB
+                msdb::PChatReaction reaction;
+                reaction.serverID      = serverNum;
+                reaction.channelId     = channelId;
+                reaction.messageId     = messageId;
+                reaction.emoji         = emojiStr;
+                reaction.isServerEmoji = isServerEmoji;
+                reaction.senderHash    = certHash;
+                reaction.senderName    = certHash; // fallback name
+                reaction.timestamp     = now;
+                reaction.createdAt     = now;
+
+                m_reactionTable.addReaction(reaction);
+        } else if (msg.action() == MumbleProto::REACTION_REMOVE) {
+                deliver.set_action(MumbleProto::REACTION_REMOVE);
+
+                m_reactionTable.removeReaction(serverNum, channelId, messageId, emojiStr, isServerEmoji, certHash);
+        } else {
+                return; // Unknown action
+        }
+
+        // Broadcast to all Fancy clients in the channel
+        m_bridge.broadcastPchatReactionDeliver(channelId, deliver);
 }
 } // namespace pchat
