@@ -1577,7 +1577,7 @@ void Server::encrypted() {
 		mpv.set_os(u8(meta->qsOS));
 		mpv.set_os_version(u8(meta->qsOSVersion));
 	}
-	mpv.set_fancy_version(::Version::fromComponents(0, 2, 0));
+	mpv.set_fancy_version(::Version::fromComponents(FANCY_VERSION_MAJOR, FANCY_VERSION_MINOR, FANCY_VERSION_PATCH));
 	sendMessage(uSource, mpv);
 
 	QList< QSslCertificate > certs = uSource->peerCertificateChain();
