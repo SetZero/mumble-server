@@ -30,6 +30,7 @@ namespace server {
 		class PChatPendingKeyRequestsTable;
 	class PChatKeyHoldersTable;
 	class PChatOfflineQueueTable;
+        class PChatReactionTable;
 	} // namespace db
 } // namespace server
 } // namespace mumble
@@ -102,6 +103,16 @@ struct IServerBridge {
 	/// Send a PchatOfflineQueueDrain to a specific user session.
 	virtual void sendPchatOfflineQueueDrain(unsigned int sessionId, const MumbleProto::PchatOfflineQueueDrain &msg) = 0;
 
+	/// Send a PchatReactionDeliver to a specific user session.
+	virtual void sendPchatReactionDeliver(unsigned int sessionId, const MumbleProto::PchatReactionDeliver &msg) = 0;
+
+	/// Send a PchatReactionFetchResponse to a specific user session.
+	virtual void sendPchatReactionFetchResponse(unsigned int sessionId, const MumbleProto::PchatReactionFetchResponse &msg) = 0;
+
+	/// Broadcast a PchatReactionDeliver to all Fancy Mumble v2+ sessions in a channel.
+	virtual void broadcastPchatReactionDeliver(unsigned int channelId, const MumbleProto::PchatReactionDeliver &msg,
+												unsigned int excludeSession = 0) = 0;
+
 	/// Check if a session is a Fancy Mumble v2+ client.
 	virtual bool isFancyClient(unsigned int sessionId) const = 0;
 
@@ -173,6 +184,7 @@ public:
 						  ::mumble::server::db::PChatPendingKeyRequestsTable &pendingTable,
 						  ::mumble::server::db::PChatKeyHoldersTable &holdersTable,
 						  ::mumble::server::db::PChatOfflineQueueTable &queueTable,
+                                                  ::mumble::server::db::PChatReactionTable &reactionTable,
 						  IServerBridge &bridge,
 						  IRateLimiter &rateLimiter,
 						  Config config);
@@ -183,9 +195,10 @@ public:
 						  ::mumble::server::db::PChatPendingKeyRequestsTable &pendingTable,
 						  ::mumble::server::db::PChatKeyHoldersTable &holdersTable,
 						  ::mumble::server::db::PChatOfflineQueueTable &queueTable,
+                                                  ::mumble::server::db::PChatReactionTable &reactionTable,
 						  IServerBridge &bridge,
 						  IRateLimiter &rateLimiter)
-		: PersistentChatManager(msgTable, keysTable, joinTable, pendingTable, holdersTable, queueTable, bridge, rateLimiter, Config{}) {}
+		: PersistentChatManager(msgTable, keysTable, joinTable, pendingTable, holdersTable, queueTable, reactionTable, bridge, rateLimiter, Config{}) {}
 
 	/// Returns true if the dataID is a pchat message that was handled.
 	/// Returns false if the dataID is not a pchat message (should be forwarded normally).
@@ -221,6 +234,9 @@ public:
 
 	/// Handle a PchatAck from a client (e.g. offline queue acknowledgement).
 	void handlePchatAck(unsigned int senderSession, const MumbleProto::PchatAck &msg);
+
+        /// Handle a PchatReaction (client adds or removes an emoji reaction).
+        void handlePchatReaction(unsigned int senderSession, const MumbleProto::PchatReaction &msg);
 
 	/// Called when a Fancy client connects and joins a persistent channel.
 	/// Delivers pending key requests for that channel.
@@ -277,6 +293,7 @@ private:
 	::mumble::server::db::PChatPendingKeyRequestsTable &m_pendingTable;
 	::mumble::server::db::PChatKeyHoldersTable &m_holdersTable;
 	::mumble::server::db::PChatOfflineQueueTable &m_queueTable;
+        ::mumble::server::db::PChatReactionTable &m_reactionTable;
 	IServerBridge &m_bridge;
 	IRateLimiter &m_rateLimiter;
 	Config m_config;

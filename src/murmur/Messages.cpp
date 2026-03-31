@@ -2782,6 +2782,22 @@ void Server::msgPchatKeyChallengeResult(ServerUser *, MumbleProto::PchatKeyChall
 void Server::msgPchatOfflineQueueDrain(ServerUser *, MumbleProto::PchatOfflineQueueDrain &) {
 }
 
+void Server::msgPchatReaction(ServerUser *uSource, MumbleProto::PchatReaction &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatReaction(uSource->uiSession, msg);
+	}
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatReactionDeliver(ServerUser *, MumbleProto::PchatReactionDeliver &) {
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatReactionFetchResponse(ServerUser *, MumbleProto::PchatReactionFetchResponse &) {
+}
+
 #undef RATELIMIT
 #undef MSG_SETUP
 #undef MSG_SETUP_NO_UNIDLE

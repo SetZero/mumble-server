@@ -264,6 +264,7 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 		m_dbWrapper.getServerDB().getPChatPendingKeyRequestsTable(),
 		m_dbWrapper.getServerDB().getPChatKeyHoldersTable(),
 		m_dbWrapper.getServerDB().getPChatOfflineQueueTable(),
+		m_dbWrapper.getServerDB().getPChatReactionTable(),
 		*m_pchatBridge, *m_pchatRateLimiter, m_pchatConfig);
 
 	initializeCert();
