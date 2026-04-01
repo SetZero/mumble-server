@@ -267,6 +267,26 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 		m_dbWrapper.getServerDB().getPChatReactionTable(),
 		*m_pchatBridge, *m_pchatRateLimiter, m_pchatConfig);
 
+	// Initialize push notification dispatcher
+	{
+		push::PushConfig pushCfg;
+		pushCfg.enabled            = Meta::mp->bPushEnabled;
+		pushCfg.modulePath         = Meta::mp->qsPushModulePath;
+		pushCfg.credentialsPath    = Meta::mp->qsPushCredentialsPath;
+		pushCfg.projectId          = Meta::mp->qsPushProjectId;
+		pushCfg.topicPrefix        = Meta::mp->qsPushTopicPrefix;
+		pushCfg.notifyTextMessage  = Meta::mp->bPushNotifyTextMessage;
+		pushCfg.notifyReaction     = Meta::mp->bPushNotifyReaction;
+		pushCfg.notifyUserJoin     = Meta::mp->bPushNotifyUserJoin;
+
+		m_pushDispatcher = std::make_unique< push::PushNotificationDispatcher >();
+		if (pushCfg.enabled) {
+			if (!m_pushDispatcher->init(pushCfg)) {
+				qWarning("Server: push notification module failed to initialise - continuing without push");
+			}
+		}
+	}
+
 	initializeCert();
 
 	if (bValid) {
