@@ -129,6 +129,16 @@ MetaParams::MetaParams() {
 	iPChatPerUserPendingLimit       = 5;
 	iPChatPerChannelPendingSoftCap  = 100;
 
+	// Push notification defaults
+	bPushEnabled           = false;
+	qsPushModulePath       = QString();
+	qsPushCredentialsPath  = QString();
+	qsPushProjectId        = QString();
+	qsPushTopicPrefix      = QStringLiteral("mumble");
+	bPushNotifyTextMessage = true;
+	bPushNotifyReaction    = false;
+	bPushNotifyUserJoin    = false;
+
 	qsCiphers = MumbleSSL::defaultOpenSSLCipherString();
 
 	bLogGroupChanges = false;
@@ -371,6 +381,16 @@ void MetaParams::read(QString fname) {
 	iPChatPendingFulfilledMaxHours  = typeCheckedFromSettings("pchatpendingfulfilledmaxhours", iPChatPendingFulfilledMaxHours);
 	iPChatPerUserPendingLimit       = typeCheckedFromSettings("pchatperuserpending", iPChatPerUserPendingLimit);
 	iPChatPerChannelPendingSoftCap  = typeCheckedFromSettings("pchatperchannelpendingsoftcap", iPChatPerChannelPendingSoftCap);
+
+	// Push notifications
+	bPushEnabled           = typeCheckedFromSettings("pushenabled", bPushEnabled);
+	qsPushModulePath       = typeCheckedFromSettings("pushmodulepath", qsPushModulePath);
+	qsPushCredentialsPath  = typeCheckedFromSettings("pushcredentialspath", qsPushCredentialsPath);
+	qsPushProjectId        = typeCheckedFromSettings("pushprojectid", qsPushProjectId);
+	qsPushTopicPrefix      = typeCheckedFromSettings("pushtopicprefix", qsPushTopicPrefix);
+	bPushNotifyTextMessage = typeCheckedFromSettings("pushnotifytextmessage", bPushNotifyTextMessage);
+	bPushNotifyReaction    = typeCheckedFromSettings("pushnotifyreaction", bPushNotifyReaction);
+	bPushNotifyUserJoin    = typeCheckedFromSettings("pushnotifyuserjoin", bPushNotifyUserJoin);
 
 #ifdef Q_OS_UNIX
 	qsName = qsSettings->value("uname").toString();

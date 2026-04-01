@@ -1853,6 +1853,17 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 
 	// Emit the signal for RPC consumers
 	emit userTextMessage(uSource, tm);
+
+	// Push notification for text messages
+	if (m_pushDispatcher && m_pushDispatcher->isAvailable()) {
+		for (int i = 0; i < msg.channel_id_size(); ++i) {
+			m_pushDispatcher->notifyChannel(
+				iServerNum, msg.channel_id(i),
+				uSource->qsName.toStdString(),
+				u8(msg.message()).left(200).toStdString(),
+				MUMBLE_PUSH_CAT_TEXT_MESSAGE, MUMBLE_PUSH_PRIORITY_NORMAL);
+		}
+	}
 }
 
 /// Helper function to log the groups of the given channel.

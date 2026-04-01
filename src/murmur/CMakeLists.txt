@@ -45,6 +45,8 @@ add_library(mumble_server_object_lib OBJECT
 	"pchat/ServerBridge.cpp"
 	"pchat/TokenBucketRateLimiter.cpp"
 
+	"push/PushNotificationDispatcher.cpp"
+
 	"${SHARED_SOURCE_DIR}/ACL.cpp"
 	"${SHARED_SOURCE_DIR}/ACL.h"
 	"${SHARED_SOURCE_DIR}/Channel.cpp"
@@ -331,3 +333,6 @@ endif()
 add_subdirectory(database)
 
 target_link_libraries(mumble_server_object_lib PUBLIC mumble_server_database)
+
+# FCM push notification module (standalone shared library, optional)
+add_subdirectory(fcm)

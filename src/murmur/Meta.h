@@ -123,6 +123,16 @@ public:
 	int iPChatPerUserPendingLimit;
 	int iPChatPerChannelPendingSoftCap;
 
+	// Push notification settings
+	bool bPushEnabled;
+	QString qsPushModulePath;
+	QString qsPushCredentialsPath;
+	QString qsPushProjectId;
+	QString qsPushTopicPrefix;
+	bool bPushNotifyTextMessage;
+	bool bPushNotifyReaction;
+	bool bPushNotifyUserJoin;
+
 	QSslCertificate qscCert;
 	QSslKey qskKey;
 

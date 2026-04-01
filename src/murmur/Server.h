@@ -21,6 +21,7 @@
 #include "pchat/PersistentChatManager.h"
 #include "pchat/ServerBridge.h"
 #include "pchat/TokenBucketRateLimiter.h"
+#include "push/PushNotificationDispatcher.h"
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
 #include "QtUtils.h"
@@ -336,6 +337,8 @@ public:
 	std::unique_ptr< pchat::TokenBucketRateLimiter > m_pchatRateLimiter;
 	std::unique_ptr< pchat::PersistentChatManager > m_pchatManager;
 	pchat::PersistentChatManager::Config m_pchatConfig;
+
+	std::unique_ptr< push::PushNotificationDispatcher > m_pushDispatcher;
 
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,
