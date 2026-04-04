@@ -13,6 +13,9 @@
 
 #include "mumble_push_api.h"
 
+#include <Poco/Crypto/RSAKey.h>
+#include <Poco/DateTimeFormat.h>
+#include <Poco/DateTimeParser.h>
 #include <Poco/JSON/Object.h>
 #include <Poco/JSON/Parser.h>
 #include <Poco/JWT/Signer.h>
@@ -24,6 +27,8 @@
 #include <Poco/StreamCopier.h>
 #include <Poco/Timestamp.h>
 #include <Poco/URI.h>
+
+#include <sys/stat.h>
 
 #include <atomic>
 #include <chrono>
@@ -62,6 +67,11 @@ struct FcmState {
 	std::string lastError;
 	std::mutex errorMutex;
 
+	// Clock offset: seconds to ADD to local epoch to match Google's time.
+	// Computed once on first token refresh from the Date header.
+	int64_t clockOffsetSeconds{ 0 };
+	bool clockOffsetKnown{ false };
+
 	void setError(const std::string &err) {
 		std::lock_guard< std::mutex > lock(errorMutex);
 		lastError = err;
@@ -88,13 +98,69 @@ constexpr auto TOKEN_REFRESH_MARGIN = std::chrono::minutes(5);
 constexpr auto TOKEN_LIFETIME       = std::chrono::minutes(55);
 
 // ---------------------------------------------------------------------------
+// Probe Google's time to detect local clock drift.
+// Returns the offset in seconds to add to local epoch time.
+// ---------------------------------------------------------------------------
+
+int64_t probeClockOffset() {
+	try {
+		Poco::URI uri("https://oauth2.googleapis.com/token");
+		Poco::Net::Context::Ptr ctx = new Poco::Net::Context(
+			Poco::Net::Context::TLS_CLIENT_USE, "", "", "",
+			Poco::Net::Context::VERIFY_RELAXED, 9, true);
+		Poco::Net::HTTPSClientSession session(uri.getHost(), uri.getPort(), ctx);
+		session.setTimeout(Poco::Timespan(10, 0));
+
+		// Send an empty POST — will get 400 but with a Date header
+		Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_POST, uri.getPathAndQuery());
+		request.setContentType("application/x-www-form-urlencoded");
+		request.setContentLength(0);
+		session.sendRequest(request);
+
+		Poco::Net::HTTPResponse response;
+		std::istream &rs = session.receiveResponse(response);
+		// Drain the response body
+		std::string discard;
+		Poco::StreamCopier::copyToString(rs, discard);
+
+		if (response.has("Date")) {
+			int tz = 0;
+			auto googleTime = Poco::DateTimeParser::parse(
+				Poco::DateTimeFormat::RFC1123_FORMAT, response.get("Date"), tz);
+			int64_t googleEpoch = static_cast< int64_t >(googleTime.timestamp().epochTime());
+			int64_t localEpoch  = static_cast< int64_t >(Poco::Timestamp().epochTime());
+			int64_t offset = googleEpoch - localEpoch;
+			fprintf(stderr, "push-fcm: clock probe: local=%lld google=%lld offset=%llds\n",
+			        (long long)localEpoch, (long long)googleEpoch, (long long)offset);
+			fflush(stderr);
+			return offset;
+		}
+	} catch (const std::exception &ex) {
+		fprintf(stderr, "push-fcm: clock probe failed: %s\n", ex.what());
+		fflush(stderr);
+	}
+	return 0;
+}
+
+// ---------------------------------------------------------------------------
 // JWT-based OAuth2 access token (service account)
 // ---------------------------------------------------------------------------
 
 bool refreshAccessToken(FcmState &state) {
+	// Detect clock drift on first attempt
+	if (!state.clockOffsetKnown) {
+		state.clockOffsetSeconds = probeClockOffset();
+		state.clockOffsetKnown = true;
+		if (state.clockOffsetSeconds != 0) {
+			fprintf(stderr, "push-fcm: applying clock offset of %lld seconds\n",
+			        (long long)state.clockOffsetSeconds);
+			fflush(stderr);
+		}
+	}
+
 	try {
-		auto now = Poco::Timestamp();
-		auto iat = static_cast< int64_t >(now.epochTime());
+		auto localNow = static_cast< int64_t >(Poco::Timestamp().epochTime());
+		auto iat = localNow + state.clockOffsetSeconds;
 		auto exp = iat + 3600; // 1 hour
 
 		Poco::JWT::Token jwtToken;
@@ -106,7 +172,12 @@ bool refreshAccessToken(FcmState &state) {
 		jwtToken.setExpiration(Poco::Timestamp::fromEpochTime(exp));
 		jwtToken.payload().set("scope", "https://www.googleapis.com/auth/firebase.messaging");
 
-		Poco::JWT::Signer signer(state.privateKeyPem);
+		std::istringstream keyStream(state.privateKeyPem);
+		auto pKey = Poco::SharedPtr< Poco::Crypto::RSAKey >(
+			new Poco::Crypto::RSAKey(nullptr, &keyStream));
+		Poco::JWT::Signer signer;
+		signer.setRSAKey(pKey);
+		signer.addAlgorithm(Poco::JWT::Signer::ALGO_RS256);
 		std::string signedJwt = signer.sign(jwtToken, Poco::JWT::Signer::ALGO_RS256);
 
 		// Exchange JWT for access token
@@ -119,20 +190,36 @@ bool refreshAccessToken(FcmState &state) {
 
 		std::string body = "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=" + signedJwt;
 
+		fprintf(stderr, "push-fcm: JWT iat=%lld exp=%lld (offset=%lld)\n",
+		        (long long)iat, (long long)exp, (long long)state.clockOffsetSeconds);
+		fflush(stderr);
+
 		Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_POST, uri.getPathAndQuery());
 		request.setContentType("application/x-www-form-urlencoded");
 		request.setContentLength(body.size());
-		session.sendRequest(request) << body;
+		std::ostream &os = session.sendRequest(request);
+		os << body;
+		os.flush();
 
 		Poco::Net::HTTPResponse response;
 		std::istream &rs = session.receiveResponse(response);
-		std::string responseBody;
-		Poco::StreamCopier::copyToString(rs, responseBody);
+
+		// Read body via rdbuf to handle missing Content-Length / Transfer-Encoding
+		std::ostringstream bodyStream2;
+		bodyStream2 << rs.rdbuf();
+		std::string responseBody = bodyStream2.str();
 
 		if (response.getStatus() != Poco::Net::HTTPResponse::HTTP_OK) {
-			state.setError("OAuth2 token exchange failed: HTTP " + std::to_string(response.getStatus()));
+			std::string err = "OAuth2 token exchange failed: HTTP "
+			                  + std::to_string(response.getStatus()) + " " + responseBody;
+			state.setError(err);
+			fprintf(stderr, "push-fcm: %s\n", err.substr(0, 500).c_str());
+			fflush(stderr);
 			return false;
 		}
+
+		fprintf(stderr, "push-fcm: OAuth2 token obtained successfully\n");
+		fflush(stderr);
 
 		Poco::JSON::Parser parser;
 		auto result  = parser.parse(responseBody).extract< Poco::JSON::Object::Ptr >();
@@ -145,10 +232,14 @@ bool refreshAccessToken(FcmState &state) {
 		return true;
 
 	} catch (const Poco::Exception &ex) {
-		state.setError(std::string("Token refresh failed: ") + ex.displayText());
+		std::string err = std::string("Token refresh failed: ") + ex.displayText();
+		state.setError(err);
+		fprintf(stderr, "push-fcm: %s\n", err.c_str());
 		return false;
 	} catch (const std::exception &ex) {
-		state.setError(std::string("Token refresh failed: ") + ex.what());
+		std::string err = std::string("Token refresh failed: ") + ex.what();
+		state.setError(err);
+		fprintf(stderr, "push-fcm: %s\n", err.c_str());
 		return false;
 	}
 }
@@ -173,8 +264,12 @@ std::string getAccessToken(FcmState &state) {
 // ---------------------------------------------------------------------------
 
 int sendNotification(FcmState &state, const MumblePushNotification &notif) {
+	fprintf(stderr, "push-fcm: sendNotification called target=%s title=%s\n",
+	        notif.device_token ? notif.device_token : "(null)",
+	        notif.title ? notif.title : "(null)");
 	std::string token = getAccessToken(state);
 	if (token.empty()) {
+		fprintf(stderr, "push-fcm: sendNotification FAILED - no access token\n");
 		return MUMBLE_PUSH_ERR_SEND;
 	}
 
@@ -187,7 +282,18 @@ int sendNotification(FcmState &state, const MumblePushNotification &notif) {
 		notifObj->set("title", std::string(notif.title ? notif.title : ""));
 		notifObj->set("body", std::string(notif.body ? notif.body : ""));
 
-		message->set("token", std::string(notif.device_token));
+		// FCM HTTP v1 API uses different fields for device tokens vs topics:
+		//   - device token:  { "token": "registration_token" }
+		//   - topic:         { "topic": "topic_name" }
+		// The dispatcher passes topic targets as "/topics/<name>".
+		std::string target(notif.device_token);
+		const std::string topicPrefix = "/topics/";
+		if (target.rfind(topicPrefix, 0) == 0) {
+			// Strip the "/topics/" prefix — FCM v1 API expects bare topic name.
+			message->set("topic", target.substr(topicPrefix.size()));
+		} else {
+			message->set("token", target);
+		}
 		message->set("notification", notifObj);
 
 		// Data payload
@@ -226,12 +332,20 @@ int sendNotification(FcmState &state, const MumblePushNotification &notif) {
 		request.setContentType("application/json");
 		request.setContentLength(bodyStr.size());
 		request.set("Authorization", "Bearer " + token);
-		session.sendRequest(request) << bodyStr;
+		std::ostream &os = session.sendRequest(request);
+		os << bodyStr;
+		os.flush();
 
 		Poco::Net::HTTPResponse response;
 		std::istream &rs = session.receiveResponse(response);
-		std::string responseBody;
-		Poco::StreamCopier::copyToString(rs, responseBody);
+		std::ostringstream respStream;
+		respStream << rs.rdbuf();
+		std::string responseBody = respStream.str();
+
+		fprintf(stderr, "push-fcm: HTTP %d body=[%s]\n",
+		        static_cast< int >(response.getStatus()),
+		        responseBody.substr(0, 500).c_str());
+		fflush(stderr);
 
 		if (response.getStatus() != Poco::Net::HTTPResponse::HTTP_OK) {
 			state.setError("FCM send failed: HTTP " + std::to_string(response.getStatus()) + " " + responseBody);
@@ -297,13 +411,30 @@ MUMBLE_PUSH_EXPORT int mumble_push_init(const char *credentials_path, const char
 	}
 
 	// Read service account JSON
+	{
+		struct stat pathStat;
+		if (::stat(credentials_path, &pathStat) != 0) {
+			setStaticError(std::string("mumble_push_init: cannot stat credentials file: ") + credentials_path);
+			return MUMBLE_PUSH_ERR_INIT;
+		}
+		if (!S_ISREG(pathStat.st_mode)) {
+			setStaticError(std::string("mumble_push_init: credentials path is not a regular file: ") + credentials_path);
+			return MUMBLE_PUSH_ERR_INIT;
+		}
+	}
 	std::ifstream file(credentials_path);
 	if (!file.is_open()) {
 		setStaticError(std::string("mumble_push_init: cannot open credentials file: ") + credentials_path);
 		return MUMBLE_PUSH_ERR_INIT;
 	}
-	std::string jsonContent((std::istreambuf_iterator< char >(file)),
-	                         std::istreambuf_iterator< char >());
+	std::string jsonContent;
+	try {
+		jsonContent.assign((std::istreambuf_iterator< char >(file)),
+		                    std::istreambuf_iterator< char >());
+	} catch (const std::exception &ex) {
+		setStaticError(std::string("mumble_push_init: failed to read credentials file: ") + ex.what());
+		return MUMBLE_PUSH_ERR_INIT;
+	}
 
 	try {
 		Poco::JSON::Parser parser;

@@ -154,6 +154,7 @@ void PushNotificationDispatcher::notifyTopic(const std::string &topic,
 	notif.channel_id   = channelId;
 	notif.data_json    = dataJson.empty() ? nullptr : dataJson.c_str();
 
+	qWarning("push: dispatching to topic '%s' title='%s'", topic.c_str(), title.c_str());
 	int rc = m_sym.send(&notif);
 	if (rc != MUMBLE_PUSH_OK) {
 		const char *err = m_sym.lastError ? m_sym.lastError() : nullptr;
@@ -168,7 +169,10 @@ void PushNotificationDispatcher::notifyChannel(uint32_t serverId, uint32_t chann
                                                MumblePushCategory category,
                                                MumblePushPriority priority,
                                                const std::string &dataJson) {
-	if (!m_initialised) return;
+	if (!m_initialised) {
+		qWarning("push: notifyChannel called but dispatcher not initialised");
+		return;
+	}
 
 	std::string topic;
 	if (!m_config.topicPrefix.isEmpty()) {
@@ -181,6 +185,36 @@ void PushNotificationDispatcher::notifyChannel(uint32_t serverId, uint32_t chann
 	}
 
 	notifyTopic(topic, title, body, category, priority, serverId, channelId, dataJson);
+}
+
+void PushNotificationDispatcher::notifyUser(const std::string &deviceToken,
+                                            const std::string &title,
+                                            const std::string &body,
+                                            MumblePushCategory category,
+                                            MumblePushPriority priority,
+                                            uint32_t serverId,
+                                            uint32_t channelId,
+                                            const std::string &dataJson) {
+	if (!m_initialised) return;
+
+	MumblePushNotification notif{};
+	notif.device_token = deviceToken.c_str();
+	notif.title        = title.c_str();
+	notif.body         = body.c_str();
+	notif.category     = category;
+	notif.priority     = priority;
+	notif.server_id    = serverId;
+	notif.channel_id   = channelId;
+	notif.data_json    = dataJson.empty() ? nullptr : dataJson.c_str();
+
+	qWarning("push: dispatching to user token (len=%zu) title='%s' ch=%u",
+	         deviceToken.size(), title.c_str(), channelId);
+	int rc = m_sym.send(&notif);
+	if (rc != MUMBLE_PUSH_OK) {
+		const char *err = m_sym.lastError ? m_sym.lastError() : nullptr;
+		qWarning("push: send to user token failed (rc=%d): %s",
+		         rc, err ? err : "unknown");
+	}
 }
 
 void PushNotificationDispatcher::shutdown() {
