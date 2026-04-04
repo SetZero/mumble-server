@@ -44,8 +44,9 @@ Channel::~Channel() {
 	if (cParent)
 		cParent->removeChannel(this);
 
-	for (Channel *c : qlChannels) {
-		delete c;
+	// removeChannel() which modifies qlChannels.
+	while (!qlChannels.isEmpty()) {
+		delete qlChannels.first();
 	}
 
 	for (ChanACL *acl : qlACL) {

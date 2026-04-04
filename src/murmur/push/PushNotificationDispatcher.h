@@ -80,6 +80,13 @@ public:
 	                   MumblePushPriority priority = MUMBLE_PUSH_PRIORITY_NORMAL,
 	                   const std::string &dataJson = {});
 
+	/// Send a notification to a specific device token (per-user push).
+	void notifyUser(const std::string &deviceToken,
+	                const std::string &title, const std::string &body,
+	                MumblePushCategory category, MumblePushPriority priority,
+	                uint32_t serverId, uint32_t channelId,
+	                const std::string &dataJson = {});
+
 	/// Shut down the module and unload the library.
 	void shutdown();
 

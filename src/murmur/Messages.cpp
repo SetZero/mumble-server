@@ -27,6 +27,9 @@
 #include <unordered_map>
 #include <chrono>
 
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
+#include <QtCore/QJsonArray>
 #include <QtCore/QStack>
 #include <QtCore/QTimeZone>
 #include <QtCore/QtEndian>
@@ -1854,14 +1857,81 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	// Emit the signal for RPC consumers
 	emit userTextMessage(uSource, tm);
 
-	// Push notification for text messages
-	if (m_pushDispatcher && m_pushDispatcher->isAvailable()) {
+	// Push notification for text messages — token-based, permission-checked.
+	if (!m_pushDispatcher || !m_pushDispatcher->isAvailable()) {
+		log(uSource, QString("push: dispatcher not available"));
+	} else if (m_pushRegistrations.isEmpty()) {
+		log(uSource, QString("push: no registrations"));
+	} else {
+		// Collect target channel IDs from the message.
+		std::set< uint32_t > targetChannels;
 		for (int i = 0; i < msg.channel_id_size(); ++i) {
-			m_pushDispatcher->notifyChannel(
-				iServerNum, msg.channel_id(i),
-				uSource->qsName.toStdString(),
-				u8(msg.message()).left(200).toStdString(),
-				MUMBLE_PUSH_CAT_TEXT_MESSAGE, MUMBLE_PUSH_PRIORITY_NORMAL);
+			targetChannels.insert(msg.channel_id(i));
+		}
+		for (int i = 0; i < msg.tree_id_size(); ++i) {
+			targetChannels.insert(msg.tree_id(i));
+		}
+
+		log(uSource, QString("push: %1 registrations, %2 target channels")
+		        .arg(m_pushRegistrations.size())
+		        .arg(targetChannels.size()));
+
+		if (!targetChannels.empty()) {
+			const std::string title = uSource->qsName.toStdString();
+			const std::string body  = u8(msg.message()).left(200).toStdString();
+
+			// Build a set of certificate hashes for currently connected users.
+			QSet< QString > connectedHashes;
+			for (auto *u : qhUsers) {
+				if (!u->qsHash.isEmpty()) {
+					connectedHashes.insert(u->qsHash);
+				}
+			}
+
+			for (auto it = m_pushRegistrations.constBegin();
+			     it != m_pushRegistrations.constEnd(); ++it) {
+				const QString &certHash   = it.key();
+				const PushRegistration &reg = it.value();
+
+				// Skip the sender.
+				if (certHash == uSource->qsHash) {
+					log(uSource, QString("push: skip %1 (sender)").arg(certHash.left(8) + "..."));
+					continue;
+				}
+
+				// Skip users currently connected (they receive the message live).
+				if (connectedHashes.contains(certHash)) {
+					log(uSource, QString("push: skip %1 (connected)").arg(certHash.left(8) + "..."));
+					continue;
+				}
+
+				for (uint32_t channelId : targetChannels) {
+					// Permission check: was the user allowed at registration time?
+					if (reg.allowedChannels.find(channelId) == reg.allowedChannels.end()) {
+						log(uSource, QString("push: skip %1 channel %2 (no permission, allowed=%3)")
+						        .arg(certHash.left(8) + "...")
+						        .arg(channelId)
+						        .arg(reg.allowedChannels.size()));
+						continue;
+					}
+
+					// Client notification preference: skip muted channels.
+					if (reg.mutedChannels.find(channelId) != reg.mutedChannels.end()) {
+						log(uSource, QString("push: skip %1 channel %2 (muted)")
+						        .arg(certHash.left(8) + "...")
+						        .arg(channelId));
+						continue;
+					}
+
+					m_pushDispatcher->notifyUser(
+						reg.fcmToken, title, body,
+						MUMBLE_PUSH_CAT_TEXT_MESSAGE, MUMBLE_PUSH_PRIORITY_NORMAL,
+						iServerNum, channelId);
+					log(uSource, QString("push: sending to %1 for channel %2")
+					        .arg(certHash.left(8) + "...")
+					        .arg(channelId));
+				}
+			}
 		}
 	}
 }
@@ -2640,6 +2710,16 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 		return;
 	}
 
+	// Intercept server-directed FancyMumble messages before forwarding.
+	if (msg.dataid() == "fancy-push-register") {
+		handlePushRegistration(sender, msg);
+		return;
+	}
+	if (msg.dataid() == "fancy-push-update") {
+		handlePushChannelUpdate(sender, msg);
+		return;
+	}
+
 	// Copy needed data from message in order to be able to remove info about receivers from the message as this doesn't
 	// matter for the client
 	size_t receiverAmount = static_cast< std::size_t >(msg.receiversessions_size());
@@ -2667,6 +2747,97 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 			sendMessage(receiver, msg);
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Push notification registration helpers
+// ---------------------------------------------------------------------------
+
+void Server::computeAllowedPushChannels(ServerUser *user, std::set< uint32_t > &out) {
+	out.clear();
+	for (auto it = qhChannels.constBegin(); it != qhChannels.constEnd(); ++it) {
+		Channel *c = it.value();
+		if (ChanACL::hasPermission(user, c, ChanACL::SubscribePush, &acCache)) {
+			out.insert(static_cast< uint32_t >(c->iId));
+		}
+	}
+}
+
+void Server::handlePushRegistration(ServerUser *sender,
+                                    const MumbleProto::PluginDataTransmission &msg) {
+	if (sender->qsHash.isEmpty()) {
+		log(sender, QString("push-register: ignored (no certificate hash)"));
+		return;
+	}
+
+	QByteArray raw = QByteArray::fromRawData(msg.data().data(),
+	                                         static_cast< int >(msg.data().size()));
+	QJsonDocument doc = QJsonDocument::fromJson(raw);
+	if (!doc.isObject()) {
+		log(sender, QString("push-register: malformed JSON"));
+		return;
+	}
+
+	QJsonObject obj  = doc.object();
+	QString token    = obj.value("token").toString();
+	if (token.isEmpty()) {
+		log(sender, QString("push-register: missing 'token'"));
+		return;
+	}
+
+	PushRegistration reg;
+	reg.fcmToken = token.toStdString();
+
+	// Compute which channels the user has TextMessage permission for.
+	computeAllowedPushChannels(sender, reg.allowedChannels);
+
+	// Apply any muted list from the payload.
+	QJsonArray mutedArr = obj.value("muted").toArray();
+	for (const auto &v : mutedArr) {
+		if (v.isDouble()) {
+			reg.mutedChannels.insert(static_cast< uint32_t >(v.toInt()));
+		}
+	}
+
+	m_pushRegistrations[sender->qsHash] = reg;
+
+	log(sender, QString("push-register: stored token (len=%1) allowed=%2 muted=%3")
+	        .arg(token.size())
+	        .arg(reg.allowedChannels.size())
+	        .arg(reg.mutedChannels.size()));
+}
+
+void Server::handlePushChannelUpdate(ServerUser *sender,
+                                     const MumbleProto::PluginDataTransmission &msg) {
+	if (sender->qsHash.isEmpty()) return;
+
+	auto it = m_pushRegistrations.find(sender->qsHash);
+	if (it == m_pushRegistrations.end()) {
+		log(sender, QString("push-update: no registration found, ignoring"));
+		return;
+	}
+
+	QByteArray raw = QByteArray::fromRawData(msg.data().data(),
+	                                         static_cast< int >(msg.data().size()));
+	QJsonDocument doc = QJsonDocument::fromJson(raw);
+	if (!doc.isObject()) return;
+
+	QJsonObject obj = doc.object();
+	QJsonArray mutedArr = obj.value("muted").toArray();
+
+	it->mutedChannels.clear();
+	for (const auto &v : mutedArr) {
+		if (v.isDouble()) {
+			it->mutedChannels.insert(static_cast< uint32_t >(v.toInt()));
+		}
+	}
+
+	// Also refresh allowed channels while the user is connected.
+	computeAllowedPushChannels(sender, it->allowedChannels);
+
+	log(sender, QString("push-update: muted=%1 allowed=%2")
+	        .arg(it->mutedChannels.size())
+	        .arg(it->allowedChannels.size()));
 }
 
 void Server::msgPchatMessage(ServerUser *uSource, MumbleProto::PchatMessage &msg) {

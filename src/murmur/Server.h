@@ -58,7 +58,9 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
+#include <string>
 #include <vector>
 
 class Zeroconf;
@@ -73,6 +75,18 @@ struct TextMessage {
 	QList< unsigned int > qlChannels;
 	QList< unsigned int > qlTrees;
 	QString qsText;
+};
+
+/// A registered push notification target.
+/// Stored per certificate hash so that push still works after the
+/// user disconnects (the FCM token remains valid).
+struct PushRegistration {
+	/// FCM device token obtained from the client.
+	std::string fcmToken;
+	/// Channels the user had TextMessage permission for at registration time.
+	std::set< uint32_t > allowedChannels;
+	/// Channels the user explicitly muted notifications for (client preference).
+	std::set< uint32_t > mutedChannels;
 };
 
 class SslServer : public QTcpServer {
@@ -340,6 +354,8 @@ public:
 
 	std::unique_ptr< push::PushNotificationDispatcher > m_pushDispatcher;
 
+	QHash< QString, PushRegistration > m_pushRegistrations;
+
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,
 					Mumble::Protocol::UDPAudioEncoder< Mumble::Protocol::Role::Server > &encoder);
@@ -392,6 +408,11 @@ public:
 
 	void log(const QString &) const;
 	void log(ServerUser *u, const QString &) const;
+
+	// Push notification registration helpers (impl in Messages.cpp)
+	void handlePushRegistration(ServerUser *sender, const MumbleProto::PluginDataTransmission &msg);
+	void handlePushChannelUpdate(ServerUser *sender, const MumbleProto::PluginDataTransmission &msg);
+	void computeAllowedPushChannels(ServerUser *user, std::set< uint32_t > &out);
 
 	void removeChannel(unsigned int id);
 	void removeChannel(Channel *c, Channel *dest = nullptr);

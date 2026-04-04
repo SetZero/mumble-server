@@ -33,6 +33,7 @@ public:
 		MakeTempChannel = 0x400,
 		Listen          = 0x800,
 		DeleteMessage   = 0x1000,
+		SubscribePush   = 0x2000,
 
 		// Root channel only
 		Kick             = 0x10000,
@@ -44,8 +45,8 @@ public:
 
 		Cached = 0x8000000,
 		All = Write + Traverse + Enter + Speak + MuteDeafen + Move + MakeChannel + LinkChannel + Whisper + TextMessage
-			  + MakeTempChannel + Listen + DeleteMessage + Kick + Ban + Register + SelfRegister + ResetUserContent
-			  + KeyOwner
+			  + MakeTempChannel + Listen + DeleteMessage + SubscribePush + Kick + Ban + Register + SelfRegister
+			  + ResetUserContent + KeyOwner
 	};
 
 	Q_DECLARE_FLAGS(Permissions, Perm)
