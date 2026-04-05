@@ -2980,6 +2980,49 @@ void Server::msgPchatReactionDeliver(ServerUser *, MumbleProto::PchatReactionDel
 void Server::msgPchatReactionFetchResponse(ServerUser *, MumbleProto::PchatReactionFetchResponse &) {
 }
 
+
+// ---------------------------------------------------------------------------
+// WebRtcSignal relay (Fancy Mumble screen sharing)
+// ---------------------------------------------------------------------------
+
+void Server::msgWebRtcSignal(ServerUser *uSource, MumbleProto::WebRtcSignal &msg) {
+	ZoneScoped;
+
+	MSG_SETUP(ServerUser::Authenticated);
+
+	RATELIMIT(uSource);
+
+	// The sender must have TextMessage permission in their channel to
+	// broadcast screen-sharing signals.
+	Channel *c = uSource->cChannel;
+	if (!c)
+		return;
+
+	if (!ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
+		PERM_DENIED(uSource, c, ChanACL::TextMessage);
+		return;
+	}
+
+	// Stamp the sender session (never trust client-supplied value).
+	msg.set_sender_session(uSource->uiSession);
+
+	uint32_t target = msg.target_session();
+
+	if (target == 0) {
+		// Broadcast to all users in the sender's channel (except self).
+		for (User *p : c->qlUsers) {
+			if (p == uSource) continue;
+			sendMessage(static_cast< ServerUser * >(p), msg);
+		}
+	} else {
+		// Directed relay to a single target (must be in the same channel).
+		ServerUser *pDst = qhUsers.value(target);
+		if (pDst && pDst->cChannel == c) {
+			sendMessage(pDst, msg);
+		}
+	}
+}
+
 #undef RATELIMIT
 #undef MSG_SETUP
 #undef MSG_SETUP_NO_UNIDLE
