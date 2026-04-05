@@ -1740,6 +1740,19 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 			}
 		}
 
+		// Broadcast a WebRtcSignal STOP so channel members know the user
+		// is no longer sharing their screen (if they were).
+		if (u->cChannel) {
+			MumbleProto::WebRtcSignal mpws;
+			mpws.set_sender_session(u->uiSession);
+			mpws.set_target_session(0);
+			mpws.set_signal_type(MumbleProto::WebRtcSignal::STOP);
+			for (User *p : u->cChannel->qlUsers) {
+				if (p == u) continue;
+				sendMessage(static_cast< ServerUser * >(p), mpws);
+			}
+		}
+
 		MumbleProto::UserRemove mpur;
 		mpur.set_session(u->uiSession);
 		sendExcept(u, mpur);
