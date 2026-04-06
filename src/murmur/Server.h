@@ -22,6 +22,7 @@
 #include "pchat/ServerBridge.h"
 #include "pchat/TokenBucketRateLimiter.h"
 #include "push/PushNotificationDispatcher.h"
+#include "WebRtcSfuManager.h"
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
 #include "QtUtils.h"
@@ -353,6 +354,8 @@ public:
 	pchat::PersistentChatManager::Config m_pchatConfig;
 
 	std::unique_ptr< push::PushNotificationDispatcher > m_pushDispatcher;
+
+	std::unique_ptr< WebRtcSfuManager > m_sfuManager;
 
 	QHash< QString, PushRegistration > m_pushRegistrations;
 

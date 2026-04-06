@@ -47,6 +47,9 @@ add_library(mumble_server_object_lib OBJECT
 
 	"push/PushNotificationDispatcher.cpp"
 
+	"WebRtcSfuManager.cpp"
+	"WebRtcSfuManager.h"
+
 	"${SHARED_SOURCE_DIR}/ACL.cpp"
 	"${SHARED_SOURCE_DIR}/ACL.h"
 	"${SHARED_SOURCE_DIR}/Channel.cpp"
@@ -336,3 +339,6 @@ target_link_libraries(mumble_server_object_lib PUBLIC mumble_server_database)
 
 # FCM push notification module (standalone shared library, optional)
 add_subdirectory(fcm)
+
+# WebRTC SFU module (Rust cdylib, optional)
+add_subdirectory(webrtc-sfu)
