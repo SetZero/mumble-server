@@ -621,6 +621,9 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 	mpsc.set_image_message_length(static_cast< unsigned int >(iMaxImageMessageLength));
 	mpsc.set_max_users(static_cast< unsigned int >(iMaxUsers));
 	mpsc.set_recording_allowed(allowRecording);
+	if (m_sfuManager && m_sfuManager->isAvailable()) {
+		mpsc.set_webrtc_sfu_available(true);
+	}
 	sendMessage(uSource, mpsc);
 
 	MumbleProto::SuggestConfig mpsug;
@@ -3006,6 +3009,61 @@ void Server::msgWebRtcSignal(ServerUser *uSource, MumbleProto::WebRtcSignal &msg
 	// Stamp the sender session (never trust client-supplied value).
 	msg.set_sender_session(uSource->uiSession);
 
+	auto sigType = msg.signal_type();
+
+	// If the SFU is available, intercept SDP/ICE signals.
+	if (m_sfuManager && m_sfuManager->isAvailable()) {
+		switch (sigType) {
+			case MumbleProto::WebRtcSignal::START: {
+				// Create the SFU session and relay START to the channel.
+				m_sfuManager->createSession(uSource->uiSession);
+				for (User *p : c->qlUsers) {
+					if (p == uSource) continue;
+					sendMessage(static_cast< ServerUser * >(p), msg);
+				}
+				return;
+			}
+			case MumbleProto::WebRtcSignal::STOP: {
+				// Destroy the SFU session and relay STOP to the channel.
+				m_sfuManager->destroySession(uSource->uiSession);
+				for (User *p : c->qlUsers) {
+					if (p == uSource) continue;
+					sendMessage(static_cast< ServerUser * >(p), msg);
+				}
+				return;
+			}
+			case MumbleProto::WebRtcSignal::SDP_OFFER: {
+				uint32_t target = msg.target_session();
+				QString sdp = QString::fromStdString(msg.payload());
+
+				if (target == 0) {
+					// Broadcaster sending offer to server SFU.
+					m_sfuManager->broadcasterOffer(uSource->uiSession, sdp);
+				} else {
+					// Viewer sending offer - target is the broadcaster session.
+					m_sfuManager->viewerOffer(target, uSource->uiSession, sdp);
+				}
+				return;
+			}
+			case MumbleProto::WebRtcSignal::ICE_CANDIDATE: {
+				uint32_t target = msg.target_session();
+				QString json = QString::fromStdString(msg.payload());
+
+				// Determine which broadcast session this ICE candidate belongs to.
+				// target=0 means from broadcaster, otherwise target is the broadcaster.
+				uint32_t broadcasterSession = (target == 0) ? uSource->uiSession : target;
+				m_sfuManager->addIceCandidate(broadcasterSession, uSource->uiSession, json);
+				return;
+			}
+			case MumbleProto::WebRtcSignal::SDP_ANSWER: {
+				// Clients should not send SDP_ANSWER when SFU is active
+				// (only the server sends answers). Ignore silently.
+				return;
+			}
+		}
+	}
+
+	// Fallback: pure relay mode (no SFU loaded).
 	uint32_t target = msg.target_session();
 
 	if (target == 0) {

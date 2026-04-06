@@ -139,6 +139,12 @@ MetaParams::MetaParams() {
 	bPushNotifyReaction    = false;
 	bPushNotifyUserJoin    = false;
 
+	// WebRTC SFU defaults
+	bWebRtcSfuEnabled      = false;
+	qsWebRtcSfuModulePath  = QString();
+	iWebRtcSfuPort         = 0;
+	qsWebRtcSfuPublicIp    = QStringLiteral("0.0.0.0");
+
 	qsCiphers = MumbleSSL::defaultOpenSSLCipherString();
 
 	bLogGroupChanges = false;
@@ -391,6 +397,12 @@ void MetaParams::read(QString fname) {
 	bPushNotifyTextMessage = typeCheckedFromSettings("pushnotifytextmessage", bPushNotifyTextMessage);
 	bPushNotifyReaction    = typeCheckedFromSettings("pushnotifyreaction", bPushNotifyReaction);
 	bPushNotifyUserJoin    = typeCheckedFromSettings("pushnotifyuserjoin", bPushNotifyUserJoin);
+
+	// WebRTC SFU
+	bWebRtcSfuEnabled      = typeCheckedFromSettings("webrtcsfuenabled", bWebRtcSfuEnabled);
+	qsWebRtcSfuModulePath  = typeCheckedFromSettings("webrtcsfumodulepath", qsWebRtcSfuModulePath);
+	iWebRtcSfuPort         = typeCheckedFromSettings("webrtcsfuport", iWebRtcSfuPort);
+	qsWebRtcSfuPublicIp    = typeCheckedFromSettings("webrtcsfupublicip", qsWebRtcSfuPublicIp);
 
 #ifdef Q_OS_UNIX
 	qsName = qsSettings->value("uname").toString();

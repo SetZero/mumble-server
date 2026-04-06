@@ -637,6 +637,9 @@ message ServerConfig {
 	optional uint32 max_users = 6;
 	// Whether using Mumble's recording feature is allowed on the server
 	optional bool recording_allowed = 7;
+	// True when the server has a WebRTC SFU module loaded and can
+	// relay screen-share streams server-side.
+	optional bool webrtc_sfu_available = 8;
 }
 
 // Sent by the server to inform the clients of suggested client configuration

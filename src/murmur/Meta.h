@@ -133,6 +133,12 @@ public:
 	bool bPushNotifyReaction;
 	bool bPushNotifyUserJoin;
 
+	// WebRTC SFU settings
+	bool bWebRtcSfuEnabled;
+	QString qsWebRtcSfuModulePath;
+	uint16_t iWebRtcSfuPort;
+	QString qsWebRtcSfuPublicIp;
+
 	QSslCertificate qscCert;
 	QSslKey qskKey;
 

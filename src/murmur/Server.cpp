@@ -287,6 +287,38 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 		}
 	}
 
+	// Initialize WebRTC SFU manager
+	{
+		WebRtcSfuConfig sfuCfg;
+		sfuCfg.enabled   = Meta::mp->bWebRtcSfuEnabled;
+		sfuCfg.modulePath = Meta::mp->qsWebRtcSfuModulePath;
+		sfuCfg.udpPort   = Meta::mp->iWebRtcSfuPort;
+		sfuCfg.publicIp  = Meta::mp->qsWebRtcSfuPublicIp;
+
+		m_sfuManager = std::make_unique< WebRtcSfuManager >(this);
+		if (sfuCfg.enabled) {
+			if (!m_sfuManager->init(sfuCfg)) {
+				qWarning("Server: WebRTC SFU module failed to initialise - continuing with relay mode");
+			} else {
+				// Connect SFU events to signal delivery.
+				connect(m_sfuManager.get(), &WebRtcSfuManager::sdpAnswerReady,
+				        this, [this](uint32_t targetSession, const QString &sdp) {
+					ServerUser *pDst = qhUsers.value(targetSession);
+					if (!pDst) return;
+
+					MumbleProto::WebRtcSignal msg;
+					msg.set_sender_session(0); // 0 = from server SFU
+					msg.set_target_session(targetSession);
+					msg.set_signal_type(MumbleProto::WebRtcSignal::SDP_ANSWER);
+					msg.set_payload(sdp.toStdString());
+					sendMessage(pDst, msg);
+				});
+			}
+		} else {
+			qInfo("Server: WebRTC SFU disabled in config - screen sharing will use client-to-client relay");
+		}
+	}
+
 	initializeCert();
 
 	if (bValid) {
@@ -1743,6 +1775,11 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 		// Broadcast a WebRtcSignal STOP so channel members know the user
 		// is no longer sharing their screen (if they were).
 		if (u->cChannel) {
+			// If SFU is active, destroy any broadcast session for this user.
+			if (m_sfuManager && m_sfuManager->isAvailable()) {
+				m_sfuManager->destroySession(u->uiSession);
+			}
+
 			MumbleProto::WebRtcSignal mpws;
 			mpws.set_sender_session(u->uiSession);
 			mpws.set_target_session(0);
