@@ -279,6 +279,12 @@ void ServerBridge::sendPchatReactionFetchResponse(unsigned int sessionId, const 
         m_server.sendMessage(user, msg);
 }
 
+void ServerBridge::sendPchatSenderKeyDistribution(unsigned int sessionId, const MumbleProto::PchatSenderKeyDistribution &msg) {
+	ServerUser *user = m_server.qhUsers.value(sessionId);
+	if (!user || user->sState != ServerUser::Authenticated) return;
+	m_server.sendMessage(user, msg);
+}
+
 void ServerBridge::broadcastPchatReactionDeliver(unsigned int channelId, const MumbleProto::PchatReactionDeliver &msg,
                                                  unsigned int excludeSession) {
         Channel *c = m_server.qhChannels.value(channelId);

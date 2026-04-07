@@ -412,7 +412,9 @@ public:
 	void log(const QString &) const;
 	void log(ServerUser *u, const QString &) const;
 
-	// Push notification registration helpers (impl in Messages.cpp)
+	// Push notification helpers (impl in Messages.cpp)
+	void dispatchPushNotifications(ServerUser *sender, const std::set< uint32_t > &targetChannels,
+								   const std::string &title, const std::string &body);
 	void handlePushRegistration(ServerUser *sender, const MumbleProto::PluginDataTransmission &msg);
 	void handlePushChannelUpdate(ServerUser *sender, const MumbleProto::PluginDataTransmission &msg);
 	void computeAllowedPushChannels(ServerUser *user, std::set< uint32_t > &out);
