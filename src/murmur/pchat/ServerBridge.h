@@ -29,6 +29,7 @@ public:
 	void sendPchatOfflineQueueDrain(unsigned int sessionId, const MumbleProto::PchatOfflineQueueDrain &msg) override;
         void sendPchatReactionDeliver(unsigned int sessionId, const MumbleProto::PchatReactionDeliver &msg) override;
         void sendPchatReactionFetchResponse(unsigned int sessionId, const MumbleProto::PchatReactionFetchResponse &msg) override;
+	void sendPchatSenderKeyDistribution(unsigned int sessionId, const MumbleProto::PchatSenderKeyDistribution &msg) override;
 
 	void broadcastPchatMessageDeliver(unsigned int channelId, const MumbleProto::PchatMessageDeliver &msg,
 									  unsigned int excludeSession = 0) override;

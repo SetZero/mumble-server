@@ -1860,81 +1860,80 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	// Emit the signal for RPC consumers
 	emit userTextMessage(uSource, tm);
 
-	// Push notification for text messages — token-based, permission-checked.
+	// Collect target channel IDs from the message.
+	std::set< uint32_t > targetChannels;
+	std::copy(msg.channel_id().begin(), msg.channel_id().end(),
+          std::inserter(targetChannels, targetChannels.end()));
+	std::copy(msg.tree_id().begin(), msg.tree_id().end(),
+		  std::inserter(targetChannels, targetChannels.end()));
+
+	const std::string title = uSource->qsName.toStdString();
+	const std::string body  = u8(msg.message()).left(200).toStdString();
+
+	dispatchPushNotifications(uSource, targetChannels, title, body);
+}
+
+void Server::dispatchPushNotifications(ServerUser *sender, const std::set< uint32_t > &targetChannels,
+									   const std::string &title, const std::string &body) {
 	if (!m_pushDispatcher || !m_pushDispatcher->isAvailable()) {
-		log(uSource, QString("push: dispatcher not available"));
-	} else if (m_pushRegistrations.isEmpty()) {
-		log(uSource, QString("push: no registrations"));
-	} else {
-		// Collect target channel IDs from the message.
-		std::set< uint32_t > targetChannels;
-		for (int i = 0; i < msg.channel_id_size(); ++i) {
-			targetChannels.insert(msg.channel_id(i));
+		log(sender, QString("push: dispatcher not available"));
+		return;
+	}
+	if (m_pushRegistrations.isEmpty()) {
+		log(sender, QString("push: no registrations"));
+		return;
+	}
+
+	log(sender, QString("push: %1 registrations, %2 target channels")
+			.arg(m_pushRegistrations.size())
+			.arg(targetChannels.size()));
+
+	if (targetChannels.empty()) {
+		log(sender, QString("push: no target channels, skipping"));
+		return;
+	}
+
+	QSet< QString > connectedHashes;
+	for (auto *u : qhUsers) {
+		if (!u->qsHash.isEmpty()) {
+			connectedHashes.insert(u->qsHash);
 		}
-		for (int i = 0; i < msg.tree_id_size(); ++i) {
-			targetChannels.insert(msg.tree_id(i));
+	}
+
+	for (const auto &[certHash, reg] : std::as_const(m_pushRegistrations).asKeyValueRange()) {
+		if (certHash == sender->qsHash) {
+			log(sender, QString("push: skip %1 (sender)").arg(certHash.left(8) + "..."));
+			continue;
 		}
 
-		log(uSource, QString("push: %1 registrations, %2 target channels")
-		        .arg(m_pushRegistrations.size())
-		        .arg(targetChannels.size()));
+		if (connectedHashes.contains(certHash)) {
+			log(sender, QString("push: skip %1 (connected)").arg(certHash.left(8) + "..."));
+			continue;
+		}
 
-		if (!targetChannels.empty()) {
-			const std::string title = uSource->qsName.toStdString();
-			const std::string body  = u8(msg.message()).left(200).toStdString();
-
-			// Build a set of certificate hashes for currently connected users.
-			QSet< QString > connectedHashes;
-			for (auto *u : qhUsers) {
-				if (!u->qsHash.isEmpty()) {
-					connectedHashes.insert(u->qsHash);
-				}
+		for (uint32_t channelId : targetChannels) {
+			if (reg.allowedChannels.find(channelId) == reg.allowedChannels.end()) {
+				log(sender, QString("push: skip %1 channel %2 (no permission, allowed=%3)")
+						.arg(certHash.left(8) + "...")
+						.arg(channelId)
+						.arg(reg.allowedChannels.size()));
+				continue;
 			}
 
-			for (auto it = m_pushRegistrations.constBegin();
-			     it != m_pushRegistrations.constEnd(); ++it) {
-				const QString &certHash   = it.key();
-				const PushRegistration &reg = it.value();
-
-				// Skip the sender.
-				if (certHash == uSource->qsHash) {
-					log(uSource, QString("push: skip %1 (sender)").arg(certHash.left(8) + "..."));
-					continue;
-				}
-
-				// Skip users currently connected (they receive the message live).
-				if (connectedHashes.contains(certHash)) {
-					log(uSource, QString("push: skip %1 (connected)").arg(certHash.left(8) + "..."));
-					continue;
-				}
-
-				for (uint32_t channelId : targetChannels) {
-					// Permission check: was the user allowed at registration time?
-					if (reg.allowedChannels.find(channelId) == reg.allowedChannels.end()) {
-						log(uSource, QString("push: skip %1 channel %2 (no permission, allowed=%3)")
-						        .arg(certHash.left(8) + "...")
-						        .arg(channelId)
-						        .arg(reg.allowedChannels.size()));
-						continue;
-					}
-
-					// Client notification preference: skip muted channels.
-					if (reg.mutedChannels.find(channelId) != reg.mutedChannels.end()) {
-						log(uSource, QString("push: skip %1 channel %2 (muted)")
-						        .arg(certHash.left(8) + "...")
-						        .arg(channelId));
-						continue;
-					}
-
-					m_pushDispatcher->notifyUser(
-						reg.fcmToken, title, body,
-						MUMBLE_PUSH_CAT_TEXT_MESSAGE, MUMBLE_PUSH_PRIORITY_NORMAL,
-						iServerNum, channelId);
-					log(uSource, QString("push: sending to %1 for channel %2")
-					        .arg(certHash.left(8) + "...")
-					        .arg(channelId));
-				}
+			if (reg.mutedChannels.find(channelId) != reg.mutedChannels.end()) {
+				log(sender, QString("push: skip %1 channel %2 (muted)")
+						.arg(certHash.left(8) + "...")
+						.arg(channelId));
+				continue;
 			}
+
+			m_pushDispatcher->notifyUser(
+				reg.fcmToken, title, body,
+				MUMBLE_PUSH_CAT_TEXT_MESSAGE, MUMBLE_PUSH_PRIORITY_NORMAL,
+				iServerNum, channelId);
+			log(sender, QString("push: sending to %1 for channel %2")
+					.arg(certHash.left(8) + "...")
+					.arg(channelId));
 		}
 	}
 }
@@ -2981,6 +2980,14 @@ void Server::msgPchatReactionDeliver(ServerUser *, MumbleProto::PchatReactionDel
 
 // Server -> Client only; ignore if received from client
 void Server::msgPchatReactionFetchResponse(ServerUser *, MumbleProto::PchatReactionFetchResponse &) {
+}
+
+void Server::msgPchatSenderKeyDistribution(ServerUser *uSource, MumbleProto::PchatSenderKeyDistribution &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatSenderKeyDistribution(uSource->uiSession, msg);
+	}
 }
 
 

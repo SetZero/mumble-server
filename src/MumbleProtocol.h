@@ -69,7 +69,8 @@
     PROCESS_MUMBLE_TCP_MESSAGE(PchatReaction, 117)            \
     PROCESS_MUMBLE_TCP_MESSAGE(PchatReactionDeliver, 118)     \
     PROCESS_MUMBLE_TCP_MESSAGE(PchatReactionFetchResponse, 119) \
-    PROCESS_MUMBLE_TCP_MESSAGE(WebRtcSignal, 120)
+    PROCESS_MUMBLE_TCP_MESSAGE(WebRtcSignal, 120) \
+    PROCESS_MUMBLE_TCP_MESSAGE(PchatSenderKeyDistribution, 121)
 
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.

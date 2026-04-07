@@ -647,6 +647,12 @@ void PersistentChatManager::onChannelRemoved(unsigned int channelId) {
 	m_queueTable.clearChannel(serverNum, channelId);
 	m_reactionTable.clearChannel(serverNum, channelId);
 	m_challengeState.erase(channelId);
+
+	// Clear stored SKDM distributions for this channel
+	const std::string prefix = std::to_string(channelId) + ":";
+	std::erase_if(m_senderKeyDistributions, [&prefix](const auto &kv) {
+		return kv.first.compare(0, prefix.size(), prefix) == 0;
+	});
 }
 
 // ---- Cleanup / UUID ----
@@ -762,6 +768,9 @@ void PersistentChatManager::drainOfflineQueue(unsigned int sessionId, unsigned i
 	MumbleProto::PchatOfflineQueueDrain drain;
 	drain.set_channel_id(channelId);
 
+	// Collect unique sender hashes so we can bundle their SKDMs
+	std::unordered_set< std::string > senderHashes;
+
 	for (const auto &entry : queued) {
 		// Deserialize the stored PchatMessageDeliver from the envelope.
 		MumbleProto::PchatMessageDeliver deliver;
@@ -770,7 +779,25 @@ void PersistentChatManager::drainOfflineQueue(unsigned int sessionId, unsigned i
 					 entry.messageId.c_str());
 			continue;
 		}
+
+		if (!entry.senderHash.empty()) {
+			senderHashes.insert(entry.senderHash);
+		}
+
 		*drain.add_messages() = std::move(deliver);
+	}
+
+	// Bundle stored SKDMs for all senders whose messages appear in the drain.
+	// This ensures the recipient can process sender key distributions BEFORE
+	// attempting to decrypt the queued messages.
+	for (const auto &hash : senderHashes) {
+		auto it = m_senderKeyDistributions.find(skdmKey(channelId, hash));
+		if (it != m_senderKeyDistributions.end()) {
+			auto *dist = drain.add_distributions();
+			dist->set_channel_id(channelId);
+			dist->set_sender_hash(hash);
+			dist->set_distribution(it->second);
+		}
 	}
 
 	if (drain.messages_size() > 0) {
@@ -1274,4 +1301,62 @@ void PersistentChatManager::handlePchatReaction(unsigned int senderSession, cons
         // Broadcast to all Fancy clients in the channel
         m_bridge.broadcastPchatReactionDeliver(channelId, deliver);
 }
+
+// ---- Sender Key Distribution (Signal SKDM) ----
+
+std::string PersistentChatManager::skdmKey(unsigned int channelId, const std::string &senderHash) {
+	return std::to_string(channelId) + ":" + senderHash;
+}
+
+void PersistentChatManager::handlePchatSenderKeyDistribution(unsigned int senderSession,
+															 const MumbleProto::PchatSenderKeyDistribution &msg) {
+	if (!m_config.enabled) {
+		return;
+	}
+
+	if (!msg.has_channel_id() || !msg.has_distribution()) {
+		return;
+	}
+
+	const unsigned int channelId = msg.channel_id();
+
+	// Validate channel is persistent
+	if (m_bridge.getChannelPChatProtocol(channelId) == Protocol::None) {
+		return;
+	}
+
+	// Validate sender cert hash
+	const std::string certHash = m_bridge.getCertHash(senderSession);
+	if (certHash.empty()) {
+		return;
+	}
+
+	// Verify sender is verified for this channel
+	if (!isSessionVerified(channelId, senderSession)) {
+		qWarning("pchat: SKDM rejected - sender not verified session=%u channel=%u", senderSession, channelId);
+		return;
+	}
+
+	// Store the latest SKDM (overwrites any previous distribution for this sender+channel)
+	m_senderKeyDistributions[skdmKey(channelId, certHash)] = msg.distribution();
+
+	qDebug("pchat: stored SKDM for cert_hash=%s channel=%u (%zu bytes)",
+		   certHash.c_str(), channelId, msg.distribution().size());
+
+	// Relay to other verified sessions in the channel
+	MumbleProto::PchatSenderKeyDistribution relay;
+	relay.set_channel_id(channelId);
+	relay.set_sender_hash(certHash);
+	relay.set_distribution(msg.distribution());
+
+	if (m_challengeState.contains(channelId)) {
+		for (unsigned int session : m_challengeState.at(channelId).verifiedSessions) {
+			if (session == senderSession) {
+				continue;
+			}
+			m_bridge.sendPchatSenderKeyDistribution(session, relay);
+		}
+	}
+}
+
 } // namespace pchat

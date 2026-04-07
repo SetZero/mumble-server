@@ -109,6 +109,9 @@ struct IServerBridge {
 	/// Send a PchatReactionFetchResponse to a specific user session.
 	virtual void sendPchatReactionFetchResponse(unsigned int sessionId, const MumbleProto::PchatReactionFetchResponse &msg) = 0;
 
+	/// Send a PchatSenderKeyDistribution to a specific user session.
+	virtual void sendPchatSenderKeyDistribution(unsigned int sessionId, const MumbleProto::PchatSenderKeyDistribution &msg) = 0;
+
 	/// Broadcast a PchatReactionDeliver to all Fancy Mumble v2+ sessions in a channel.
 	virtual void broadcastPchatReactionDeliver(unsigned int channelId, const MumbleProto::PchatReactionDeliver &msg,
 												unsigned int excludeSession = 0) = 0;
@@ -238,6 +241,9 @@ public:
         /// Handle a PchatReaction (client adds or removes an emoji reaction).
         void handlePchatReaction(unsigned int senderSession, const MumbleProto::PchatReaction &msg);
 
+	/// Handle a PchatSenderKeyDistribution (client distributes Signal sender key).
+	void handlePchatSenderKeyDistribution(unsigned int senderSession, const MumbleProto::PchatSenderKeyDistribution &msg);
+
 	/// Called when a Fancy client connects and joins a persistent channel.
 	/// Delivers pending key requests for that channel.
 	void onFancyClientJoinedChannel(unsigned int sessionId, unsigned int channelId);
@@ -315,6 +321,13 @@ private:
 		std::unordered_set< unsigned int > verifiedSessions;
 	};
 	std::unordered_map< unsigned int, ChannelChallengeState > m_challengeState;
+
+	/// In-memory storage of latest SKDM per (channelId, senderHash).
+	/// Key: "channelId:senderHash", Value: raw distribution bytes.
+	std::unordered_map< std::string, std::string > m_senderKeyDistributions;
+
+	/// Build a key for m_senderKeyDistributions.
+	static std::string skdmKey(unsigned int channelId, const std::string &senderHash);
 };
 
 } // namespace pchat

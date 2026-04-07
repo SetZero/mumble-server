@@ -48,6 +48,7 @@ public:
 	std::vector< std::pair< unsigned int, MumbleProto::PchatDeleteMessages > > broadcastedDeleteMessages;
 	std::vector< std::pair< unsigned int, MumbleProto::PchatReactionDeliver > > sentReactionDelivers;
 	std::vector< std::pair< unsigned int, MumbleProto::PchatReactionFetchResponse > > sentReactionFetchResponses;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatSenderKeyDistribution > > sentSenderKeyDistributions;
 	std::vector< std::pair< unsigned int, MumbleProto::PchatReactionDeliver > > broadcastedReactionDelivers;
 	std::vector< std::tuple< unsigned int, unsigned int, unsigned int > > sentPermissionDenied;
 
@@ -109,6 +110,9 @@ public:
 	}
 	void sendPchatReactionFetchResponse(unsigned int sessionId, const MumbleProto::PchatReactionFetchResponse &msg) override {
 		sentReactionFetchResponses.push_back({ sessionId, msg });
+	}
+	void sendPchatSenderKeyDistribution(unsigned int sessionId, const MumbleProto::PchatSenderKeyDistribution &msg) override {
+		sentSenderKeyDistributions.push_back({ sessionId, msg });
 	}
 	void broadcastPchatReactionDeliver(unsigned int channelId, const MumbleProto::PchatReactionDeliver &msg,
 									   unsigned int /*excludeSession*/) override {
@@ -191,6 +195,7 @@ public:
 		broadcastedDeleteMessages.clear();
 		sentReactionDelivers.clear();
 		sentReactionFetchResponses.clear();
+		sentSenderKeyDistributions.clear();
 		broadcastedReactionDelivers.clear();
 		sentPermissionDenied.clear();
 	}
