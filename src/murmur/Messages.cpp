@@ -1732,17 +1732,22 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 
 	msg.set_actor(uSource->uiSession);
 
-	// generate a message id using qt
-	QUuid uuid = QUuid::createUuid();
-    QString strUuid = uuid.toString();
-	msg.set_message_id(u8(strUuid));
+	// Preserve client-provided message_id (Fancy Mumble extension) when present;
+	// generate a server-side UUID only for legacy clients that omit it.
+	if (!msg.has_message_id() || msg.message_id().empty()) {
+		QUuid uuid = QUuid::createUuid();
+		QString strUuid = uuid.toString();
+		msg.set_message_id(u8(strUuid));
+	}
 
-	// add a timestamp using c++17
-	auto now = std::chrono::system_clock::now();
-	auto epoch = now.time_since_epoch();
-	auto value = std::chrono::duration_cast<std::chrono::milliseconds>(epoch);
-	long long timestamp = value.count();
-	msg.set_timestamp(static_cast<uint64_t>(timestamp));
+	// Preserve client-provided timestamp when present; generate one otherwise.
+	if (!msg.has_timestamp()) {
+		auto now = std::chrono::system_clock::now();
+		auto epoch = now.time_since_epoch();
+		auto value = std::chrono::duration_cast<std::chrono::milliseconds>(epoch);
+		long long timestamp = value.count();
+		msg.set_timestamp(static_cast<uint64_t>(timestamp));
+	}
 
 
 	// Send the message to all users that are in (= have joined) OR are
@@ -2712,16 +2717,6 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 		return;
 	}
 
-	// Intercept server-directed FancyMumble messages before forwarding.
-	if (msg.dataid() == "fancy-push-register") {
-		handlePushRegistration(sender, msg);
-		return;
-	}
-	if (msg.dataid() == "fancy-push-update") {
-		handlePushChannelUpdate(sender, msg);
-		return;
-	}
-
 	// Copy needed data from message in order to be able to remove info about receivers from the message as this doesn't
 	// matter for the client
 	size_t receiverAmount = static_cast< std::size_t >(msg.receiversessions_size());
@@ -2766,22 +2761,13 @@ void Server::computeAllowedPushChannels(ServerUser *user, std::set< uint32_t > &
 }
 
 void Server::handlePushRegistration(ServerUser *sender,
-                                    const MumbleProto::PluginDataTransmission &msg) {
+                                    const MumbleProto::FancyPushRegister &msg) {
 	if (sender->qsHash.isEmpty()) {
 		log(sender, QString("push-register: ignored (no certificate hash)"));
 		return;
 	}
 
-	QByteArray raw = QByteArray::fromRawData(msg.data().data(),
-	                                         static_cast< int >(msg.data().size()));
-	QJsonDocument doc = QJsonDocument::fromJson(raw);
-	if (!doc.isObject()) {
-		log(sender, QString("push-register: malformed JSON"));
-		return;
-	}
-
-	QJsonObject obj  = doc.object();
-	QString token    = obj.value("token").toString();
+	QString token = QString::fromStdString(msg.token());
 	if (token.isEmpty()) {
 		log(sender, QString("push-register: missing 'token'"));
 		return;
@@ -2794,11 +2780,8 @@ void Server::handlePushRegistration(ServerUser *sender,
 	computeAllowedPushChannels(sender, reg.allowedChannels);
 
 	// Apply any muted list from the payload.
-	QJsonArray mutedArr = obj.value("muted").toArray();
-	for (const auto &v : mutedArr) {
-		if (v.isDouble()) {
-			reg.mutedChannels.insert(static_cast< uint32_t >(v.toInt()));
-		}
+	for (int i = 0; i < msg.muted_channels_size(); ++i) {
+		reg.mutedChannels.insert(msg.muted_channels(i));
 	}
 
 	m_pushRegistrations[sender->qsHash] = reg;
@@ -2810,7 +2793,7 @@ void Server::handlePushRegistration(ServerUser *sender,
 }
 
 void Server::handlePushChannelUpdate(ServerUser *sender,
-                                     const MumbleProto::PluginDataTransmission &msg) {
+                                     const MumbleProto::FancyPushUpdate &msg) {
 	if (sender->qsHash.isEmpty()) return;
 
 	auto it = m_pushRegistrations.find(sender->qsHash);
@@ -2819,19 +2802,9 @@ void Server::handlePushChannelUpdate(ServerUser *sender,
 		return;
 	}
 
-	QByteArray raw = QByteArray::fromRawData(msg.data().data(),
-	                                         static_cast< int >(msg.data().size()));
-	QJsonDocument doc = QJsonDocument::fromJson(raw);
-	if (!doc.isObject()) return;
-
-	QJsonObject obj = doc.object();
-	QJsonArray mutedArr = obj.value("muted").toArray();
-
 	it->mutedChannels.clear();
-	for (const auto &v : mutedArr) {
-		if (v.isDouble()) {
-			it->mutedChannels.insert(static_cast< uint32_t >(v.toInt()));
-		}
+	for (int i = 0; i < msg.muted_channels_size(); ++i) {
+		it->mutedChannels.insert(msg.muted_channels(i));
 	}
 
 	// Also refresh allowed channels while the user is connected.
@@ -2840,6 +2813,20 @@ void Server::handlePushChannelUpdate(ServerUser *sender,
 	log(sender, QString("push-update: muted=%1 allowed=%2")
 	        .arg(it->mutedChannels.size())
 	        .arg(it->allowedChannels.size()));
+}
+
+void Server::msgFancyPushRegister(ServerUser *uSource, MumbleProto::FancyPushRegister &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	handlePushRegistration(uSource, msg);
+}
+
+void Server::msgFancyPushUpdate(ServerUser *uSource, MumbleProto::FancyPushUpdate &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	handlePushChannelUpdate(uSource, msg);
+}
+
+void Server::msgFancyCustomReactionsConfig(ServerUser *, MumbleProto::FancyCustomReactionsConfig &) {
+	// Server -> Client only; ignore if received from client.
 }
 
 void Server::msgPchatMessage(ServerUser *uSource, MumbleProto::PchatMessage &msg) {

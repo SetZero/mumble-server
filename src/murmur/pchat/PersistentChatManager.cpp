@@ -1225,9 +1225,7 @@ void PersistentChatManager::handlePchatReaction(unsigned int senderSession, cons
         const auto channelId = msg.channel_id();
         const auto &messageId = msg.message_id();
 
-        if (m_bridge.getChannelPChatProtocol(channelId) == Protocol::None) {
-                return;
-        }
+        const bool isPersistent = m_bridge.getChannelPChatProtocol(channelId) != Protocol::None;
 
         // Validate sender cert hash
         std::string certHash = m_bridge.getCertHash(senderSession);
@@ -1235,7 +1233,6 @@ void PersistentChatManager::handlePchatReaction(unsigned int senderSession, cons
                 return;
         }
 
-        // Verify the message exists in storage
         unsigned int serverNum = m_bridge.serverNum();
 
         // Extract emoji string and type from the oneof
@@ -1277,23 +1274,27 @@ void PersistentChatManager::handlePchatReaction(unsigned int senderSession, cons
         if (msg.action() == MumbleProto::REACTION_ADD) {
                 deliver.set_action(MumbleProto::REACTION_ADD);
 
-                // Store in DB
-                msdb::PChatReaction reaction;
-                reaction.serverID      = serverNum;
-                reaction.channelId     = channelId;
-                reaction.messageId     = messageId;
-                reaction.emoji         = emojiStr;
-                reaction.isServerEmoji = isServerEmoji;
-                reaction.senderHash    = certHash;
-                reaction.senderName    = certHash; // fallback name
-                reaction.timestamp     = now;
-                reaction.createdAt     = now;
+                if (isPersistent) {
+                        // Store in DB only for persistent channels.
+                        msdb::PChatReaction reaction;
+                        reaction.serverID      = serverNum;
+                        reaction.channelId     = channelId;
+                        reaction.messageId     = messageId;
+                        reaction.emoji         = emojiStr;
+                        reaction.isServerEmoji = isServerEmoji;
+                        reaction.senderHash    = certHash;
+                        reaction.senderName    = certHash; // fallback name
+                        reaction.timestamp     = now;
+                        reaction.createdAt     = now;
 
-                m_reactionTable.addReaction(reaction);
+                        m_reactionTable.addReaction(reaction);
+                }
         } else if (msg.action() == MumbleProto::REACTION_REMOVE) {
                 deliver.set_action(MumbleProto::REACTION_REMOVE);
 
-                m_reactionTable.removeReaction(serverNum, channelId, messageId, emojiStr, isServerEmoji, certHash);
+                if (isPersistent) {
+                        m_reactionTable.removeReaction(serverNum, channelId, messageId, emojiStr, isServerEmoji, certHash);
+                }
         } else {
                 return; // Unknown action
         }
