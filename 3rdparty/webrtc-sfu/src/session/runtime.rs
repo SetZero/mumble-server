@@ -177,6 +177,7 @@ impl SfuRuntime {
                         );
                         let _r = event_tx.send(SfuEvent::SdpAnswer {
                             target_session: broadcaster_session,
+                            broadcaster_session,
                             sdp: answer_sdp,
                         });
                     }
@@ -197,6 +198,7 @@ impl SfuRuntime {
                         );
                         let _r = event_tx.send(SfuEvent::SdpAnswer {
                             target_session: viewer_session,
+                            broadcaster_session,
                             sdp: answer_sdp,
                         });
                     }

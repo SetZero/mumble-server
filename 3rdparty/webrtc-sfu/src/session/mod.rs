@@ -49,7 +49,11 @@ pub struct SfuHandle {
 #[derive(Debug)]
 pub enum SfuEvent {
     SdpAnswer {
+        /// The session the answer should be delivered to.
         target_session: u32,
+        /// The broadcaster whose stream the answer is for.
+        /// Equal to `target_session` when this is the broadcaster's own answer.
+        broadcaster_session: u32,
         sdp: String,
     },
     SessionEnded {

@@ -152,13 +152,15 @@ void WebRtcSfuManager::pollEvents() {
 		struct EventPod {
 			int event_type;
 			uint32_t session_id;
+			uint32_t broadcaster_session;
 			char *payload;
 		};
 
 		auto *pod = reinterpret_cast< EventPod * >(event);
 
 		if (pod->event_type == kSfuEventSdpAnswer && pod->payload) {
-			emit sdpAnswerReady(pod->session_id, QString::fromUtf8(pod->payload));
+			emit sdpAnswerReady(pod->session_id, pod->broadcaster_session,
+			                    QString::fromUtf8(pod->payload));
 		} else if (pod->event_type == kSfuEventSessionEnded) {
 			emit sessionEnded(pod->session_id);
 		}

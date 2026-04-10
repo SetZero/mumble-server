@@ -55,6 +55,9 @@ pub struct SfuFfiEvent {
     /// Mumble session ID of the target client (for SDP answers) or
     /// broadcaster (for session-ended events).
     pub session_id: u32,
+    /// For SDP answers: the broadcaster whose stream this answer is for.
+    /// For session-ended events: same as `session_id`.
+    pub broadcaster_session: u32,
     /// Null-terminated payload string (SDP answer text, etc.).
     /// NULL for events without a payload.
     pub payload: *mut c_char,
@@ -209,11 +212,12 @@ pub unsafe extern "C" fn sfu_poll_event(handle: *mut SfuHandle) -> *mut SfuFfiEv
     };
 
     match event {
-        SfuEvent::SdpAnswer { target_session, sdp } => {
+        SfuEvent::SdpAnswer { target_session, broadcaster_session, sdp } => {
             let payload = CString::new(sdp).unwrap_or_default();
             Box::into_raw(Box::new(SfuFfiEvent {
                 event_type: SfuFfiEventType::SdpAnswer,
                 session_id: target_session,
+                broadcaster_session,
                 payload: payload.into_raw(),
             }))
         }
@@ -221,6 +225,7 @@ pub unsafe extern "C" fn sfu_poll_event(handle: *mut SfuHandle) -> *mut SfuFfiEv
             Box::into_raw(Box::new(SfuFfiEvent {
                 event_type: SfuFfiEventType::SessionEnded,
                 session_id: broadcaster_session,
+                broadcaster_session,
                 payload: ptr::null_mut(),
             }))
         }
