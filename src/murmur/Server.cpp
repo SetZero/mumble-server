@@ -302,12 +302,12 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 			} else {
 				// Connect SFU events to signal delivery.
 				connect(m_sfuManager.get(), &WebRtcSfuManager::sdpAnswerReady,
-				        this, [this](uint32_t targetSession, const QString &sdp) {
+				        this, [this](uint32_t targetSession, uint32_t broadcasterSession, const QString &sdp) {
 					ServerUser *pDst = qhUsers.value(targetSession);
 					if (!pDst) return;
 
 					MumbleProto::WebRtcSignal msg;
-					msg.set_sender_session(0); // 0 = from server SFU
+					msg.set_sender_session(broadcasterSession);
 					msg.set_target_session(targetSession);
 					msg.set_signal_type(MumbleProto::WebRtcSignal::SDP_ANSWER);
 					msg.set_payload(sdp.toStdString());

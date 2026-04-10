@@ -77,7 +77,11 @@ public:
 
 signals:
 	/// Emitted when an SDP answer is ready for a client.
-	void sdpAnswerReady(uint32_t targetSession, const QString &sdp);
+	/// @param targetSession   The client that should receive the answer.
+	/// @param broadcasterSession  The broadcaster whose stream the answer is for.
+	/// @param sdp             The SDP answer text.
+	void sdpAnswerReady(uint32_t targetSession, uint32_t broadcasterSession,
+	                    const QString &sdp);
 
 	/// Emitted when a broadcast session ends.
 	void sessionEnded(uint32_t broadcasterSession);
