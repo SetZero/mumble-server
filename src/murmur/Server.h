@@ -374,6 +374,15 @@ public:
 	/// Removed automatically when the user disconnects.
 	QHash< uint32_t, LivePushSubscription > m_livePushSubscriptions;
 
+	/// Read receipt watermarks: channel_id -> (cert_hash -> watermark).
+	/// Tracks the last read message_id per user per channel.
+	struct ReadWatermark {
+		std::string lastMessageId;
+		uint64_t timestamp = 0;
+	};
+	QHash< uint32_t, QHash< QString, ReadWatermark > > m_readWatermarks;
+	void handleReadReceipt(ServerUser *uSource, MumbleProto::FancyReadReceipt &msg);
+
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,
 					Mumble::Protocol::UDPAudioEncoder< Mumble::Protocol::Role::Server > &encoder);

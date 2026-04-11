@@ -74,7 +74,9 @@
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPushRegister, 122) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPushUpdate, 123) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyCustomReactionsConfig, 124) \
-    PROCESS_MUMBLE_TCP_MESSAGE(FancySubscribePush, 125)
+    PROCESS_MUMBLE_TCP_MESSAGE(FancySubscribePush, 125) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyReadReceipt, 126) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyReadReceiptDeliver, 127)
 
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.

@@ -1135,3 +1135,47 @@ message FancyCustomReactionsConfig {
 	}
 	repeated CustomReaction reactions = 1;
 }
+
+// ---------------------------------------------------------------------------
+// Read receipts (Fancy Mumble extension, IDs 126-127)
+// ---------------------------------------------------------------------------
+
+// Client -> Server: report that the client has read messages up to
+// (and including) last_read_message_id in a channel.
+// The server stores this as a per-user watermark and broadcasts a
+// FancyReadReceiptDeliver to all Fancy clients in the channel.
+// Wire type ID = 126.
+message FancyReadReceipt {
+	optional uint32 channel_id = 1;
+	// The message_id of the most recent message the user has read.
+	optional string last_read_message_id = 2;
+	// Client timestamp (Unix epoch ms). Server may override.
+	optional uint64 timestamp = 3;
+	// When true, the server returns the full read state for the channel
+	// without updating any watermark.
+	optional bool query = 4;
+	// When querying, optionally restrict the response to readers of
+	// this specific message (readers with watermark >= this ID).
+	optional string query_message_id = 5;
+}
+
+// Server -> Client: delivers read receipt state for a channel.
+// Sent as a broadcast when a user reports a new watermark, or as a
+// targeted response to a query.
+// Wire type ID = 127.
+message FancyReadReceiptDeliver {
+	optional uint32 channel_id = 1;
+	message ReadState {
+		// TLS certificate hash of the reader.
+		optional string cert_hash = 1;
+		// Best-effort display name.
+		optional string name = 2;
+		// The message_id up to which this user has read.
+		optional string last_read_message_id = 3;
+		// When the read was reported (Unix epoch ms).
+		optional uint64 timestamp = 4;
+	}
+	repeated ReadState read_states = 2;
+	// If set, this is a response to a query for a specific message.
+	optional string query_message_id = 3;
+}
