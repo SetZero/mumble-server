@@ -1857,6 +1857,37 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	// Remove the message sender from the list of users to send the message to
 	users.remove(uSource);
 
+	// Route to live push subscribers: connected users who registered via
+	// FancySubscribePush and have SubscribePush permission for a target
+	// channel but are not already in the recipients set.
+	for (auto it = m_livePushSubscriptions.constBegin(); it != m_livePushSubscriptions.constEnd(); ++it) {
+		uint32_t session = it.key();
+		const LivePushSubscription &sub = it.value();
+
+		ServerUser *subscriber = qhUsers.value(session);
+		if (!subscriber || subscriber == uSource || users.contains(subscriber))
+			continue;
+
+		bool subscribed = false;
+		for (int i = 0; !subscribed && i < msg.channel_id_size(); ++i) {
+			uint32_t channelId = msg.channel_id(i);
+			if (sub.allowedChannels.count(channelId)
+				&& !sub.mutedChannels.count(channelId)) {
+				subscribed = true;
+			}
+		}
+		for (int i = 0; !subscribed && i < msg.tree_id_size(); ++i) {
+			uint32_t channelId = msg.tree_id(i);
+			if (sub.allowedChannels.count(channelId)
+				&& !sub.mutedChannels.count(channelId)) {
+				subscribed = true;
+			}
+		}
+		if (subscribed) {
+			users.insert(subscriber);
+		}
+	}
+
 	// Actually send the original message to the affected users
 	for (ServerUser *u : users) {
 		sendMessage(u, msg);
@@ -2827,6 +2858,27 @@ void Server::msgFancyPushUpdate(ServerUser *uSource, MumbleProto::FancyPushUpdat
 
 void Server::msgFancyCustomReactionsConfig(ServerUser *, MumbleProto::FancyCustomReactionsConfig &) {
 	// Server -> Client only; ignore if received from client.
+}
+
+void Server::handleLivePushSubscribe(ServerUser *sender,
+                                     const MumbleProto::FancySubscribePush &msg) {
+	LivePushSubscription sub;
+	computeAllowedPushChannels(sender, sub.allowedChannels);
+
+	for (int i = 0; i < msg.muted_channels_size(); ++i) {
+		sub.mutedChannels.insert(msg.muted_channels(i));
+	}
+
+	m_livePushSubscriptions[sender->uiSession] = sub;
+
+	log(sender, QString("live-push-subscribe: allowed=%1 muted=%2")
+	        .arg(sub.allowedChannels.size())
+	        .arg(sub.mutedChannels.size()));
+}
+
+void Server::msgFancySubscribePush(ServerUser *uSource, MumbleProto::FancySubscribePush &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	handleLivePushSubscribe(uSource, msg);
 }
 
 void Server::msgPchatMessage(ServerUser *uSource, MumbleProto::PchatMessage &msg) {

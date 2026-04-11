@@ -73,7 +73,8 @@
     PROCESS_MUMBLE_TCP_MESSAGE(PchatSenderKeyDistribution, 121) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPushRegister, 122) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPushUpdate, 123) \
-    PROCESS_MUMBLE_TCP_MESSAGE(FancyCustomReactionsConfig, 124)
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyCustomReactionsConfig, 124) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancySubscribePush, 125)
 
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.

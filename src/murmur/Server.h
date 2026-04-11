@@ -90,6 +90,17 @@ struct PushRegistration {
 	std::set< uint32_t > mutedChannels;
 };
 
+/// Live push subscription for a connected client session.
+/// The server routes TextMessages to subscribed sessions for channels
+/// they are not currently in, as long as the channel is in allowedChannels
+/// and not in mutedChannels.
+struct LivePushSubscription {
+	/// Channels the user has SubscribePush permission for.
+	std::set< uint32_t > allowedChannels;
+	/// Channels the user explicitly excluded from live delivery.
+	std::set< uint32_t > mutedChannels;
+};
+
 class SslServer : public QTcpServer {
 private:
 	Q_OBJECT
@@ -359,6 +370,10 @@ public:
 
 	QHash< QString, PushRegistration > m_pushRegistrations;
 
+	/// Live push subscriptions keyed by session ID.
+	/// Removed automatically when the user disconnects.
+	QHash< uint32_t, LivePushSubscription > m_livePushSubscriptions;
+
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,
 					Mumble::Protocol::UDPAudioEncoder< Mumble::Protocol::Role::Server > &encoder);
@@ -418,6 +433,7 @@ public:
 	void handlePushRegistration(ServerUser *sender, const MumbleProto::FancyPushRegister &msg);
 	void handlePushChannelUpdate(ServerUser *sender, const MumbleProto::FancyPushUpdate &msg);
 	void computeAllowedPushChannels(ServerUser *user, std::set< uint32_t > &out);
+	void handleLivePushSubscribe(ServerUser *sender, const MumbleProto::FancySubscribePush &msg);
 
 	void removeChannel(unsigned int id);
 	void removeChannel(Channel *c, Channel *dest = nullptr);
