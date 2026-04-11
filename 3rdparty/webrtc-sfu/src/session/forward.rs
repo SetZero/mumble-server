@@ -83,7 +83,7 @@ impl BroadcastSession {
                     let _r = socket.send_to(&t.contents, t.destination).await;
                 }
                 Ok(Output::Event(Event::IceConnectionStateChange(state))) => {
-                    debug!("SFU: viewer {viewer_id} ICE state: {state:?}");
+                    trace!("SFU: viewer {viewer_id} ICE state: {state:?}");
                 }
                 Ok(Output::Event(Event::KeyframeRequest(req))) => {
                     trace!("SFU: viewer {viewer_id} requests keyframe: mid={} kind={:?}", req.mid, req.kind);
@@ -171,7 +171,7 @@ impl BroadcastSession {
             return;
         }
 
-        debug!(
+        trace!(
             "SFU stats [broadcaster {}]: raw_rx={} media_in={} rtcp_out={} fwd={} viewer_tx={}",
             self.broadcaster_session,
             self.stats.raw_udp_rx, self.stats.inbound_rtp_rx,

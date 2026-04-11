@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::broadcast::BroadcastSession;
 use super::helpers::classify_packet;
@@ -32,7 +32,7 @@ impl SfuRuntime {
             .local_addr()
             .expect("bound socket should have local address");
         let public_addr = SocketAddr::new(config.public_ip, local_addr.port());
-        debug!("SFU listening on UDP {local_addr} (public {public_addr})");
+        info!("SFU listening on UDP {local_addr} (public {public_addr})");
 
         Some(Self {
             sessions: HashMap::new(),
@@ -158,7 +158,7 @@ impl SfuRuntime {
                     debug!("SFU: session for broadcaster {broadcaster_session} already exists");
                     return;
                 }
-                debug!("SFU: creating session for broadcaster {broadcaster_session}");
+                info!("SFU: creating session for broadcaster {broadcaster_session}");
                 self.sessions.insert(
                     broadcaster_session,
                     BroadcastSession::new(broadcaster_session),
@@ -171,8 +171,9 @@ impl SfuRuntime {
                 };
                 match session.accept_broadcaster_offer(&self.config, &self.socket, &sdp) {
                     Ok(answer_sdp) => {
+                        info!("SFU: broadcaster {broadcaster_session} offer accepted");
                         debug!(
-                            "SFU: broadcaster {broadcaster_session} offer accepted\n\
+                            "SFU: broadcaster {broadcaster_session} SDP\n\
                              --- OFFER ---\n{sdp}\n--- ANSWER ---\n{answer_sdp}\n---",
                         );
                         let _r = event_tx.send(SfuEvent::SdpAnswer {
@@ -191,11 +192,7 @@ impl SfuRuntime {
                 };
                 match session.accept_viewer_offer(&self.config, &self.socket, viewer_session, &sdp) {
                     Ok(answer_sdp) => {
-                        debug!(
-                            "SFU: viewer {viewer_session} offer accepted for broadcaster \
-                             {broadcaster_session} ({} bytes)",
-                            answer_sdp.len(),
-                        );
+                        info!("SFU: viewer {viewer_session} connected to broadcaster {broadcaster_session}");
                         let _r = event_tx.send(SfuEvent::SdpAnswer {
                             target_session: viewer_session,
                             broadcaster_session,
@@ -206,10 +203,10 @@ impl SfuRuntime {
                 }
             }
             SfuCommand::AddIceCandidate { client_session, .. } => {
-                debug!("SFU: ICE candidate from session {client_session} (handled via UDP)");
+                trace!("SFU: ICE candidate from session {client_session} (handled via UDP)");
             }
             SfuCommand::DestroySession { broadcaster_session } => {
-                debug!("SFU: destroying session for broadcaster {broadcaster_session}");
+                info!("SFU: destroying session for broadcaster {broadcaster_session}");
                 self.sessions.remove(&broadcaster_session);
                 let _r = event_tx.send(SfuEvent::SessionEnded { broadcaster_session });
             }
