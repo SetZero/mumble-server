@@ -3127,6 +3127,105 @@ void Server::msgWebRtcSignal(ServerUser *uSource, MumbleProto::WebRtcSignal &msg
 	}
 }
 
+void Server::msgFancyReadReceipt(ServerUser *uSource, MumbleProto::FancyReadReceipt &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	handleReadReceipt(uSource, msg);
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgFancyReadReceiptDeliver(ServerUser *, MumbleProto::FancyReadReceiptDeliver &) {
+}
+
+void Server::handleReadReceipt(ServerUser *uSource, MumbleProto::FancyReadReceipt &msg) {
+	if (!msg.has_channel_id()) {
+		return;
+	}
+
+	const auto channelId = msg.channel_id();
+	Channel *c = qhChannels.value(channelId);
+	if (!c) {
+		return;
+	}
+
+	const QString certHash = uSource->qsHash;
+	if (certHash.isEmpty()) {
+		return;
+	}
+
+	// Query mode: return current watermarks for this channel without updating.
+	if (msg.has_query() && msg.query()) {
+		MumbleProto::FancyReadReceiptDeliver deliver;
+		deliver.set_channel_id(channelId);
+
+		const auto &channelWatermarks = m_readWatermarks.value(channelId);
+		const bool hasQueryMsgId = msg.has_query_message_id();
+		const auto &queryMsgId = hasQueryMsgId ? msg.query_message_id() : std::string{};
+
+		if (hasQueryMsgId) {
+			deliver.set_query_message_id(queryMsgId);
+		}
+
+		for (auto it = channelWatermarks.constBegin(); it != channelWatermarks.constEnd(); ++it) {
+			// If querying for a specific message, only include users whose
+			// watermark is >= that message. Since message_ids are UUIDs
+			// (not ordered), we store them all and let the client filter.
+			// For simplicity, include all watermarks and let the client
+			// determine which ones have read the queried message by comparing
+			// message timestamps or message ordering.
+			auto *rs = deliver.add_read_states();
+			rs->set_cert_hash(it.key().toStdString());
+			rs->set_last_read_message_id(it.value().lastMessageId);
+			rs->set_timestamp(it.value().timestamp);
+
+			// Fill display name from connected user if available.
+			for (ServerUser *u : qhUsers) {
+				if (u->qsHash == it.key() && u->sState == ServerUser::Authenticated) {
+					rs->set_name(u->qsName.toStdString());
+					break;
+				}
+			}
+		}
+
+		sendMessage(uSource, deliver);
+		return;
+	}
+
+	// Update mode: store watermark and broadcast.
+	if (!msg.has_last_read_message_id() || msg.last_read_message_id().empty()) {
+		return;
+	}
+
+	auto now = static_cast< uint64_t >(
+		std::chrono::duration_cast< std::chrono::milliseconds >(
+			std::chrono::system_clock::now().time_since_epoch())
+			.count());
+
+	ReadWatermark wm;
+	wm.lastMessageId = msg.last_read_message_id();
+	wm.timestamp = msg.has_timestamp() ? msg.timestamp() : now;
+
+	m_readWatermarks[channelId][certHash] = wm;
+
+	// Broadcast the update to all Fancy clients in the channel.
+	MumbleProto::FancyReadReceiptDeliver deliver;
+	deliver.set_channel_id(channelId);
+
+	auto *rs = deliver.add_read_states();
+	rs->set_cert_hash(certHash.toStdString());
+	rs->set_name(uSource->qsName.toStdString());
+	rs->set_last_read_message_id(wm.lastMessageId);
+	rs->set_timestamp(wm.timestamp);
+
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->sState == ServerUser::Authenticated
+			&& su->m_FancyVersion.has_value()
+			&& su->m_FancyVersion.value() >= Version::fromComponents(0, 2, 0)) {
+			sendMessage(su, deliver);
+		}
+	}
+}
+
 #undef RATELIMIT
 #undef MSG_SETUP
 #undef MSG_SETUP_NO_UNIDLE
