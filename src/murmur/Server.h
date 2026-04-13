@@ -90,6 +90,17 @@ struct PushRegistration {
 	std::set< uint32_t > mutedChannels;
 };
 
+/// Live push subscription for a connected client session.
+/// The server routes TextMessages to subscribed sessions for channels
+/// they are not currently in, as long as the channel is in allowedChannels
+/// and not in mutedChannels.
+struct LivePushSubscription {
+	/// Channels the user has SubscribePush permission for.
+	std::set< uint32_t > allowedChannels;
+	/// Channels the user explicitly excluded from live delivery.
+	std::set< uint32_t > mutedChannels;
+};
+
 class SslServer : public QTcpServer {
 private:
 	Q_OBJECT
@@ -359,6 +370,19 @@ public:
 
 	QHash< QString, PushRegistration > m_pushRegistrations;
 
+	/// Live push subscriptions keyed by session ID.
+	/// Removed automatically when the user disconnects.
+	QHash< uint32_t, LivePushSubscription > m_livePushSubscriptions;
+
+	/// Read receipt watermarks: channel_id -> (cert_hash -> watermark).
+	/// Tracks the last read message_id per user per channel.
+	struct ReadWatermark {
+		std::string lastMessageId;
+		uint64_t timestamp = 0;
+	};
+	QHash< uint32_t, QHash< QString, ReadWatermark > > m_readWatermarks;
+	void handleReadReceipt(ServerUser *uSource, MumbleProto::FancyReadReceipt &msg);
+
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,
 					Mumble::Protocol::UDPAudioEncoder< Mumble::Protocol::Role::Server > &encoder);
@@ -415,9 +439,10 @@ public:
 	// Push notification helpers (impl in Messages.cpp)
 	void dispatchPushNotifications(ServerUser *sender, const std::set< uint32_t > &targetChannels,
 								   const std::string &title, const std::string &body);
-	void handlePushRegistration(ServerUser *sender, const MumbleProto::PluginDataTransmission &msg);
-	void handlePushChannelUpdate(ServerUser *sender, const MumbleProto::PluginDataTransmission &msg);
+	void handlePushRegistration(ServerUser *sender, const MumbleProto::FancyPushRegister &msg);
+	void handlePushChannelUpdate(ServerUser *sender, const MumbleProto::FancyPushUpdate &msg);
 	void computeAllowedPushChannels(ServerUser *user, std::set< uint32_t > &out);
+	void handleLivePushSubscribe(ServerUser *sender, const MumbleProto::FancySubscribePush &msg);
 
 	void removeChannel(unsigned int id);
 	void removeChannel(Channel *c, Channel *dest = nullptr);

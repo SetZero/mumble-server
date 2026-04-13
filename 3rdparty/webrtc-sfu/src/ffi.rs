@@ -78,10 +78,11 @@ pub struct SfuFfiEvent {
 pub unsafe extern "C" fn sfu_init(config: *const SfuFfiConfig) -> *mut SfuHandle {
     // Install a tracing subscriber so SFU log output is visible on stderr.
     // If the subscriber is already set (e.g. called twice), ignore the error.
+    // Default level is `info`; set RUST_LOG=webrtc_sfu=debug for verbose output.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("webrtc_sfu=debug")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("webrtc_sfu=info")),
         )
         .with_target(true)
         .with_writer(std::io::stderr)

@@ -1732,17 +1732,22 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 
 	msg.set_actor(uSource->uiSession);
 
-	// generate a message id using qt
-	QUuid uuid = QUuid::createUuid();
-    QString strUuid = uuid.toString();
-	msg.set_message_id(u8(strUuid));
+	// Preserve client-provided message_id (Fancy Mumble extension) when present;
+	// generate a server-side UUID only for legacy clients that omit it.
+	if (!msg.has_message_id() || msg.message_id().empty()) {
+		QUuid uuid = QUuid::createUuid();
+		QString strUuid = uuid.toString();
+		msg.set_message_id(u8(strUuid));
+	}
 
-	// add a timestamp using c++17
-	auto now = std::chrono::system_clock::now();
-	auto epoch = now.time_since_epoch();
-	auto value = std::chrono::duration_cast<std::chrono::milliseconds>(epoch);
-	long long timestamp = value.count();
-	msg.set_timestamp(static_cast<uint64_t>(timestamp));
+	// Preserve client-provided timestamp when present; generate one otherwise.
+	if (!msg.has_timestamp()) {
+		auto now = std::chrono::system_clock::now();
+		auto epoch = now.time_since_epoch();
+		auto value = std::chrono::duration_cast<std::chrono::milliseconds>(epoch);
+		long long timestamp = value.count();
+		msg.set_timestamp(static_cast<uint64_t>(timestamp));
+	}
 
 
 	// Send the message to all users that are in (= have joined) OR are
@@ -1851,6 +1856,37 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 
 	// Remove the message sender from the list of users to send the message to
 	users.remove(uSource);
+
+	// Route to live push subscribers: connected users who registered via
+	// FancySubscribePush and have SubscribePush permission for a target
+	// channel but are not already in the recipients set.
+	for (auto it = m_livePushSubscriptions.constBegin(); it != m_livePushSubscriptions.constEnd(); ++it) {
+		uint32_t session = it.key();
+		const LivePushSubscription &sub = it.value();
+
+		ServerUser *subscriber = qhUsers.value(session);
+		if (!subscriber || subscriber == uSource || users.contains(subscriber))
+			continue;
+
+		bool subscribed = false;
+		for (int i = 0; !subscribed && i < msg.channel_id_size(); ++i) {
+			uint32_t channelId = msg.channel_id(i);
+			if (sub.allowedChannels.count(channelId)
+				&& !sub.mutedChannels.count(channelId)) {
+				subscribed = true;
+			}
+		}
+		for (int i = 0; !subscribed && i < msg.tree_id_size(); ++i) {
+			uint32_t channelId = msg.tree_id(i);
+			if (sub.allowedChannels.count(channelId)
+				&& !sub.mutedChannels.count(channelId)) {
+				subscribed = true;
+			}
+		}
+		if (subscribed) {
+			users.insert(subscriber);
+		}
+	}
 
 	// Actually send the original message to the affected users
 	for (ServerUser *u : users) {
@@ -2712,16 +2748,6 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 		return;
 	}
 
-	// Intercept server-directed FancyMumble messages before forwarding.
-	if (msg.dataid() == "fancy-push-register") {
-		handlePushRegistration(sender, msg);
-		return;
-	}
-	if (msg.dataid() == "fancy-push-update") {
-		handlePushChannelUpdate(sender, msg);
-		return;
-	}
-
 	// Copy needed data from message in order to be able to remove info about receivers from the message as this doesn't
 	// matter for the client
 	size_t receiverAmount = static_cast< std::size_t >(msg.receiversessions_size());
@@ -2766,22 +2792,13 @@ void Server::computeAllowedPushChannels(ServerUser *user, std::set< uint32_t > &
 }
 
 void Server::handlePushRegistration(ServerUser *sender,
-                                    const MumbleProto::PluginDataTransmission &msg) {
+                                    const MumbleProto::FancyPushRegister &msg) {
 	if (sender->qsHash.isEmpty()) {
 		log(sender, QString("push-register: ignored (no certificate hash)"));
 		return;
 	}
 
-	QByteArray raw = QByteArray::fromRawData(msg.data().data(),
-	                                         static_cast< int >(msg.data().size()));
-	QJsonDocument doc = QJsonDocument::fromJson(raw);
-	if (!doc.isObject()) {
-		log(sender, QString("push-register: malformed JSON"));
-		return;
-	}
-
-	QJsonObject obj  = doc.object();
-	QString token    = obj.value("token").toString();
+	QString token = QString::fromStdString(msg.token());
 	if (token.isEmpty()) {
 		log(sender, QString("push-register: missing 'token'"));
 		return;
@@ -2794,11 +2811,8 @@ void Server::handlePushRegistration(ServerUser *sender,
 	computeAllowedPushChannels(sender, reg.allowedChannels);
 
 	// Apply any muted list from the payload.
-	QJsonArray mutedArr = obj.value("muted").toArray();
-	for (const auto &v : mutedArr) {
-		if (v.isDouble()) {
-			reg.mutedChannels.insert(static_cast< uint32_t >(v.toInt()));
-		}
+	for (int i = 0; i < msg.muted_channels_size(); ++i) {
+		reg.mutedChannels.insert(msg.muted_channels(i));
 	}
 
 	m_pushRegistrations[sender->qsHash] = reg;
@@ -2810,7 +2824,7 @@ void Server::handlePushRegistration(ServerUser *sender,
 }
 
 void Server::handlePushChannelUpdate(ServerUser *sender,
-                                     const MumbleProto::PluginDataTransmission &msg) {
+                                     const MumbleProto::FancyPushUpdate &msg) {
 	if (sender->qsHash.isEmpty()) return;
 
 	auto it = m_pushRegistrations.find(sender->qsHash);
@@ -2819,19 +2833,9 @@ void Server::handlePushChannelUpdate(ServerUser *sender,
 		return;
 	}
 
-	QByteArray raw = QByteArray::fromRawData(msg.data().data(),
-	                                         static_cast< int >(msg.data().size()));
-	QJsonDocument doc = QJsonDocument::fromJson(raw);
-	if (!doc.isObject()) return;
-
-	QJsonObject obj = doc.object();
-	QJsonArray mutedArr = obj.value("muted").toArray();
-
 	it->mutedChannels.clear();
-	for (const auto &v : mutedArr) {
-		if (v.isDouble()) {
-			it->mutedChannels.insert(static_cast< uint32_t >(v.toInt()));
-		}
+	for (int i = 0; i < msg.muted_channels_size(); ++i) {
+		it->mutedChannels.insert(msg.muted_channels(i));
 	}
 
 	// Also refresh allowed channels while the user is connected.
@@ -2840,6 +2844,41 @@ void Server::handlePushChannelUpdate(ServerUser *sender,
 	log(sender, QString("push-update: muted=%1 allowed=%2")
 	        .arg(it->mutedChannels.size())
 	        .arg(it->allowedChannels.size()));
+}
+
+void Server::msgFancyPushRegister(ServerUser *uSource, MumbleProto::FancyPushRegister &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	handlePushRegistration(uSource, msg);
+}
+
+void Server::msgFancyPushUpdate(ServerUser *uSource, MumbleProto::FancyPushUpdate &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	handlePushChannelUpdate(uSource, msg);
+}
+
+void Server::msgFancyCustomReactionsConfig(ServerUser *, MumbleProto::FancyCustomReactionsConfig &) {
+	// Server -> Client only; ignore if received from client.
+}
+
+void Server::handleLivePushSubscribe(ServerUser *sender,
+                                     const MumbleProto::FancySubscribePush &msg) {
+	LivePushSubscription sub;
+	computeAllowedPushChannels(sender, sub.allowedChannels);
+
+	for (int i = 0; i < msg.muted_channels_size(); ++i) {
+		sub.mutedChannels.insert(msg.muted_channels(i));
+	}
+
+	m_livePushSubscriptions[sender->uiSession] = sub;
+
+	log(sender, QString("live-push-subscribe: allowed=%1 muted=%2")
+	        .arg(sub.allowedChannels.size())
+	        .arg(sub.mutedChannels.size()));
+}
+
+void Server::msgFancySubscribePush(ServerUser *uSource, MumbleProto::FancySubscribePush &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	handleLivePushSubscribe(uSource, msg);
 }
 
 void Server::msgPchatMessage(ServerUser *uSource, MumbleProto::PchatMessage &msg) {
@@ -3084,6 +3123,105 @@ void Server::msgWebRtcSignal(ServerUser *uSource, MumbleProto::WebRtcSignal &msg
 		ServerUser *pDst = qhUsers.value(target);
 		if (pDst && pDst->cChannel == c) {
 			sendMessage(pDst, msg);
+		}
+	}
+}
+
+void Server::msgFancyReadReceipt(ServerUser *uSource, MumbleProto::FancyReadReceipt &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	handleReadReceipt(uSource, msg);
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgFancyReadReceiptDeliver(ServerUser *, MumbleProto::FancyReadReceiptDeliver &) {
+}
+
+void Server::handleReadReceipt(ServerUser *uSource, MumbleProto::FancyReadReceipt &msg) {
+	if (!msg.has_channel_id()) {
+		return;
+	}
+
+	const auto channelId = msg.channel_id();
+	Channel *c = qhChannels.value(channelId);
+	if (!c) {
+		return;
+	}
+
+	const QString certHash = uSource->qsHash;
+	if (certHash.isEmpty()) {
+		return;
+	}
+
+	// Query mode: return current watermarks for this channel without updating.
+	if (msg.has_query() && msg.query()) {
+		MumbleProto::FancyReadReceiptDeliver deliver;
+		deliver.set_channel_id(channelId);
+
+		const auto &channelWatermarks = m_readWatermarks.value(channelId);
+		const bool hasQueryMsgId = msg.has_query_message_id();
+		const auto &queryMsgId = hasQueryMsgId ? msg.query_message_id() : std::string{};
+
+		if (hasQueryMsgId) {
+			deliver.set_query_message_id(queryMsgId);
+		}
+
+		for (auto it = channelWatermarks.constBegin(); it != channelWatermarks.constEnd(); ++it) {
+			// If querying for a specific message, only include users whose
+			// watermark is >= that message. Since message_ids are UUIDs
+			// (not ordered), we store them all and let the client filter.
+			// For simplicity, include all watermarks and let the client
+			// determine which ones have read the queried message by comparing
+			// message timestamps or message ordering.
+			auto *rs = deliver.add_read_states();
+			rs->set_cert_hash(it.key().toStdString());
+			rs->set_last_read_message_id(it.value().lastMessageId);
+			rs->set_timestamp(it.value().timestamp);
+
+			// Fill display name from connected user if available.
+			for (ServerUser *u : qhUsers) {
+				if (u->qsHash == it.key() && u->sState == ServerUser::Authenticated) {
+					rs->set_name(u->qsName.toStdString());
+					break;
+				}
+			}
+		}
+
+		sendMessage(uSource, deliver);
+		return;
+	}
+
+	// Update mode: store watermark and broadcast.
+	if (!msg.has_last_read_message_id() || msg.last_read_message_id().empty()) {
+		return;
+	}
+
+	auto now = static_cast< uint64_t >(
+		std::chrono::duration_cast< std::chrono::milliseconds >(
+			std::chrono::system_clock::now().time_since_epoch())
+			.count());
+
+	ReadWatermark wm;
+	wm.lastMessageId = msg.last_read_message_id();
+	wm.timestamp = msg.has_timestamp() ? msg.timestamp() : now;
+
+	m_readWatermarks[channelId][certHash] = wm;
+
+	// Broadcast the update to all Fancy clients in the channel.
+	MumbleProto::FancyReadReceiptDeliver deliver;
+	deliver.set_channel_id(channelId);
+
+	auto *rs = deliver.add_read_states();
+	rs->set_cert_hash(certHash.toStdString());
+	rs->set_name(uSource->qsName.toStdString());
+	rs->set_last_read_message_id(wm.lastMessageId);
+	rs->set_timestamp(wm.timestamp);
+
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->sState == ServerUser::Authenticated
+			&& su->m_FancyVersion.has_value()
+			&& su->m_FancyVersion.value() >= Version::fromComponents(0, 2, 0)) {
+			sendMessage(su, deliver);
 		}
 	}
 }

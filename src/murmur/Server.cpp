@@ -1772,6 +1772,8 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 			}
 		}
 
+		m_livePushSubscriptions.remove(u->uiSession);
+
 		// Broadcast a WebRtcSignal STOP so channel members know the user
 		// is no longer sharing their screen (if they were).
 		if (u->cChannel) {
