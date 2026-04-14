@@ -265,6 +265,7 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 		m_dbWrapper.getServerDB().getPChatKeyHoldersTable(),
 		m_dbWrapper.getServerDB().getPChatOfflineQueueTable(),
 		m_dbWrapper.getServerDB().getPChatReactionTable(),
+		m_dbWrapper.getServerDB().getPChatPinTable(),
 		*m_pchatBridge, *m_pchatRateLimiter, m_pchatConfig);
 
 	// Initialize push notification dispatcher

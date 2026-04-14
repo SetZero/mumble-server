@@ -3029,6 +3029,22 @@ void Server::msgPchatSenderKeyDistribution(ServerUser *uSource, MumbleProto::Pch
 	}
 }
 
+void Server::msgPchatPin(ServerUser *uSource, MumbleProto::PchatPin &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (m_pchatManager) {
+		m_pchatManager->handlePchatPin(uSource->uiSession, msg);
+	}
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatPinDeliver(ServerUser *, MumbleProto::PchatPinDeliver &) {
+}
+
+// Server -> Client only; ignore if received from client
+void Server::msgPchatPinFetchResponse(ServerUser *, MumbleProto::PchatPinFetchResponse &) {
+}
+
 
 // ---------------------------------------------------------------------------
 // WebRtcSignal relay (Fancy Mumble screen sharing)

@@ -318,6 +318,12 @@ message TextMessage {
 	optional string message_id = 6;
 	// message timestamp
 	optional uint64 timestamp = 7;
+	// When set, this message is an edit replacing the message with this ID.
+	optional string edit_id = 8;
+	// When set, pin or unpin the message with this ID in the channel.
+	optional string pin_target = 9;
+	// When true combined with pin_target, unpin instead of pin.
+	optional bool unpin = 10;
 }
 
 message PermissionDenied {
@@ -1178,4 +1184,53 @@ message FancyReadReceiptDeliver {
 	repeated ReadState read_states = 2;
 	// If set, this is a response to a query for a specific message.
 	optional string query_message_id = 3;
+}
+// ---------------------------------------------------------------------------
+// Message pinning (Fancy Mumble extension, IDs 128-130)
+// ---------------------------------------------------------------------------
+
+// Client -> Server: pin or unpin a persistent chat message.
+// The server validates the sender, stores the pin state, and broadcasts
+// a PchatPinDeliver to all Fancy clients in the channel.
+// Wire type ID = 128.
+message PchatPin {
+	optional uint32 channel_id = 1;
+	// Target message ID to pin or unpin.
+	optional string message_id = 2;
+	// TLS cert hash of the pinner (server validates against session).
+	optional string sender_hash = 3;
+	// When true, unpin rather than pin.
+	optional bool unpin = 4;
+	// Client-supplied timestamp (ms since epoch); server may override.
+	optional uint64 timestamp = 5;
+}
+
+// Server -> Client: delivers a pin or unpin event to channel members.
+// Broadcast to all Fancy clients in the channel after a valid PchatPin.
+// Wire type ID = 129.
+message PchatPinDeliver {
+	optional uint32 channel_id = 1;
+	optional string message_id = 2;
+	// TLS cert hash of the user who pinned/unpinned.
+	optional string pinner_hash = 3;
+	// Best-effort display name of the pinner.
+	optional string pinner_name = 4;
+	// When true, this is an unpin event.
+	optional bool unpin = 5;
+	optional uint64 timestamp = 6;
+}
+
+// Server -> Client: batch delivery of all pinned message IDs for a channel.
+// Sent alongside PchatFetchResponse so the client can mark historical
+// messages as pinned.
+// Wire type ID = 130.
+message PchatPinFetchResponse {
+	message PinnedMessage {
+		optional string message_id = 1;
+		optional string pinner_hash = 2;
+		optional string pinner_name = 3;
+		optional uint64 timestamp = 4;
+	}
+	optional uint32 channel_id = 1;
+	repeated PinnedMessage pins = 2;
 }
