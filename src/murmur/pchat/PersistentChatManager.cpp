@@ -15,6 +15,7 @@
 #include "database/PChatUserKeysTable.h"
 #include "database/PChatKeyHoldersTable.h"
 #include "database/PChatReactionTable.h"
+#include "database/PChatPinTable.h"
 
 #include <QDebug>
 
@@ -59,11 +60,12 @@ PersistentChatManager::PersistentChatManager(msdb::PChatMessageTable &msgTable,
 											 msdb::PChatKeyHoldersTable &holdersTable,
 											 msdb::PChatOfflineQueueTable &queueTable,
                                                                                 msdb::PChatReactionTable &reactionTable,
+											 msdb::PChatPinTable &pinTable,
 											 IServerBridge &bridge,
 											 IRateLimiter &rateLimiter,
 											 Config config)
 	: m_msgTable(msgTable), m_keysTable(keysTable), m_joinTable(joinTable), m_pendingTable(pendingTable),
-	  m_holdersTable(holdersTable), m_queueTable(queueTable), m_reactionTable(reactionTable), m_bridge(bridge), m_rateLimiter(rateLimiter), m_config(config) {
+	  m_holdersTable(holdersTable), m_queueTable(queueTable), m_reactionTable(reactionTable), m_pinTable(pinTable), m_bridge(bridge), m_rateLimiter(rateLimiter), m_config(config) {
 	m_handlers[Protocol::FancyV1PostJoin] = std::make_unique< PostJoinProtocolHandler >(m_msgTable, m_joinTable);
 	m_handlers[Protocol::FancyV1FullArchive] = std::make_unique< FullArchiveProtocolHandler >(m_msgTable);
 	m_handlers[Protocol::ServerManaged] = std::make_unique< ServerManagedProtocolHandler >(m_msgTable);
@@ -646,6 +648,7 @@ void PersistentChatManager::onChannelRemoved(unsigned int channelId) {
 	m_holdersTable.clearChannel(serverNum, channelId);
 	m_queueTable.clearChannel(serverNum, channelId);
 	m_reactionTable.clearChannel(serverNum, channelId);
+	m_pinTable.clearChannel(serverNum, channelId);
 	m_challengeState.erase(channelId);
 
 	// Clear stored SKDM distributions for this channel
@@ -1301,6 +1304,57 @@ void PersistentChatManager::handlePchatReaction(unsigned int senderSession, cons
 
         // Broadcast to all Fancy clients in the channel
         m_bridge.broadcastPchatReactionDeliver(channelId, deliver);
+}
+
+// ---- Message Pinning ----
+
+void PersistentChatManager::handlePchatPin(unsigned int senderSession, const MumbleProto::PchatPin &msg) {
+	if (!msg.has_channel_id() || !msg.has_message_id()) {
+		return;
+	}
+
+	const auto channelId = msg.channel_id();
+	const auto &messageId = msg.message_id();
+
+	const bool isPersistent = m_bridge.getChannelPChatProtocol(channelId) != Protocol::None;
+
+	std::string certHash = m_bridge.getCertHash(senderSession);
+	if (certHash.empty()) {
+		return;
+	}
+
+	unsigned int serverNum = m_bridge.serverNum();
+	int64_t now = m_bridge.serverTimeMs();
+	bool isUnpin = msg.has_unpin() && msg.unpin();
+
+	MumbleProto::PchatPinDeliver deliver;
+	deliver.set_channel_id(channelId);
+	deliver.set_message_id(messageId);
+	deliver.set_pinner_hash(certHash);
+	deliver.set_pinner_name(certHash);
+	deliver.set_unpin(isUnpin);
+	deliver.set_timestamp(static_cast< uint64_t >(now));
+
+	if (isUnpin) {
+		if (isPersistent) {
+			m_pinTable.removePin(serverNum, channelId, messageId);
+		}
+	} else {
+		if (isPersistent) {
+			msdb::PChatPin pin;
+			pin.serverID   = serverNum;
+			pin.channelId  = channelId;
+			pin.messageId  = messageId;
+			pin.pinnerHash = certHash;
+			pin.pinnerName = certHash;
+			pin.timestamp  = now;
+			pin.createdAt  = now;
+
+			m_pinTable.addPin(pin);
+		}
+	}
+
+	m_bridge.broadcastPchatPinDeliver(channelId, deliver);
 }
 
 // ---- Sender Key Distribution (Signal SKDM) ----

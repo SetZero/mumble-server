@@ -21,6 +21,7 @@
 #include "PChatKeyHoldersTable.h"
 #include "PChatOfflineQueueTable.h"
 #include "PChatReactionTable.h"
+#include "PChatPinTable.h"
 #include "ServerTable.h"
 #include "UserProperty.h"
 #include "UserPropertyTable.h"
@@ -60,6 +61,7 @@ namespace server {
 				PChatKeyHoldersTable,
 				PChatOfflineQueueTable,
                                 PChatReactionTable,
+				PChatPinTable,
 			};
 		}
 
@@ -148,6 +150,9 @@ namespace server {
 			id = addTable(std::make_unique< PChatReactionTable >(m_sql, m_backend, getServerTable()));
 			assert(id == TableIndex::PChatReactionTable);
 
+			id = addTable(std::make_unique< PChatPinTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::PChatPinTable);
+
 			// Mark id as unused in case the asserts are disabled (e.g. in release builds)
 			(void) id;
 		}
@@ -187,6 +192,7 @@ namespace server {
 		GET_TABLE_IMPL(PChatKeyHoldersTable)
 		GET_TABLE_IMPL(PChatOfflineQueueTable)
 		GET_TABLE_IMPL(PChatReactionTable)
+		GET_TABLE_IMPL(PChatPinTable)
 
 #undef GET_TABLE_IMPL
 

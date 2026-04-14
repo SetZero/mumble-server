@@ -23,8 +23,8 @@ namespace server {
 		inline std::string toHex(const std::string &raw) {
 			std::ostringstream oss;
 			oss << std::hex << std::setfill('0');
-			for (unsigned char c : raw) {
-				oss << std::setw(2) << static_cast< unsigned int >(c);
+			for (char rawC : raw) {
+				oss << std::setw(2) << static_cast< unsigned int >(static_cast< unsigned char >(rawC));
 			}
 			return oss.str();
 		}

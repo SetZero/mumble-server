@@ -84,7 +84,7 @@ namespace db {
 		void removeForeignKey(const ForeignKey &key);
 		void clearForeignKeys();
 
-		TransactionHolder ensureTransaction();
+		TransactionHolder ensureTransaction() const;
 
 		/**
 		 * Imports the data from the given JSON into the table represented by this object. Note

@@ -36,6 +36,7 @@ namespace server {
 		class PChatKeyHoldersTable;
 		class PChatOfflineQueueTable;
                 class PChatReactionTable;
+		class PChatPinTable;
 
 		class ServerDatabase : public ::mumble::db::Database {
 		public:
@@ -44,7 +45,7 @@ namespace server {
 			 * has to be accompanied by increasing this number. A decrease is never allowed!
 			 * Using a schema version like this allows us to be able to create migration paths between schema versions.
 			 */
-			static constexpr unsigned int DB_SCHEMA_VERSION = 16;
+			static constexpr unsigned int DB_SCHEMA_VERSION = 17;
 
 			ServerDatabase(::mumble::db::Backend backend);
 			~ServerDatabase() = default;
@@ -74,6 +75,7 @@ namespace server {
 			PChatKeyHoldersTable &getPChatKeyHoldersTable();
 			PChatOfflineQueueTable &getPChatOfflineQueueTable();
 			PChatReactionTable &getPChatReactionTable();
+			PChatPinTable &getPChatPinTable();
 
 		protected:
 			void setupStandardTables() override;

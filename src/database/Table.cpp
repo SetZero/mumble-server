@@ -363,7 +363,7 @@ namespace db {
 
 	void Table::clearForeignKeys() { m_foreignKeys.clear(); }
 
-	TransactionHolder Table::ensureTransaction() {
+	TransactionHolder Table::ensureTransaction() const {
 		// If this table is part of a Database, we want to start a global (database-wide known) transaction. Otherwise,
 		// we'll have to be content with a transaction only locally known.
 		return m_database ? m_database->ensureTransaction() : TransactionHolder(m_sql, true);

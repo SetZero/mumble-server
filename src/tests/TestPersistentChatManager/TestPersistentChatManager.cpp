@@ -17,6 +17,7 @@
 #include "database/PChatKeyHoldersTable.h"
 #include "database/PChatOfflineQueueTable.h"
 #include "database/PChatReactionTable.h"
+#include "database/PChatPinTable.h"
 #include "database/SQLiteConnectionParameter.h"
 
 #include "Mumble.pb.h"
@@ -50,6 +51,9 @@ public:
 	std::vector< std::pair< unsigned int, MumbleProto::PchatReactionFetchResponse > > sentReactionFetchResponses;
 	std::vector< std::pair< unsigned int, MumbleProto::PchatSenderKeyDistribution > > sentSenderKeyDistributions;
 	std::vector< std::pair< unsigned int, MumbleProto::PchatReactionDeliver > > broadcastedReactionDelivers;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatPinDeliver > > sentPinDelivers;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatPinFetchResponse > > sentPinFetchResponses;
+	std::vector< std::pair< unsigned int, MumbleProto::PchatPinDeliver > > broadcastedPinDelivers;
 	std::vector< std::tuple< unsigned int, unsigned int, unsigned int > > sentPermissionDenied;
 
 	// Configurable return values
@@ -117,6 +121,16 @@ public:
 	void broadcastPchatReactionDeliver(unsigned int channelId, const MumbleProto::PchatReactionDeliver &msg,
 									   unsigned int /*excludeSession*/) override {
 		broadcastedReactionDelivers.push_back({ channelId, msg });
+	}
+	void sendPchatPinDeliver(unsigned int sessionId, const MumbleProto::PchatPinDeliver &msg) override {
+		sentPinDelivers.push_back({ sessionId, msg });
+	}
+	void sendPchatPinFetchResponse(unsigned int sessionId, const MumbleProto::PchatPinFetchResponse &msg) override {
+		sentPinFetchResponses.push_back({ sessionId, msg });
+	}
+	void broadcastPchatPinDeliver(unsigned int channelId, const MumbleProto::PchatPinDeliver &msg,
+								  unsigned int /*excludeSession*/) override {
+		broadcastedPinDelivers.push_back({ channelId, msg });
 	}
 	std::string getCertHash(unsigned int sessionId) const override {
 		auto it = certHashes.find(sessionId);
@@ -197,6 +211,9 @@ public:
 		sentReactionFetchResponses.clear();
 		sentSenderKeyDistributions.clear();
 		broadcastedReactionDelivers.clear();
+		sentPinDelivers.clear();
+		sentPinFetchResponses.clear();
+		broadcastedPinDelivers.clear();
 		sentPermissionDenied.clear();
 	}
 };
@@ -254,7 +271,8 @@ private:
 		m_mgr = std::make_unique< pchat::PersistentChatManager >(
 			m_db->getPChatMessageTable(), m_db->getPChatUserKeysTable(), m_db->getPChatMemberJoinTable(),
 			m_db->getPChatPendingKeyRequestsTable(), m_db->getPChatKeyHoldersTable(),
-			m_db->getPChatOfflineQueueTable(), m_db->getPChatReactionTable(), *m_bridge, *m_limiter, config);
+			m_db->getPChatOfflineQueueTable(), m_db->getPChatReactionTable(), m_db->getPChatPinTable(),
+			*m_bridge, *m_limiter, config);
 	}
 
 	/// Helper: set up bridge so session 10 maps to cert hash "abc123" in channel 42 (FULL_ARCHIVE).

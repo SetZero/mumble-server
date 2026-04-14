@@ -29,6 +29,8 @@ public:
 	void sendPchatOfflineQueueDrain(unsigned int sessionId, const MumbleProto::PchatOfflineQueueDrain &msg) override;
         void sendPchatReactionDeliver(unsigned int sessionId, const MumbleProto::PchatReactionDeliver &msg) override;
         void sendPchatReactionFetchResponse(unsigned int sessionId, const MumbleProto::PchatReactionFetchResponse &msg) override;
+	void sendPchatPinDeliver(unsigned int sessionId, const MumbleProto::PchatPinDeliver &msg) override;
+	void sendPchatPinFetchResponse(unsigned int sessionId, const MumbleProto::PchatPinFetchResponse &msg) override;
 	void sendPchatSenderKeyDistribution(unsigned int sessionId, const MumbleProto::PchatSenderKeyDistribution &msg) override;
 
 	void broadcastPchatMessageDeliver(unsigned int channelId, const MumbleProto::PchatMessageDeliver &msg,
@@ -43,6 +45,8 @@ public:
 	                                  unsigned int excludeSession = 0) override;
         void broadcastPchatReactionDeliver(unsigned int channelId, const MumbleProto::PchatReactionDeliver &msg,
                                            unsigned int excludeSession = 0) override;
+	void broadcastPchatPinDeliver(unsigned int channelId, const MumbleProto::PchatPinDeliver &msg,
+	                              unsigned int excludeSession = 0) override;
 
 	std::string getCertHash(unsigned int sessionId) const override;
 	bool isFancyClient(unsigned int sessionId) const override;

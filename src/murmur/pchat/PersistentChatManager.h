@@ -31,6 +31,7 @@ namespace server {
 	class PChatKeyHoldersTable;
 	class PChatOfflineQueueTable;
         class PChatReactionTable;
+	class PChatPinTable;
 	} // namespace db
 } // namespace server
 } // namespace mumble
@@ -109,12 +110,22 @@ struct IServerBridge {
 	/// Send a PchatReactionFetchResponse to a specific user session.
 	virtual void sendPchatReactionFetchResponse(unsigned int sessionId, const MumbleProto::PchatReactionFetchResponse &msg) = 0;
 
+	/// Send a PchatPinDeliver to a specific user session.
+	virtual void sendPchatPinDeliver(unsigned int sessionId, const MumbleProto::PchatPinDeliver &msg) = 0;
+
+	/// Send a PchatPinFetchResponse to a specific user session.
+	virtual void sendPchatPinFetchResponse(unsigned int sessionId, const MumbleProto::PchatPinFetchResponse &msg) = 0;
+
 	/// Send a PchatSenderKeyDistribution to a specific user session.
 	virtual void sendPchatSenderKeyDistribution(unsigned int sessionId, const MumbleProto::PchatSenderKeyDistribution &msg) = 0;
 
 	/// Broadcast a PchatReactionDeliver to all Fancy Mumble v2+ sessions in a channel.
 	virtual void broadcastPchatReactionDeliver(unsigned int channelId, const MumbleProto::PchatReactionDeliver &msg,
 												unsigned int excludeSession = 0) = 0;
+
+	/// Broadcast a PchatPinDeliver to all Fancy Mumble v2+ sessions in a channel.
+	virtual void broadcastPchatPinDeliver(unsigned int channelId, const MumbleProto::PchatPinDeliver &msg,
+	                                      unsigned int excludeSession = 0) = 0;
 
 	/// Check if a session is a Fancy Mumble v2+ client.
 	virtual bool isFancyClient(unsigned int sessionId) const = 0;
@@ -188,27 +199,22 @@ public:
 						  ::mumble::server::db::PChatKeyHoldersTable &holdersTable,
 						  ::mumble::server::db::PChatOfflineQueueTable &queueTable,
                                                   ::mumble::server::db::PChatReactionTable &reactionTable,
-						  IServerBridge &bridge,
-						  IRateLimiter &rateLimiter,
-						  Config config);
+					  ::mumble::server::db::PChatPinTable &pinTable,
+					  IServerBridge &bridge,
+					  IRateLimiter &rateLimiter,
+					  Config config);
 
 	PersistentChatManager(::mumble::server::db::PChatMessageTable &msgTable,
-						  ::mumble::server::db::PChatUserKeysTable &keysTable,
-						  ::mumble::server::db::PChatMemberJoinTable &joinTable,
-						  ::mumble::server::db::PChatPendingKeyRequestsTable &pendingTable,
-						  ::mumble::server::db::PChatKeyHoldersTable &holdersTable,
-						  ::mumble::server::db::PChatOfflineQueueTable &queueTable,
+					  ::mumble::server::db::PChatUserKeysTable &keysTable,
+					  ::mumble::server::db::PChatMemberJoinTable &joinTable,
+					  ::mumble::server::db::PChatPendingKeyRequestsTable &pendingTable,
+					  ::mumble::server::db::PChatKeyHoldersTable &holdersTable,
+					  ::mumble::server::db::PChatOfflineQueueTable &queueTable,
                                                   ::mumble::server::db::PChatReactionTable &reactionTable,
-						  IServerBridge &bridge,
-						  IRateLimiter &rateLimiter)
-		: PersistentChatManager(msgTable, keysTable, joinTable, pendingTable, holdersTable, queueTable, reactionTable, bridge, rateLimiter, Config{}) {}
-
-	/// Returns true if the dataID is a pchat message that was handled.
-	/// Returns false if the dataID is not a pchat message (should be forwarded normally).
-	bool handlePluginData(unsigned int senderSession, const std::string &dataId,
-						  const std::vector< uint8_t > &data);
-
-	/// Handle a PchatMessage (client wants to store an encrypted message).
+					  ::mumble::server::db::PChatPinTable &pinTable,
+					  IServerBridge &bridge,
+					  IRateLimiter &rateLimiter)
+		: PersistentChatManager(msgTable, keysTable, joinTable, pendingTable, holdersTable, queueTable, reactionTable, pinTable, bridge, rateLimiter, Config{}) {}
 	void handlePchatMessage(unsigned int senderSession, const MumbleProto::PchatMessage &msg);
 
 	/// Handle a PchatFetch (client wants to retrieve stored messages).
@@ -241,6 +247,9 @@ public:
         /// Handle a PchatReaction (client adds or removes an emoji reaction).
         void handlePchatReaction(unsigned int senderSession, const MumbleProto::PchatReaction &msg);
 
+	/// Handle a PchatPin (client pins or unpins a message).
+	void handlePchatPin(unsigned int senderSession, const MumbleProto::PchatPin &msg);
+
 	/// Handle a PchatSenderKeyDistribution (client distributes Signal sender key).
 	void handlePchatSenderKeyDistribution(unsigned int senderSession, const MumbleProto::PchatSenderKeyDistribution &msg);
 
@@ -261,6 +270,10 @@ public:
 
 	/// Run periodic cleanup (retention, expired key requests).
 	void runCleanup();
+
+	/// Called for legacy PluginData messages. Returns true if the data was consumed.
+	bool handlePluginData(unsigned int senderSession, const std::string &dataId,
+						  const std::vector< uint8_t > &data);
 
 	/// Check if a session has passed the key-possession challenge for a channel.
 	bool isSessionVerified(unsigned int channelId, unsigned int sessionId) const;
@@ -300,6 +313,7 @@ private:
 	::mumble::server::db::PChatKeyHoldersTable &m_holdersTable;
 	::mumble::server::db::PChatOfflineQueueTable &m_queueTable;
         ::mumble::server::db::PChatReactionTable &m_reactionTable;
+	::mumble::server::db::PChatPinTable &m_pinTable;
 	IServerBridge &m_bridge;
 	IRateLimiter &m_rateLimiter;
 	Config m_config;
