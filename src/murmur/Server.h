@@ -383,6 +383,10 @@ public:
 	QHash< uint32_t, QHash< QString, ReadWatermark > > m_readWatermarks;
 	void handleReadReceipt(ServerUser *uSource, MumbleProto::FancyReadReceipt &msg);
 
+	/// Maps message_id to the session that originally sent it.
+	/// Used to validate edit ownership (only the original sender can edit).
+	QHash< QString, uint32_t > m_messageOwners;
+
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,
 					Mumble::Protocol::UDPAudioEncoder< Mumble::Protocol::Role::Server > &encoder);
