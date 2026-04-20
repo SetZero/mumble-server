@@ -3242,6 +3242,55 @@ void Server::handleReadReceipt(ServerUser *uSource, MumbleProto::FancyReadReceip
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Fancy Mumble: typing indicator relay (ID 131)
+// ---------------------------------------------------------------------------
+
+void Server::msgFancyTypingIndicator(ServerUser *uSource, MumbleProto::FancyTypingIndicator &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	msg.set_actor(uSource->uiSession);
+
+	Channel *c = uSource->cChannel;
+	if (!c)
+		return;
+
+	msg.set_channel_id(c->iId);
+
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su != uSource && su->sState == ServerUser::Authenticated)
+			sendMessage(su, msg);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: link preview request/response (IDs 132-133)
+// ---------------------------------------------------------------------------
+
+void Server::msgFancyLinkPreviewRequest(ServerUser *uSource, MumbleProto::FancyLinkPreviewRequest &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (!m_linkPreviewManager)
+		return;
+
+	QStringList urls;
+	urls.reserve(msg.urls_size());
+	for (const auto &url : msg.urls()) {
+		urls.append(QString::fromStdString(url));
+	}
+
+	QString requestId = QString::fromStdString(msg.request_id());
+
+	m_linkPreviewManager->handlePreviewRequest(uSource->uiSession, urls, requestId);
+}
+
+void Server::msgFancyLinkPreviewResponse(ServerUser *, MumbleProto::FancyLinkPreviewResponse &) {
+	// Server-to-client only; silently drop if received from a client.
+}
+
 #undef RATELIMIT
 #undef MSG_SETUP
 #undef MSG_SETUP_NO_UNIDLE

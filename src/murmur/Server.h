@@ -23,6 +23,7 @@
 #include "pchat/TokenBucketRateLimiter.h"
 #include "push/PushNotificationDispatcher.h"
 #include "WebRtcSfuManager.h"
+#include "LinkPreviewManager.h"
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
 #include "QtUtils.h"
@@ -367,6 +368,8 @@ public:
 	std::unique_ptr< push::PushNotificationDispatcher > m_pushDispatcher;
 
 	std::unique_ptr< WebRtcSfuManager > m_sfuManager;
+
+	std::unique_ptr< LinkPreviewManager > m_linkPreviewManager;
 
 	QHash< QString, PushRegistration > m_pushRegistrations;
 

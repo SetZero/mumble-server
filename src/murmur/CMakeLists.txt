@@ -50,6 +50,15 @@ add_library(mumble_server_object_lib OBJECT
 	"WebRtcSfuManager.cpp"
 	"WebRtcSfuManager.h"
 
+	"LinkPreviewManager.cpp"
+	"LinkPreviewManager.h"
+	"LinkPreviewPlugin.cpp"
+	"LinkPreviewPlugin.h"
+	"OEmbedPlugin.cpp"
+	"OEmbedPlugin.h"
+	"OpenGraphPlugin.cpp"
+	"OpenGraphPlugin.h"
+
 	"${SHARED_SOURCE_DIR}/ACL.cpp"
 	"${SHARED_SOURCE_DIR}/ACL.h"
 	"${SHARED_SOURCE_DIR}/Channel.cpp"
@@ -102,7 +111,9 @@ target_include_directories(mumble_server_object_lib
 		${SHARED_SOURCE_DIR}
 )
 
-target_link_libraries(mumble_server_object_lib PUBLIC shared Qt6::Sql nlohmann_json::nlohmann_json)
+find_pkg(Qt6 COMPONENTS Network REQUIRED)
+
+target_link_libraries(mumble_server_object_lib PUBLIC shared Qt6::Sql Qt6::Network nlohmann_json::nlohmann_json)
 
 if(static)
 	# MariaDB and MySQL
