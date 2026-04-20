@@ -59,6 +59,7 @@ add_library(mumble_server_object_lib OBJECT
 	"OpenGraphPlugin.cpp"
 	"OpenGraphPlugin.h"
 
+
 	"${SHARED_SOURCE_DIR}/ACL.cpp"
 	"${SHARED_SOURCE_DIR}/ACL.h"
 	"${SHARED_SOURCE_DIR}/Channel.cpp"

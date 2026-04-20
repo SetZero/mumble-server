@@ -1750,6 +1750,33 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	}
 
 
+	// Edit validation: if edit_id is set, verify the sender owns the original
+	// message.  Only the original author may edit their own messages.
+	if (msg.has_edit_id() && !msg.edit_id().empty()) {
+		QString editId = u8(msg.edit_id());
+		auto it = m_messageOwners.find(editId);
+		if (it == m_messageOwners.end()) {
+			// Unknown message_id - cannot verify ownership, reject.
+			log(uSource, QString("Edit rejected: unknown message_id %1").arg(editId));
+			PERM_DENIED_TYPE(Text);
+			return;
+		}
+		if (it.value() != uSource->uiSession) {
+			// Sender is not the original author - reject.
+			log(uSource, QString("Edit rejected: session %1 is not the owner of message %2 (owner: %3)")
+					.arg(uSource->uiSession).arg(editId).arg(it.value()));
+			PERM_DENIED_TYPE(Text);
+			return;
+		}
+	}
+
+	// Track message_id -> sender session for edit ownership validation.
+	if (msg.has_message_id() && !msg.message_id().empty()) {
+		m_messageOwners.insert(u8(msg.message_id()), uSource->uiSession);
+	}
+
+
+
 	// Send the message to all users that are in (= have joined) OR are
 	// "listening" to channels to which the message has been directed to
 	for (int i = 0; i < msg.channel_id_size(); ++i) {
@@ -3242,26 +3269,39 @@ void Server::handleReadReceipt(ServerUser *uSource, MumbleProto::FancyReadReceip
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Fancy Mumble: typing indicator relay (ID 131)
-// ---------------------------------------------------------------------------
+// -- Typing indicator (ID 131) --------------------------------------------
 
 void Server::msgFancyTypingIndicator(ServerUser *uSource, MumbleProto::FancyTypingIndicator &msg) {
 	MSG_SETUP(ServerUser::Authenticated);
 	RATELIMIT(uSource);
 
+	if (!msg.has_channel_id()) {
+		return;
+	}
+
+	const auto channelId = msg.channel_id();
+	Channel *c = qhChannels.value(channelId);
+	if (!c) {
+		return;
+	}
+
+	// Fill in the sender's session so recipients know who is typing.
 	msg.set_actor(uSource->uiSession);
 
-	Channel *c = uSource->cChannel;
-	if (!c)
-		return;
-
-	msg.set_channel_id(c->iId);
-
+	// Broadcast to all Fancy clients in the channel except the sender.
 	for (User *p : c->qlUsers) {
 		auto *su = static_cast< ServerUser * >(p);
-		if (su != uSource && su->sState == ServerUser::Authenticated)
-			sendMessage(su, msg);
+		if (su->uiSession == uSource->uiSession) {
+			continue;
+		}
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value()
+			|| su->m_FancyVersion.value() < Version::fromComponents(0, 2, 0)) {
+			continue;
+		}
+		sendMessage(su, msg);
 	}
 }
 
@@ -3290,6 +3330,7 @@ void Server::msgFancyLinkPreviewRequest(ServerUser *uSource, MumbleProto::FancyL
 void Server::msgFancyLinkPreviewResponse(ServerUser *, MumbleProto::FancyLinkPreviewResponse &) {
 	// Server-to-client only; silently drop if received from a client.
 }
+
 
 #undef RATELIMIT
 #undef MSG_SETUP

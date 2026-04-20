@@ -292,6 +292,7 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	// Initialize link preview manager
 	m_linkPreviewManager = std::make_unique< LinkPreviewManager >(this, this);
 
+
 	// Initialize WebRTC SFU manager
 	{
 		WebRtcSfuConfig sfuCfg;
