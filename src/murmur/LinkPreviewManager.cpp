@@ -124,16 +124,22 @@ QList< QUrl > LinkPreviewManager::validateUrls(const QStringList &urls) {
 
 void LinkPreviewManager::handlePreviewRequest(uint32_t userSession, const QStringList &urls,
 											  const QString &requestId) {
+	qInfo() << "[LinkPreview] request from session" << userSession << "for" << urls.size() << "URLs";
+
 	if (isRateLimited(userSession)) {
+		qWarning() << "[LinkPreview] rate limited session" << userSession;
 		sendResponse(userSession, requestId, {});
 		return;
 	}
 
 	QList< QUrl > validUrls = validateUrls(urls);
 	if (validUrls.isEmpty()) {
+		qWarning() << "[LinkPreview] no valid URLs after validation";
 		sendResponse(userSession, requestId, {});
 		return;
 	}
+
+	qInfo() << "[LinkPreview] processing" << validUrls.size() << "valid URLs";
 
 	auto pending             = std::make_shared< PendingRequest >();
 	pending->userSession     = userSession;
@@ -144,6 +150,7 @@ void LinkPreviewManager::handlePreviewRequest(uint32_t userSession, const QStrin
 
 	for (const QUrl &url : validUrls) {
 		fetchUrl(url, pending);
+		qInfo() << "[LinkPreview] fetching URL:" << url.toString();
 	}
 }
 
@@ -300,10 +307,21 @@ void LinkPreviewManager::populateProtoEmbed(void *rawEmbed, const QJsonObject &j
 
 void LinkPreviewManager::sendResponse(uint32_t userSession, const QString &requestId,
 									  const QList< QJsonObject > &embeds) {
+	qInfo() << "[LinkPreview] sending response with" << embeds.size() << "embeds to session" << userSession;
+
 	MumbleProto::FancyLinkPreviewResponse response;
 	response.set_request_id(requestId.toStdString());
 
 	for (const QJsonObject &embedJson : embeds) {
+		qInfo() << "[LinkPreview] embed fields:" << embedJson.keys();
+		if (embedJson.contains(QStringLiteral("thumbnail"))) {
+			qInfo() << "[LinkPreview] embed has thumbnail:" 
+			        << embedJson.value(QStringLiteral("thumbnail")).toObject();
+		}
+		if (embedJson.contains(QStringLiteral("image"))) {
+			qInfo() << "[LinkPreview] embed has image:" 
+			        << embedJson.value(QStringLiteral("image")).toObject();
+		}
 		populateProtoEmbed(response.add_embeds(), embedJson);
 	}
 
@@ -311,6 +329,9 @@ void LinkPreviewManager::sendResponse(uint32_t userSession, const QString &reque
 	ServerUser *u = m_server->qhUsers.value(userSession);
 	if (u) {
 		m_server->sendMessage(u, response);
+		qInfo() << "[LinkPreview] response sent successfully";
+	} else {
+		qWarning() << "[LinkPreview] user session" << userSession << "no longer exists";
 	}
 }
 

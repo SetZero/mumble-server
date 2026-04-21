@@ -39,10 +39,10 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 
 	QNetworkRequest request(url);
 	request.setHeader(QNetworkRequest::UserAgentHeader,
-					  QStringLiteral("FancyMumbleBot/1.0 (compatible; Discordbot/2.0)"));
+					  QStringLiteral("Mozilla/5.0 (compatible; FancyMumbleBot/1.0; +http://fancymumble.com/bot)"));
 	request.setRawHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
 	request.setRawHeader("Accept-Language", "en-US,en;q=0.5");
-	request.setTransferTimeout(FETCH_TIMEOUT_MS);
+	request.setTransferTimeout(10000); // Increased to 10 seconds
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
 
 	QNetworkReply *reply = nam->get(request);

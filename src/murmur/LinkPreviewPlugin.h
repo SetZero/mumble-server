@@ -40,7 +40,7 @@ public:
 	static QString decodeHtmlEntities(const QString &input);
 
 	static constexpr int MAX_REDIRECTS      = 5;
-	static constexpr int FETCH_TIMEOUT_MS   = 5000;
+	static constexpr int FETCH_TIMEOUT_MS   = 10000; // Increased to 10 seconds
 	static constexpr int MAX_RESPONSE_BYTES = 1024 * 1024;
 };
 

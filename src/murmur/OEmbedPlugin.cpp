@@ -36,35 +36,52 @@ void OEmbedPlugin::fetchPreview(const QUrl &url, QNetworkAccessManager *nam,
 	query.addQueryItem(QStringLiteral("maxheight"), QStringLiteral("512"));
 	oembedUrl.setQuery(query);
 
+	qInfo() << "[LinkPreview]" << m_name << "fetching:" << oembedUrl.toString();
+
 	QNetworkRequest request(oembedUrl);
-	request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("FancyMumbleBot/1.0"));
-	request.setTransferTimeout(FETCH_TIMEOUT_MS);
+	request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (compatible; FancyMumbleBot/1.0)"));
+	request.setTransferTimeout(10000); // Increase to 10 seconds
 
 	QNetworkReply *reply = nam->get(request);
 
-	connect(reply, &QNetworkReply::finished, this, [reply, url, onSuccess, onFailure]() {
+	connect(reply, &QNetworkReply::finished, this, [this, reply, url, onSuccess, onFailure]() {
 		reply->deleteLater();
 
-		if (reply->error() != QNetworkReply::NoError
-			|| reply->bytesAvailable() > MAX_RESPONSE_BYTES) {
+		if (reply->error() != QNetworkReply::NoError) {
+			qWarning() << "[LinkPreview]" << m_name << "fetch error:" << reply->errorString()
+			           << "URL:" << reply->url().toString();
+			onFailure();
+			return;
+		}
+
+		qint64 bytesAvail = reply->bytesAvailable();
+		if (bytesAvail > MAX_RESPONSE_BYTES) {
+			qWarning() << "[LinkPreview]" << m_name << "response too large:" << bytesAvail << "bytes";
 			onFailure();
 			return;
 		}
 
 		QByteArray data = reply->readAll();
+		qInfo() << "[LinkPreview]" << m_name << "received" << data.size() << "bytes";
+		qInfo() << "[LinkPreview]" << m_name << "raw response:" << data.left(500);
+
 		QJsonParseError parseError;
 		QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
 		if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+			qWarning() << "[LinkPreview]" << m_name << "JSON parse error:" << parseError.errorString()
+			           << "at offset" << parseError.offset;
 			onFailure();
 			return;
 		}
 
 		QJsonObject embed = oembedToEmbed(doc.object(), url);
 		if (embed.isEmpty()) {
+			qWarning() << "[LinkPreview]" << m_name << "oembedToEmbed returned empty result";
 			onFailure();
 			return;
 		}
 
+		qInfo() << "[LinkPreview]" << m_name << "success - embed keys:" << embed.keys();
 		onSuccess(embed);
 	});
 }
@@ -114,6 +131,9 @@ QJsonObject OEmbedPlugin::oembedToEmbed(const QJsonObject &oembed, const QUrl &o
 		if (th > 0)
 			thumb.insert(QStringLiteral("height"), th);
 		embed.insert(QStringLiteral("thumbnail"), thumb);
+		qInfo() << "[LinkPreview] oEmbed thumbnail extracted:" << thumbnailUrl;
+	} else {
+		qWarning() << "[LinkPreview] oEmbed response missing thumbnail_url";
 	}
 
 	// Type classification and video/photo extraction.
