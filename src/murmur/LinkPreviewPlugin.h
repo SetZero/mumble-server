@@ -40,7 +40,11 @@ public:
 	static QString decodeHtmlEntities(const QString &input);
 
 	static constexpr int MAX_REDIRECTS      = 5;
-	static constexpr int FETCH_TIMEOUT_MS   = 10000; // Increased to 10 seconds
+	// 20 s gives slow upstreams (YouTube/Spotify oembed, Cloudflare-fronted
+	// pages on cold connections) enough time to respond; 10 s was too tight
+	// and routinely tripped on first-hit fetches from servers without warm
+	// DNS/TLS caches.
+	static constexpr int FETCH_TIMEOUT_MS   = 20000;
 	static constexpr int MAX_RESPONSE_BYTES = 1024 * 1024;
 };
 

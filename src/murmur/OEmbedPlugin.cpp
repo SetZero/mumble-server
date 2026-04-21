@@ -45,7 +45,7 @@ void OEmbedPlugin::fetchPreview(const QUrl &url, QNetworkAccessManager *nam,
 
 	QNetworkRequest request(oembedUrl);
 	request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (compatible; FancyMumbleBot/1.0)"));
-	request.setTransferTimeout(10000); // Increase to 10 seconds
+	request.setTransferTimeout(FETCH_TIMEOUT_MS);
 
 	QNetworkReply *reply = nam->get(request);
 
