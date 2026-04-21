@@ -30,7 +30,12 @@ void OEmbedPlugin::fetchPreview(const QUrl &url, QNetworkAccessManager *nam,
 								SuccessCallback onSuccess, FailureCallback onFailure) {
 	QUrl oembedUrl(m_oembedEndpoint);
 	QUrlQuery query;
-	query.addQueryItem(QStringLiteral("url"), url.toString());
+	// QUrlQuery::addQueryItem does NOT percent-encode reserved chars in the
+	// value, so '?' and '&' inside the inner URL would leak through and
+	// break providers that have a query string (e.g. YouTube ?v=...).
+	// Pre-encode the URL value to keep it as a single opaque query param.
+	const QByteArray encodedUrl = QUrl::toPercentEncoding(url.toString());
+	query.addQueryItem(QStringLiteral("url"), QString::fromUtf8(encodedUrl));
 	query.addQueryItem(QStringLiteral("format"), QStringLiteral("json"));
 	query.addQueryItem(QStringLiteral("maxwidth"), QStringLiteral("512"));
 	query.addQueryItem(QStringLiteral("maxheight"), QStringLiteral("512"));
