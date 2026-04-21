@@ -10,6 +10,7 @@
 #include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QUrlQuery>
+#include <QtDebug>
 
 OpenGraphPlugin::OpenGraphPlugin(QObject *parent) : LinkPreviewPlugin(parent) {
 }
@@ -33,16 +34,23 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 								SuccessCallback onSuccess, FailureCallback onFailure,
 								int redirectCount) {
 	if (redirectCount > MAX_REDIRECTS) {
+		qInfo() << "[OpenGraph] too many redirects for" << url.toString();
 		onFailure();
 		return;
 	}
+
+	qInfo() << "[OpenGraph] GET" << url.toString() << "(redirect" << redirectCount << ")";
 
 	QNetworkRequest request(url);
 	request.setHeader(QNetworkRequest::UserAgentHeader,
 					  QStringLiteral("Mozilla/5.0 (compatible; FancyMumbleBot/1.0; +http://fancymumble.com/bot)"));
 	request.setRawHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
 	request.setRawHeader("Accept-Language", "en-US,en;q=0.5");
-	request.setTransferTimeout(10000); // Increased to 10 seconds
+	// Note: do NOT manually set Accept-Encoding here.  Qt's
+	// QNetworkAccessManager negotiates gzip/deflate transparently and
+	// decodes the body for us; setting this header ourselves would
+	// disable that behaviour and leave the compressed bytes unparsed.
+	request.setTransferTimeout(FETCH_TIMEOUT_MS);
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
 
 	QNetworkReply *reply = nam->get(request);
@@ -52,11 +60,19 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 				reply->deleteLater();
 
 				int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+				QNetworkReply::NetworkError netErr = reply->error();
+				qInfo() << "[OpenGraph] reply for" << url.toString()
+						<< "status=" << statusCode
+						<< "netError=" << netErr
+						<< "(" << reply->errorString() << ")";
+
 				if (statusCode >= 300 && statusCode < 400) {
 					QUrl redirectUrl = reply->header(QNetworkRequest::LocationHeader).toUrl();
 					if (redirectUrl.isRelative())
 						redirectUrl = url.resolved(redirectUrl);
+					qInfo() << "[OpenGraph] redirect to" << redirectUrl.toString();
 					if (!isSafeUrl(redirectUrl)) {
+						qWarning() << "[OpenGraph] unsafe redirect target, aborting";
 						onFailure();
 						return;
 					}
@@ -64,28 +80,35 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 					return;
 				}
 
-				if (reply->error() != QNetworkReply::NoError) {
+				if (netErr != QNetworkReply::NoError) {
+					qWarning() << "[OpenGraph] network error, aborting";
 					onFailure();
 					return;
 				}
 
 				QByteArray data  = reply->read(MAX_RESPONSE_BYTES);
+				qInfo() << "[OpenGraph] received" << data.size() << "bytes for" << url.toString();
 				QJsonObject embed = parseOpenGraphTags(data, url);
+				QString parsedTitle = embed.value(QStringLiteral("title")).toString();
+				qInfo() << "[OpenGraph] parsed title:" << (parsedTitle.isEmpty() ? QStringLiteral("<empty>") : parsedTitle.left(80));
 
 				// If OG yielded no title, try oEmbed discovery from <link> tags.
-				if (embed.value(QStringLiteral("title")).toString().isEmpty()) {
+				if (parsedTitle.isEmpty()) {
 					QString discoveredEndpoint = discoverOEmbedLink(data);
 					if (!discoveredEndpoint.isEmpty()) {
+						qInfo() << "[OpenGraph] discovered oEmbed endpoint" << discoveredEndpoint;
 						fetchDiscoveredOEmbed(discoveredEndpoint, url, nam, onSuccess, onFailure);
 						return;
 					}
 				}
 
-				if (embed.isEmpty() || embed.value(QStringLiteral("title")).toString().isEmpty()) {
+				if (embed.isEmpty() || parsedTitle.isEmpty()) {
+					qWarning() << "[OpenGraph] no usable embed data extracted from" << url.toString();
 					onFailure();
 					return;
 				}
 
+				qInfo() << "[OpenGraph] success for" << url.toString();
 				onSuccess(embed);
 			});
 }
@@ -94,13 +117,17 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 
 void OpenGraphPlugin::parseMetaTags(const QString &content, QHash< QString, QString > &meta) {
 	// Matches <meta> with property/name + content in either order.
+	// Accepts single OR double-quoted attribute values - some sites
+	// (notably tagesschau.de and other German news sites) use single
+	// quotes which the original double-quote-only regex missed entirely.
 	QRegularExpression metaRe(
 		QString::fromUtf8(
-			R"REGEX(<meta\s+[^>]*?(?:(?:property|name)\s*=\s*"([^"]+)"[^>]*?content\s*=\s*"([^"]*?)"|content\s*=\s*"([^"]*?)"[^>]*?(?:property|name)\s*=\s*"([^"]+)"))REGEX"
+			R"REGEX(<meta\s+[^>]*?(?:(?:property|name)\s*=\s*["']([^"']+)["'][^>]*?content\s*=\s*["']([^"']*?)["']|content\s*=\s*["']([^"']*?)["'][^>]*?(?:property|name)\s*=\s*["']([^"']+)["']))REGEX"
 		),
 		QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption);
 
 	auto it = metaRe.globalMatch(content);
+	int matchCount = 0;
 	while (it.hasNext()) {
 		QRegularExpressionMatch m = it.next();
 		QString prop, val;
@@ -111,9 +138,12 @@ void OpenGraphPlugin::parseMetaTags(const QString &content, QHash< QString, QStr
 			prop = m.captured(4).toLower();
 			val  = m.captured(3);
 		}
-		if (!prop.isEmpty() && !val.isEmpty())
+		if (!prop.isEmpty() && !val.isEmpty()) {
 			meta.insert(prop, decodeHtmlEntities(val));
+			++matchCount;
+		}
 	}
+	qInfo() << "[OpenGraph] parsed" << matchCount << "meta tags";
 }
 
 void OpenGraphPlugin::populateImageAndVideo(QJsonObject &embed,
