@@ -6,7 +6,10 @@
 #ifndef MUMBLE_GROUP_H_
 #define MUMBLE_GROUP_H_
 
+#include <QtCore/QByteArray>
+#include <QtCore/QHash>
 #include <QtCore/QSet>
+#include <QtCore/QString>
 
 class Channel;
 class User;
@@ -26,6 +29,14 @@ public:
 	QSet< int > qsAdd;
 	QSet< int > qsRemove;
 	QSet< int > qsTemporary;
+
+	// FancyMumble role customization fields. All optional - empty by default
+	// for legacy / non-Fancy clients.
+	QString qsColor;
+	QByteArray qbaIcon;
+	QString qsStylePreset;
+	QHash< QString, QString > qhMetadata;
+
 	Group(Channel *assoc, const QString &name);
 
 #ifdef MURMUR

@@ -374,6 +374,11 @@ message PermissionDenied {
 
 message ACL {
 	message ChanGroup {
+		// FancyMumble: arbitrary role metadata key/value pair.
+		message KeyValue {
+			required string key = 1;
+			optional string value = 2;
+		}
 		// Name of the channel group, UTF-8 encoded.
 		required string name = 1;
 		// True if the group has been inherited from the parent (Read only).
@@ -389,6 +394,14 @@ message ACL {
 		repeated uint32 remove = 6;
 		// Users inherited, identified by user_id.
 		repeated uint32 inherited_members = 7;
+		// FancyMumble: optional CSS color string for role chip (e.g. "#5865F2").
+		optional string color = 8;
+		// FancyMumble: optional raw icon image bytes (PNG/JPEG) for the role.
+		optional bytes icon = 9;
+		// FancyMumble: optional named visual style preset id.
+		optional string style_preset = 10;
+		// FancyMumble: arbitrary key-value metadata for client-side extensions.
+		repeated KeyValue metadata = 11;
 	}
 	message ChanACL {
 		// True if this ACL applies to the current channel.

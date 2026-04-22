@@ -52,6 +52,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
+#include <QtCore/QJsonParseError>
+#include <QtCore/QJsonValue>
+
 #include <boost/algorithm/string.hpp>
 
 #include <cassert>
@@ -459,6 +464,27 @@ void DBWrapper::initializeChannelDetails(Server &server) {
 			group->bInherit     = currentGroup.inherit;
 			group->bInheritable = currentGroup.is_inheritable;
 
+			// FancyMumble role customization fields - load from DB into the in-memory Group.
+			group->qsColor = QString::fromStdString(currentGroup.color);
+			if (!currentGroup.icon.empty()) {
+				group->qbaIcon = QByteArray(reinterpret_cast< const char * >(currentGroup.icon.data()),
+											static_cast< int >(currentGroup.icon.size()));
+			}
+			group->qsStylePreset = QString::fromStdString(currentGroup.style_preset);
+			if (!currentGroup.metadata_json.empty()) {
+				QJsonParseError parseError;
+				QJsonDocument doc = QJsonDocument::fromJson(
+					QByteArray(currentGroup.metadata_json.data(),
+							   static_cast< int >(currentGroup.metadata_json.size())),
+					&parseError);
+				if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
+					QJsonObject obj = doc.object();
+					for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+						group->qhMetadata.insert(it.key(), it.value().toString());
+					}
+				}
+			}
+
 			for (const ::msdb::DBGroupMember &currrentMember :
 				 m_serverDB.getGroupMemberTable().getEntries(server.iServerNum, currentGroup.groupID)) {
 				if (currrentMember.addToGroup) {
@@ -533,6 +559,23 @@ unsigned int DBWrapper::getNextAvailableChannelID(unsigned int serverID) {
 	dbGroup.inherit        = group.bInherit;
 	dbGroup.is_inheritable = group.bInheritable;
 	dbGroup.name           = group.qsName.toStdString();
+
+	// FancyMumble role customization fields - serialize from the in-memory Group into the DB row.
+	dbGroup.color = group.qsColor.toStdString();
+	if (!group.qbaIcon.isEmpty()) {
+		dbGroup.icon.assign(reinterpret_cast< const std::uint8_t * >(group.qbaIcon.constData()),
+							reinterpret_cast< const std::uint8_t * >(group.qbaIcon.constData())
+								+ static_cast< std::size_t >(group.qbaIcon.size()));
+	}
+	dbGroup.style_preset = group.qsStylePreset.toStdString();
+	if (!group.qhMetadata.isEmpty()) {
+		QJsonObject obj;
+		for (auto it = group.qhMetadata.constBegin(); it != group.qhMetadata.constEnd(); ++it) {
+			obj.insert(it.key(), it.value());
+		}
+		QByteArray serialized = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+		dbGroup.metadata_json.assign(serialized.constData(), static_cast< std::size_t >(serialized.size()));
+	}
 
 	// Assert that we are not trying to add a meta group to the DB (those shouldn't be Group objects to begin with)
 	assert(!::msdb::parseMetaGroup(::msdb::parseLegacyGroupSpecification(dbGroup.name).name).has_value());

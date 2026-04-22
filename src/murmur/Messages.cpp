@@ -2151,6 +2151,25 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 					group->add_inherited_members(static_cast< unsigned int >(id));
 				}
 			}
+
+			// FancyMumble role customization fields. Only attach values that are actually set on this group
+			// (effective inheritance happens server-side; we always send the local group's data).
+			if (g) {
+				if (!g->qsColor.isEmpty()) {
+					group->set_color(u8(g->qsColor));
+				}
+				if (!g->qbaIcon.isEmpty()) {
+					group->set_icon(g->qbaIcon.constData(), static_cast< std::size_t >(g->qbaIcon.size()));
+				}
+				if (!g->qsStylePreset.isEmpty()) {
+					group->set_style_preset(u8(g->qsStylePreset));
+				}
+				for (auto it = g->qhMetadata.constBegin(); it != g->qhMetadata.constEnd(); ++it) {
+					MumbleProto::ACL_ChanGroup_KeyValue *kv = group->add_metadata();
+					kv->set_key(u8(it.key()));
+					kv->set_value(u8(it.value()));
+				}
+			}
 		}
 
 		sendMessage(uSource, msg);
@@ -2210,6 +2229,33 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 				for (int j = 0; j < group.remove_size(); ++j)
 					if (!getRegisteredUserName(static_cast< int >(group.remove(j))).isEmpty())
 						g->qsRemove << static_cast< int >(group.remove(j));
+
+				// FancyMumble role customization fields.
+				g->qsColor = group.has_color() ? u8(group.color()) : QString();
+				if (group.has_icon()) {
+					const std::string &iconBytes = group.icon();
+					if (iMaxImageMessageLength > 0
+						&& iconBytes.size() > static_cast< std::size_t >(iMaxImageMessageLength)) {
+						// Reject the icon when it exceeds the configurable
+						// `imagemessagelength` server limit.  Leaves any
+						// previously stored icon untouched.
+						log(uSource,
+							QString("Rejected role icon for group '%1' (%2 bytes > limit %3)")
+								.arg(g->qsName)
+								.arg(iconBytes.size())
+								.arg(iMaxImageMessageLength));
+					} else {
+						g->qbaIcon = QByteArray(iconBytes.data(), static_cast< int >(iconBytes.size()));
+					}
+				} else {
+					g->qbaIcon.clear();
+				}
+				g->qsStylePreset = group.has_style_preset() ? u8(group.style_preset()) : QString();
+				g->qhMetadata.clear();
+				for (int j = 0; j < group.metadata_size(); ++j) {
+					const MumbleProto::ACL_ChanGroup_KeyValue &kv = group.metadata(j);
+					g->qhMetadata.insert(u8(kv.key()), kv.has_value() ? u8(kv.value()) : QString());
+				}
 
 				g->qsTemporary = hOldTemp.value(g->qsName);
 			}

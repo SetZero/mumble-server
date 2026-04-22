@@ -12,7 +12,9 @@ namespace server {
 
 		bool operator==(const DBGroup &lhs, const DBGroup &rhs) {
 			return lhs.serverID == rhs.serverID && lhs.groupID == rhs.groupID && lhs.channelID == rhs.channelID
-				   && lhs.name == rhs.name && lhs.inherit == rhs.inherit && lhs.is_inheritable == rhs.is_inheritable;
+				   && lhs.name == rhs.name && lhs.inherit == rhs.inherit && lhs.is_inheritable == rhs.is_inheritable
+				   && lhs.color == rhs.color && lhs.icon == rhs.icon
+				   && lhs.style_preset == rhs.style_preset && lhs.metadata_json == rhs.metadata_json;
 		}
 
 		bool operator!=(const DBGroup &lhs, const DBGroup &rhs) { return !(lhs == rhs); }

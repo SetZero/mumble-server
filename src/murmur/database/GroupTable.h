@@ -39,6 +39,11 @@ namespace server {
 				static constexpr const char *channel_id     = "channel_id";
 				static constexpr const char *inherit        = "inherit";
 				static constexpr const char *is_inheritable = "is_inheritable";
+				// FancyMumble role customization columns (added in schema v18).
+				static constexpr const char *color          = "color";
+				static constexpr const char *icon           = "icon";
+				static constexpr const char *style_preset   = "style_preset";
+				static constexpr const char *metadata_json  = "metadata_json";
 			};
 
 
