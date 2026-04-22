@@ -5,10 +5,12 @@
 
 #include "OpenGraphPlugin.h"
 
+#include <QDateTime>
 #include <QJsonDocument>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QThread>
 #include <QUrlQuery>
 #include <QtDebug>
 
@@ -39,7 +41,9 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 		return;
 	}
 
-	qInfo() << "[OpenGraph] GET" << url.toString() << "(redirect" << redirectCount << ")";
+	qInfo() << "[OpenGraph] GET" << url.toString() << "(redirect" << redirectCount << ")"
+			<< "thread=" << QThread::currentThread()
+			<< "ts=" << QDateTime::currentMSecsSinceEpoch();
 
 	QNetworkRequest request(url);
 	request.setHeader(QNetworkRequest::UserAgentHeader,
@@ -52,16 +56,25 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 	// disable that behaviour and leave the compressed bytes unparsed.
 	request.setTransferTimeout(FETCH_TIMEOUT_MS);
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+	// Qt 6's HTTP/2 client occasionally stalls on stream flow-control updates
+	// against large CDNs (youtube.com, tagesschau.de etc.), leaving the
+	// request hanging until the transfer timeout fires.  Force HTTP/1.1 so
+	// pages with normally sub-second response time actually return in time.
+	request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
 
 	QNetworkReply *reply = nam->get(request);
+	qint64 issuedAtMs = QDateTime::currentMSecsSinceEpoch();
 
 	connect(reply, &QNetworkReply::finished, this,
-			[this, reply, url, nam, onSuccess, onFailure, redirectCount]() {
+			[this, reply, url, nam, onSuccess, onFailure, redirectCount, issuedAtMs]() {
 				reply->deleteLater();
 
+				qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - issuedAtMs;
 				int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 				QNetworkReply::NetworkError netErr = reply->error();
 				qInfo() << "[OpenGraph] reply for" << url.toString()
+						<< "elapsed=" << elapsedMs << "ms"
+						<< "thread=" << QThread::currentThread()
 						<< "status=" << statusCode
 						<< "netError=" << netErr
 						<< "(" << reply->errorString() << ")";
@@ -302,6 +315,7 @@ void OpenGraphPlugin::fetchDiscoveredOEmbed(const QString &endpoint, const QUrl 
 	QNetworkRequest request(oembedUrl);
 	request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("FancyMumbleBot/1.0"));
 	request.setTransferTimeout(FETCH_TIMEOUT_MS);
+	request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
 
 	QNetworkReply *reply = nam->get(request);
 
