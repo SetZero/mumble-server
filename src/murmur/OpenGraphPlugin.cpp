@@ -5,12 +5,10 @@
 
 #include "OpenGraphPlugin.h"
 
-#include <QDateTime>
 #include <QJsonDocument>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
-#include <QThread>
 #include <QUrlQuery>
 #include <QtDebug>
 
@@ -36,14 +34,12 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 								SuccessCallback onSuccess, FailureCallback onFailure,
 								int redirectCount) {
 	if (redirectCount > MAX_REDIRECTS) {
-		qInfo() << "[OpenGraph] too many redirects for" << url.toString();
+		qInfo() << "[OpenGraph] too many redirects";
 		onFailure();
 		return;
 	}
 
-	qInfo() << "[OpenGraph] GET" << url.toString() << "(redirect" << redirectCount << ")"
-			<< "thread=" << QThread::currentThread()
-			<< "ts=" << QDateTime::currentMSecsSinceEpoch();
+	qInfo() << "[OpenGraph] GET (redirect" << redirectCount << ")";
 
 	QNetworkRequest request(url);
 	request.setHeader(QNetworkRequest::UserAgentHeader,
@@ -63,27 +59,21 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 	request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
 
 	QNetworkReply *reply = nam->get(request);
-	qint64 issuedAtMs = QDateTime::currentMSecsSinceEpoch();
 
 	connect(reply, &QNetworkReply::finished, this,
-			[this, reply, url, nam, onSuccess, onFailure, redirectCount, issuedAtMs]() {
+			[this, reply, url, nam, onSuccess, onFailure, redirectCount]() {
 				reply->deleteLater();
 
-				qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - issuedAtMs;
 				int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 				QNetworkReply::NetworkError netErr = reply->error();
-				qInfo() << "[OpenGraph] reply for" << url.toString()
-						<< "elapsed=" << elapsedMs << "ms"
-						<< "thread=" << QThread::currentThread()
-						<< "status=" << statusCode
-						<< "netError=" << netErr
-						<< "(" << reply->errorString() << ")";
+				qInfo() << "[OpenGraph] reply status=" << statusCode
+						<< "netError=" << netErr;
 
 				if (statusCode >= 300 && statusCode < 400) {
 					QUrl redirectUrl = reply->header(QNetworkRequest::LocationHeader).toUrl();
 					if (redirectUrl.isRelative())
 						redirectUrl = url.resolved(redirectUrl);
-					qInfo() << "[OpenGraph] redirect to" << redirectUrl.toString();
+					qInfo() << "[OpenGraph] following redirect";
 					if (!isSafeUrl(redirectUrl)) {
 						qWarning() << "[OpenGraph] unsafe redirect target, aborting";
 						onFailure();
@@ -100,28 +90,27 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 				}
 
 				QByteArray data  = reply->read(MAX_RESPONSE_BYTES);
-				qInfo() << "[OpenGraph] received" << data.size() << "bytes for" << url.toString();
+				qInfo() << "[OpenGraph] received" << data.size() << "bytes";
 				QJsonObject embed = parseOpenGraphTags(data, url);
 				QString parsedTitle = embed.value(QStringLiteral("title")).toString();
-				qInfo() << "[OpenGraph] parsed title:" << (parsedTitle.isEmpty() ? QStringLiteral("<empty>") : parsedTitle.left(80));
 
 				// If OG yielded no title, try oEmbed discovery from <link> tags.
 				if (parsedTitle.isEmpty()) {
 					QString discoveredEndpoint = discoverOEmbedLink(data);
 					if (!discoveredEndpoint.isEmpty()) {
-						qInfo() << "[OpenGraph] discovered oEmbed endpoint" << discoveredEndpoint;
+						qInfo() << "[OpenGraph] discovered oEmbed endpoint, retrying";
 						fetchDiscoveredOEmbed(discoveredEndpoint, url, nam, onSuccess, onFailure);
 						return;
 					}
 				}
 
 				if (embed.isEmpty() || parsedTitle.isEmpty()) {
-					qWarning() << "[OpenGraph] no usable embed data extracted from" << url.toString();
+					qWarning() << "[OpenGraph] no usable embed data extracted";
 					onFailure();
 					return;
 				}
 
-				qInfo() << "[OpenGraph] success for" << url.toString();
+				qInfo() << "[OpenGraph] success";
 				onSuccess(embed);
 			});
 }

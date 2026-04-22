@@ -13,9 +13,6 @@
 #include "Mumble.pb.h"
 
 #include <QDateTime>
-#include <QElapsedTimer>
-#include <QThread>
-#include <QTimer>
 
 #include <algorithm>
 
@@ -25,35 +22,6 @@ LinkPreviewManager::LinkPreviewManager(Server *server, QObject *parent)
 	: QObject(parent), m_server(server) {
 	m_networkManager = std::make_unique<QNetworkAccessManager>();
 	initDefaultPlugins();
-
-	// --- Event-loop heartbeat (diagnostic) ----------------------------
-	// Posts a log line every 5s from the thread that owns this object.
-	// If the gap between two consecutive heartbeats exceeds ~6s, the
-	// event loop of that thread was blocked.  This is the smoking gun
-	// for the "setTransferTimeout fires 15-20s late with
-	// OperationCanceledError" symptom we see in production: QNAM's
-	// transfer-timeout is implemented as a QTimer that can only fire
-	// when the event loop actually runs.
-	auto *heartbeat = new QTimer(this);
-	heartbeat->setInterval(5000);
-	heartbeat->setTimerType(Qt::PreciseTimer);
-	auto *hbState = new qint64(QDateTime::currentMSecsSinceEpoch());
-	connect(heartbeat, &QTimer::timeout, this, [hbState]() {
-		qint64 now  = QDateTime::currentMSecsSinceEpoch();
-		qint64 diff = now - *hbState;
-		*hbState    = now;
-		if (diff > 6000) {
-			qWarning() << "[LinkPreview][heartbeat] EVENT LOOP STALL"
-					   << diff << "ms since previous tick (expected ~5000)"
-					   << "thread=" << QThread::currentThread();
-		} else {
-			qInfo() << "[LinkPreview][heartbeat]" << diff << "ms tick, thread="
-					<< QThread::currentThread();
-		}
-	});
-	heartbeat->start();
-	qInfo() << "[LinkPreview] manager constructed; thread=" << QThread::currentThread()
-			<< "QNAM thread=" << m_networkManager->thread();
 }
 
 void LinkPreviewManager::initDefaultPlugins() {
@@ -156,9 +124,7 @@ QList< QUrl > LinkPreviewManager::validateUrls(const QStringList &urls) {
 
 void LinkPreviewManager::handlePreviewRequest(uint32_t userSession, const QStringList &urls,
 											  const QString &requestId) {
-	qInfo() << "[LinkPreview] request from session" << userSession << "for" << urls.size() << "URLs"
-			<< "thread=" << QThread::currentThread()
-			<< "ts=" << QDateTime::currentMSecsSinceEpoch();
+	qInfo() << "[LinkPreview] request from session" << userSession << "for" << urls.size() << "URLs";
 
 	if (isRateLimited(userSession)) {
 		qWarning() << "[LinkPreview] rate limited session" << userSession;
@@ -184,7 +150,6 @@ void LinkPreviewManager::handlePreviewRequest(uint32_t userSession, const QStrin
 
 	for (const QUrl &url : validUrls) {
 		fetchUrl(url, pending);
-		qInfo() << "[LinkPreview] fetching URL:" << url.toString();
 	}
 }
 
@@ -347,15 +312,6 @@ void LinkPreviewManager::sendResponse(uint32_t userSession, const QString &reque
 	response.set_request_id(requestId.toStdString());
 
 	for (const QJsonObject &embedJson : embeds) {
-		qInfo() << "[LinkPreview] embed fields:" << embedJson.keys();
-		if (embedJson.contains(QStringLiteral("thumbnail"))) {
-			qInfo() << "[LinkPreview] embed has thumbnail:" 
-			        << embedJson.value(QStringLiteral("thumbnail")).toObject();
-		}
-		if (embedJson.contains(QStringLiteral("image"))) {
-			qInfo() << "[LinkPreview] embed has image:" 
-			        << embedJson.value(QStringLiteral("image")).toObject();
-		}
 		populateProtoEmbed(response.add_embeds(), embedJson);
 	}
 

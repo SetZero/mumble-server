@@ -5,11 +5,9 @@
 
 #include "OEmbedPlugin.h"
 
-#include <QDateTime>
 #include <QJsonDocument>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QThread>
 #include <QUrlQuery>
 
 OEmbedPlugin::OEmbedPlugin(const QString &providerName, const QString &urlPattern,
@@ -43,9 +41,7 @@ void OEmbedPlugin::fetchPreview(const QUrl &url, QNetworkAccessManager *nam,
 	query.addQueryItem(QStringLiteral("maxheight"), QStringLiteral("512"));
 	oembedUrl.setQuery(query);
 
-	qInfo() << "[LinkPreview]" << m_name << "fetching:" << oembedUrl.toString()
-			<< "thread=" << QThread::currentThread()
-			<< "ts=" << QDateTime::currentMSecsSinceEpoch();
+	qInfo() << "[LinkPreview]" << m_name << "fetching";
 
 	QNetworkRequest request(oembedUrl);
 	request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (compatible; FancyMumbleBot/1.0)"));
@@ -57,19 +53,12 @@ void OEmbedPlugin::fetchPreview(const QUrl &url, QNetworkAccessManager *nam,
 	request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
 
 	QNetworkReply *reply = nam->get(request);
-	qint64 issuedAtMs = QDateTime::currentMSecsSinceEpoch();
 
-	connect(reply, &QNetworkReply::finished, this, [this, reply, url, onSuccess, onFailure, issuedAtMs]() {
+	connect(reply, &QNetworkReply::finished, this, [this, reply, url, onSuccess, onFailure]() {
 		reply->deleteLater();
 
-		qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - issuedAtMs;
-		qInfo() << "[LinkPreview]" << m_name << "reply elapsed=" << elapsedMs << "ms"
-				<< "thread=" << QThread::currentThread()
-				<< "netError=" << int(reply->error()) << "(" << reply->errorString() << ")";
-
 		if (reply->error() != QNetworkReply::NoError) {
-			qWarning() << "[LinkPreview]" << m_name << "fetch error:" << reply->errorString()
-			           << "URL:" << reply->url().toString();
+			qWarning() << "[LinkPreview]" << m_name << "fetch error:" << reply->errorString();
 			onFailure();
 			return;
 		}
@@ -83,7 +72,6 @@ void OEmbedPlugin::fetchPreview(const QUrl &url, QNetworkAccessManager *nam,
 
 		QByteArray data = reply->readAll();
 		qInfo() << "[LinkPreview]" << m_name << "received" << data.size() << "bytes";
-		qInfo() << "[LinkPreview]" << m_name << "raw response:" << data.left(500);
 
 		QJsonParseError parseError;
 		QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
@@ -151,7 +139,7 @@ QJsonObject OEmbedPlugin::oembedToEmbed(const QJsonObject &oembed, const QUrl &o
 		if (th > 0)
 			thumb.insert(QStringLiteral("height"), th);
 		embed.insert(QStringLiteral("thumbnail"), thumb);
-		qInfo() << "[LinkPreview] oEmbed thumbnail extracted:" << thumbnailUrl;
+		qInfo() << "[LinkPreview] oEmbed thumbnail extracted";
 	} else {
 		qWarning() << "[LinkPreview] oEmbed response missing thumbnail_url";
 	}
