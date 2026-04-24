@@ -11,7 +11,9 @@
 #include <QtCore/QList>
 #include <QtCore/QString>
 
+#include <cstdint>
 #include <optional>
+#include <vector>
 
 class Channel;
 
@@ -46,6 +48,12 @@ struct UserInfo {
 	QString name;
 	std::optional< int > last_channel;
 	QDateTime last_active;
+	std::vector< std::uint8_t > texture;
+	// SHA-1 of the comment when len >= 128; full UTF-8 bytes when len < 128.
+	// Empty means no comment.
+	QByteArray comment_hash;
+	// Full comment text, populated only in blob responses.
+	QString comment;
 
 	UserInfo() : user_id(-1) {}
 	UserInfo(int id, QString uname) : user_id(id), name(uname) {}

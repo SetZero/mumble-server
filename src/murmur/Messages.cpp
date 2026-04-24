@@ -2506,6 +2506,19 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 					user->set_last_channel(static_cast< unsigned int >(info.last_channel.value()));
 				}
 				user->set_last_seen(u8(info.last_active.toString(Qt::ISODate)));
+				if (!info.texture.empty()) {
+					user->set_texture(info.texture.data(), info.texture.size());
+				}
+				if (!info.comment_hash.isEmpty()) {
+					if (!info.comment.isEmpty()) {
+						// Short comment: include inline.
+						user->set_comment(u8(info.comment));
+					} else {
+						// Long comment: send SHA-1 hash; client must request blob.
+						user->set_comment_hash(info.comment_hash.constData(),
+							static_cast< size_t >(info.comment_hash.size()));
+					}
+				}
 			}
 		}
 		sendMessage(uSource, msg);
@@ -2780,6 +2793,23 @@ void Server::msgRequestBlob(ServerUser *uSource, MumbleProto::RequestBlob &msg) 
 				mpus.set_comment(u8(su->qsComment));
 				sendMessage(uSource, mpus);
 			}
+		}
+	}
+
+	// Registered user comment blobs (for offline users).
+	for (int i = 0; i < msg.user_id_comment_size(); ++i) {
+		unsigned int uid = msg.user_id_comment(i);
+		if (uid == 0 || uid == Mumble::SUPERUSER_ID)
+			continue;
+		QMap< int, QString > details = m_dbWrapper.getRegisteredUserDetails(iServerNum, uid);
+		QString comment =
+			details.value(static_cast< int >(::mumble::server::db::UserProperty::Comment));
+		if (!comment.isEmpty()) {
+			MumbleProto::UserList blobreply;
+			MumbleProto::UserList_User *entry = blobreply.add_users();
+			entry->set_user_id(uid);
+			entry->set_comment(u8(comment));
+			sendMessage(uSource, blobreply);
 		}
 	}
 }
