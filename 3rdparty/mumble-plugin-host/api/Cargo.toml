@@ -1,0 +1,13 @@
+[package]
+name = "mumble-plugin-api"
+version = "0.1.0"
+edition = "2021"
+description = "Public trait definitions for Mumble server plugins"
+license = "MIT"
+
+[dependencies]
+thiserror = "2"
+async-trait = "0.1"
+
+[lints]
+workspace = true

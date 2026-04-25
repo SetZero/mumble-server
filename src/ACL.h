@@ -34,6 +34,8 @@ public:
 		Listen          = 0x800,
 		DeleteMessage   = 0x1000,
 		SubscribePush   = 0x2000,
+		ShareFiles      = 0x4000,
+		ShareFilesPublic = 0x8000,
 
 		// Root channel only
 		Kick             = 0x10000,
@@ -42,11 +44,12 @@ public:
 		SelfRegister     = 0x80000,
 		ResetUserContent = 0x100000,
 		KeyOwner         = 0x200000,
+		ManageEmotes     = 0x400000,
 
 		Cached = 0x8000000,
 		All = Write + Traverse + Enter + Speak + MuteDeafen + Move + MakeChannel + LinkChannel + Whisper + TextMessage
-			  + MakeTempChannel + Listen + DeleteMessage + SubscribePush + Kick + Ban + Register + SelfRegister
-			  + ResetUserContent + KeyOwner
+			  + MakeTempChannel + Listen + DeleteMessage + SubscribePush + ShareFiles + ShareFilesPublic + Kick + Ban
+			  + Register + SelfRegister + ResetUserContent + KeyOwner + ManageEmotes
 	};
 
 	Q_DECLARE_FLAGS(Permissions, Perm)
