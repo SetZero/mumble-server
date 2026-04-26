@@ -15,6 +15,27 @@ use crate::signing::{self, NO_EXPIRY, NONCE_BYTES};
 use crate::state::AppState;
 use crate::storage::{AccessMode, FileRecord};
 
+/// Determine the MIME type of a file from its magic bytes, falling back to
+/// extension-based guessing, and finally `application/octet-stream`.
+///
+/// Using magic bytes means the server never trusts the MIME type the client
+/// claims to be uploading, closing a class of content-type confusion attacks.
+fn sniff_mime(magic: &[u8], filename: &str) -> String {
+    if let Some(kind) = infer::get(magic) {
+        return kind.mime_type().to_owned();
+    }
+    // Fall back to extension for types infer doesn't cover (e.g. plain text).
+    let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "txt" => "text/plain".to_owned(),
+        "md" => "text/markdown".to_owned(),
+        "csv" => "text/csv".to_owned(),
+        "json" => "application/json".to_owned(),
+        "pdf" => "application/pdf".to_owned(),
+        _ => "application/octet-stream".to_owned(),
+    }
+}
+
 /// Query string for `POST /files` - identifies the uploading session.
 #[derive(Debug, Deserialize)]
 pub struct UploadQuery {
@@ -215,16 +236,18 @@ async fn parse_multipart(
                     .file_name()
                     .map(str::to_owned)
                     .unwrap_or_else(|| "upload.bin".to_owned());
-                let mime_type = field
-                    .content_type()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| "application/octet-stream".to_owned());
+                // Discard the client-supplied Content-Type entirely; we will
+                // sniff the real MIME from the file's magic bytes after the
+                // bytes are on disk.
 
                 let file_id = generate_file_id();
                 let blob_path = state.storage.blob_path(&file_id);
                 let guard = BlobGuard::new(blob_path.clone());
 
                 let mut written: u64 = 0;
+                // Keep the first 16 bytes so we can identify the file type
+                // from its magic bytes without an extra seek.
+                let mut magic_buf: Vec<u8> = Vec::with_capacity(16);
                 let mut sink = tokio::fs::File::create(&blob_path).await.map_err(|e| {
                     ApiError::internal(format!("create blob: {e}"))
                 })?;
@@ -239,6 +262,10 @@ async fn parse_multipart(
                             "file exceeds max_file_size_bytes ({max_size})"
                         )));
                     }
+                    if magic_buf.len() < 16 {
+                        let needed = 16 - magic_buf.len();
+                        magic_buf.extend_from_slice(&chunk[..needed.min(chunk.len())]);
+                    }
                     sink.write_all(&chunk).await.map_err(|e| {
                         ApiError::internal(format!("write blob: {e}"))
                     })?;
@@ -247,6 +274,7 @@ async fn parse_multipart(
                     ApiError::internal(format!("flush blob: {e}"))
                 })?;
                 drop(sink);
+                let mime_type = sniff_mime(&magic_buf, &filename);
                 file_meta = Some((file_id, blob_path, written, filename, mime_type, guard));
             }
             "channel_id" => {

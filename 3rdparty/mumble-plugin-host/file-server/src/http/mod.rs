@@ -21,6 +21,20 @@ pub mod upload;
 /// `max_file_size_bytes` when sizing the axum body limit for the upload route.
 const FORM_OVERHEAD_BYTES: u64 = 8 * 1024;
 
+/// Injects `Cross-Origin-Resource-Policy: cross-origin` on every response
+/// so that Chromium/WebKit allow the Tauri webview (a different origin) to
+/// load file resources such as images and videos inline.  Without this header
+/// the browser enforces the default same-site policy and blocks the load with
+/// `ERR_BLOCKED_BY_RESPONSE.NotSameSite`.
+async fn cross_origin_resource_policy(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let _ = resp.headers_mut().insert(
+        "cross-origin-resource-policy",
+        HeaderValue::from_static("cross-origin"),
+    );
+    resp
+}
+
 /// Logs every incoming HTTP request and the response status so we can
 /// see in `docker logs` whether a stuck client request actually reached
 /// the server.
@@ -77,6 +91,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/emotes/{shortcode}", axum::routing::delete(emotes::delete))
         .route("/capabilities", get(capabilities::get))
         .layer(middleware::from_fn(request_log))
+        .layer(middleware::from_fn(cross_origin_resource_policy))
         .layer(cors)
         .with_state(state)
 }

@@ -194,9 +194,6 @@ async fn parse_emote_multipart(mut multipart: Multipart) -> Result<ParsedEmote, 
                 }
             }
             "file" => {
-                if let Some(ct) = field.content_type() {
-                    mime_type = ct.to_owned();
-                }
                 let data = field
                     .bytes()
                     .await
@@ -204,6 +201,9 @@ async fn parse_emote_multipart(mut multipart: Multipart) -> Result<ParsedEmote, 
                 if data.len() > emotes::MAX_EMOTE_SIZE_BYTES {
                     return Err(ApiError::too_large("emote image exceeds size limit"));
                 }
+                mime_type = infer::get(&data)
+                    .map(|k| k.mime_type().to_owned())
+                    .unwrap_or_else(|| "application/octet-stream".to_owned());
                 bytes = Some(data.to_vec());
             }
             _ => {}

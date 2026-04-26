@@ -46,6 +46,9 @@ futures-core = "0.3"
 # CORS headers
 tower-http = { version = "0.6", features = ["cors"] }
 
+# MIME-type detection from magic bytes (never trust client-supplied Content-Type)
+infer = { version = "0.16", default-features = false }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
