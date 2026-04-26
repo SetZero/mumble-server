@@ -196,7 +196,7 @@ bool refreshAccessToken(FcmState &state) {
 
 		Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_POST, uri.getPathAndQuery());
 		request.setContentType("application/x-www-form-urlencoded");
-		request.setContentLength(body.size());
+		request.setContentLength(static_cast< std::streamsize >(body.size()));
 		std::ostream &os = session.sendRequest(request);
 		os << body;
 		os.flush();
@@ -330,7 +330,7 @@ int sendNotification(FcmState &state, const MumblePushNotification &notif) {
 
 		Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_POST, path);
 		request.setContentType("application/json");
-		request.setContentLength(bodyStr.size());
+		request.setContentLength(static_cast< std::streamsize >(bodyStr.size()));
 		request.set("Authorization", "Bearer " + token);
 		std::ostream &os = session.sendRequest(request);
 		os << bodyStr;

@@ -210,11 +210,14 @@ QFlags< ChanACL::Perm > ChanACL::effectivePermissions(ServerUser *p, Channel *ch
 					if (acl->pAllow & SelfRegister) {
 						granted |= SelfRegister;
 					}
+					if (acl->pAllow & ManageEmotes) {
+						granted |= ManageEmotes;
+					}
 				}
 
 				// Every other regular ACL is handled here
 				if (apply) {
-					granted |= (acl->pAllow & ~(Kick | Ban | ResetUserContent | Register | SelfRegister | Cached));
+					granted |= (acl->pAllow & ~(Kick | Ban | ResetUserContent | Register | SelfRegister | ManageEmotes | Cached));
 					granted &= ~acl->pDeny;
 				}
 			}
@@ -227,9 +230,10 @@ QFlags< ChanACL::Perm > ChanACL::effectivePermissions(ServerUser *p, Channel *ch
 
 	if (granted & Write) {
 		granted |=
-			Traverse | Enter | MuteDeafen | Move | MakeChannel | LinkChannel | TextMessage | MakeTempChannel | Listen;
+			Traverse | Enter | MuteDeafen | Move | MakeChannel | LinkChannel | TextMessage | MakeTempChannel | Listen
+			| ShareFiles | ShareFilesPublic;
 		if (chan->iId == 0)
-			granted |= Kick | Ban | ResetUserContent | Register | SelfRegister;
+			granted |= Kick | Ban | ResetUserContent | Register | SelfRegister | ManageEmotes;
 	}
 
 	if (cache) {
@@ -318,6 +322,18 @@ QString ChanACL::whatsThis(Perm p) {
 			return tr("This represents the permission to take over key ownership of a persistent channel. "
 					  "The key owner can reset the channel encryption key, removing all stored messages "
 					  "and known key holders.");
+		case ManageEmotes:
+			return tr("This represents the permission to add and remove custom server emotes.");
+		case ShareFiles:
+			return tr("This represents the permission to upload and share files in this channel. "
+					  "Denying this prevents the user from uploading any file (including session-scoped uploads). "
+					  "Useful for limiting file sharing to trusted, registered users.");
+		case ShareFilesPublic:
+			return tr("This represents the permission to share files via publicly accessible links "
+					  "(modes <i>public</i> and <i>password</i>). When denied, the user can still upload "
+					  "<i>session</i>-scoped files - which only currently-connected users can download - "
+					  "but cannot create links that work outside the server. Useful to prevent abuse by "
+					  "unregistered or untrusted users.");
 		default:
 			break;
 	}
@@ -375,6 +391,12 @@ QString ChanACL::permName(Perm p) {
 			return tr("Listen");
 		case KeyOwner:
 			return tr("Key Owner");
+		case ManageEmotes:
+			return tr("Manage Emotes");
+		case ShareFiles:
+			return tr("Share Files");
+		case ShareFilesPublic:
+			return tr("Share Files Publicly");
 		default:
 			break;
 	}

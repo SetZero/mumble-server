@@ -23,6 +23,7 @@
 #include "QtUtils.h"
 #include "ServerUser.h"
 #include "LinkPreviewManager.h"
+#include "PluginHostManager.h"
 #include "User.h"
 #include "Version.h"
 
@@ -292,6 +293,9 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	// Initialize link preview manager
 	m_linkPreviewManager = std::make_unique< LinkPreviewManager >(this, this);
 
+	// Initialize Rust plugin host (loads mumble_plugin_host cdylib).
+	m_pluginHost = std::make_unique< PluginHostManager >(this, this);
+
 
 	// Initialize WebRTC SFU manager
 	{
@@ -455,6 +459,7 @@ void Server::readParams() {
 	iPluginMessageLimit                = Meta::mp->iPluginMessageLimit;
 	iPluginMessageBurst                = Meta::mp->iPluginMessageBurst;
 	broadcastListenerVolumeAdjustments = Meta::mp->broadcastListenerVolumeAdjustments;
+	qsFancyRestApiUrl                  = Meta::mp->qsFancyRestApiUrl;
 	m_suggestVersion                   = Meta::mp->m_suggestVersion;
 	m_suggestPositional                = Meta::mp->suggestPositional;
 	m_suggestPushToTalk                = Meta::mp->suggestPushToTalk;
@@ -542,6 +547,12 @@ void Server::readParams() {
 	QString registerURL = qurlRegWeb.toString();
 	m_dbWrapper.getConfigurationTo(iServerNum, "registerurl", registerURL);
 	qurlRegWeb = QUrl(std::move(registerURL));
+
+	// Optional override for the public REST API URL (file server,
+	// custom emotes, capabilities). Empty string means "no override"
+	// and the per-plugin `base_url` advertised over plugin-data is
+	// used instead.
+	m_dbWrapper.getConfigurationTo(iServerNum, "fancyrestapiurl", qsFancyRestApiUrl);
 
 	m_dbWrapper.getConfigurationTo(iServerNum, "bonjour", bBonjour);
 	m_dbWrapper.getConfigurationTo(iServerNum, "allowping", bAllowPing);
@@ -1823,6 +1834,10 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 		}
 
 		emit userDisconnected(u);
+
+		if (m_pluginHost) {
+			m_pluginHost->onClientDisconnected(u->uiSession);
+		}
 	}
 
 	Channel *old = u->cChannel;

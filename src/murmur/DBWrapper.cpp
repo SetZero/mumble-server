@@ -18,6 +18,8 @@
 #include "ServerUserInfo.h"
 #include "VolumeAdjustment.h"
 
+#include <QCryptographicHash>
+
 #include "database/Exception.h"
 #include "database/FormatException.h"
 #include "database/MetaTable.h"
@@ -1305,6 +1307,25 @@ void DBWrapper::addAllRegisteredUserInfoTo(std::vector< UserInfo > &userInfo, un
 		info.last_active =
 			QDateTime::fromSecsSinceEpoch(static_cast< qint64 >(::msdb::toEpochSeconds(userData.lastActive)));
 		info.last_channel = userData.lastChannelID;
+		info.texture      = userData.texture;
+
+		// Include the comment or its SHA-1 hash, mirroring how online
+		// UserState messages work (hashAssign in Server.cpp).
+		::msdb::DBUser dbUser(serverID, currentUser.registeredUserID);
+		std::string rawComment = m_serverDB.getUserPropertyTable()
+			.getProperty< std::string, false >(dbUser, ::msdb::UserProperty::Comment, {});
+		if (!rawComment.empty()) {
+			QString qComment = QString::fromStdString(rawComment);
+			if (qComment.length() >= 128) {
+				info.comment_hash = QCryptographicHash::hash(
+					qComment.toUtf8(), QCryptographicHash::Sha1);
+			} else {
+				// Short comments are sent inline; use the raw bytes as the
+				// "hash" so callers can distinguish set vs unset.
+				info.comment      = qComment;
+				info.comment_hash = qComment.toUtf8();
+			}
+		}
 
 		userInfo.push_back(std::move(info));
 	}

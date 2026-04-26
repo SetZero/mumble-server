@@ -349,6 +349,7 @@ void MetaParams::read(QString fname) {
 	qsRegHost     = typeCheckedFromSettings("registerHostname", qsRegHost);
 	qsRegLocation = typeCheckedFromSettings("registerLocation", qsRegLocation);
 	qurlRegWeb    = QUrl(typeCheckedFromSettings("registerUrl", qurlRegWeb).toString());
+	qsFancyRestApiUrl = typeCheckedFromSettings("fancyRestApiUrl", qsFancyRestApiUrl);
 	bBonjour      = typeCheckedFromSettings("bonjour", bBonjour);
 
 	iBanTries      = typeCheckedFromSettings("autobanAttempts", iBanTries);
@@ -475,6 +476,7 @@ void MetaParams::read(QString fname) {
 	qmConfig.insert(QLatin1String("registerhostname"), qsRegHost);
 	qmConfig.insert(QLatin1String("registerlocation"), qsRegLocation);
 	qmConfig.insert(QLatin1String("registerurl"), qurlRegWeb.toString());
+	qmConfig.insert(QLatin1String("fancyrestapiurl"), qsFancyRestApiUrl);
 	qmConfig.insert(QLatin1String("bonjour"), bBonjour ? QLatin1String("true") : QLatin1String("false"));
 	qmConfig.insert(QLatin1String("certificate"), QString::fromUtf8(qscCert.toPem()));
 	qmConfig.insert(QLatin1String("key"), QString::fromUtf8(qskKey.toPem()));

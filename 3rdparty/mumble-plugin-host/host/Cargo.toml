@@ -1,0 +1,46 @@
+[package]
+name = "mumble-plugin-host"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI host that loads Rust Mumble plugins (loaded by the C++ server as a cdylib)"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mumble-plugin-api = { path = "../api" }
+mumble-file-server = { path = "../file-server" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+cbindgen = "0.29"
+
+[lints.rust]
+# This crate is the only place that exposes a C ABI. The workspace-level
+# `unsafe_code = "deny"` lint must be relaxed here so we can declare
+# `extern "C"` functions that take raw pointers from the C++ server.
+# Every unsafe block in this crate is annotated with a SAFETY comment.
+unsafe_code = "allow"
+missing_docs = "deny"
+unused_crate_dependencies = "warn"
+unused_results = "deny"
+missing_debug_implementations = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+too_many_lines = "deny"
+uninlined_format_args = "warn"
+doc_markdown = "warn"
+allow_attributes_without_reason = "deny"

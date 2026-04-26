@@ -24,6 +24,8 @@
 #include "push/PushNotificationDispatcher.h"
 #include "WebRtcSfuManager.h"
 #include "LinkPreviewManager.h"
+
+class PluginHostManager;
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
 #include "QtUtils.h"
@@ -133,6 +135,8 @@ private:
 	Q_OBJECT
 	Q_DISABLE_COPY(Server)
 
+	friend class PluginHostManager;
+
 protected:
 	bool bRunning;
 
@@ -172,6 +176,12 @@ public:
 	QString qsRegHost;
 	QString qsRegLocation;
 	QUrl qurlRegWeb;
+	/// Optional override for the Fancy Mumble REST API base URL
+	/// advertised to clients in `ServerConfig::fancy_rest_api_url`.
+	/// Used when the HTTP interface is behind a reverse proxy or
+	/// ingress and therefore not reachable at the same hostname as
+	/// the Mumble TCP port.
+	QString qsFancyRestApiUrl;
 	bool bBonjour;
 	bool bAllowPing;
 	bool allowRecording;
@@ -370,6 +380,8 @@ public:
 	std::unique_ptr< WebRtcSfuManager > m_sfuManager;
 
 	std::unique_ptr< LinkPreviewManager > m_linkPreviewManager;
+
+	std::unique_ptr< PluginHostManager > m_pluginHost;
 
 
 	QHash< QString, PushRegistration > m_pushRegistrations;

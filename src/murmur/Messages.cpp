@@ -14,6 +14,7 @@
 #include "ProtoUtils.h"
 #include "QtUtils.h"
 #include "Server.h"
+#include "PluginHostManager.h"
 #include "ServerUser.h"
 #include "User.h"
 #include "Version.h"
@@ -624,6 +625,9 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 	if (m_sfuManager && m_sfuManager->isAvailable()) {
 		mpsc.set_webrtc_sfu_available(true);
 	}
+	if (!qsFancyRestApiUrl.isEmpty()) {
+		mpsc.set_fancy_rest_api_url(qsFancyRestApiUrl.toStdString());
+	}
 	sendMessage(uSource, mpsc);
 
 	MumbleProto::SuggestConfig mpsug;
@@ -681,6 +685,10 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 	log(uSource, "Authenticated");
 
 	emit userConnected(uSource);
+
+	if (m_pluginHost) {
+		m_pluginHost->onClientConnected(uSource->uiSession, uSource->qsName, uSource->qsHash);
+	}
 }
 
 void Server::msgBanList(ServerUser *uSource, MumbleProto::BanList &msg) {
@@ -2506,6 +2514,19 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 					user->set_last_channel(static_cast< unsigned int >(info.last_channel.value()));
 				}
 				user->set_last_seen(u8(info.last_active.toString(Qt::ISODate)));
+				if (!info.texture.empty()) {
+					user->set_texture(info.texture.data(), info.texture.size());
+				}
+				if (!info.comment_hash.isEmpty()) {
+					if (!info.comment.isEmpty()) {
+						// Short comment: include inline.
+						user->set_comment(u8(info.comment));
+					} else {
+						// Long comment: send SHA-1 hash; client must request blob.
+						user->set_comment_hash(info.comment_hash.constData(),
+							static_cast< size_t >(info.comment_hash.size()));
+					}
+				}
 			}
 		}
 		sendMessage(uSource, msg);
@@ -2782,6 +2803,23 @@ void Server::msgRequestBlob(ServerUser *uSource, MumbleProto::RequestBlob &msg) 
 			}
 		}
 	}
+
+	// Registered user comment blobs (for offline users).
+	for (int i = 0; i < msg.user_id_comment_size(); ++i) {
+		unsigned int uid = msg.user_id_comment(i);
+		if (uid == 0 || uid == Mumble::SUPERUSER_ID)
+			continue;
+		QMap< int, QString > details = m_dbWrapper.getRegisteredUserDetails(iServerNum, uid);
+		QString comment =
+			details.value(static_cast< int >(::mumble::server::db::UserProperty::Comment));
+		if (!comment.isEmpty()) {
+			MumbleProto::UserList blobreply;
+			MumbleProto::UserList_User *entry = blobreply.add_users();
+			entry->set_user_id(uid);
+			entry->set_comment(u8(comment));
+			sendMessage(uSource, blobreply);
+		}
+	}
 }
 
 void Server::msgServerConfig(ServerUser *, MumbleProto::ServerConfig &) {
@@ -2847,6 +2885,15 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 			// We can simply redirect the message we have received to the clients
 			sendMessage(receiver, msg);
 		}
+	}
+
+	// Also expose the message to server-side Rust plugins (e.g. file-server
+	// auth tickets). The plugin host runs out-of-band and never blocks the
+	// client-to-client delivery above.
+	if (m_pluginHost) {
+		m_pluginHost->onPluginData(
+			sender->uiSession, QString::fromStdString(msg.dataid()),
+			QByteArray(msg.data().data(), static_cast< int >(msg.data().size())));
 	}
 }
 

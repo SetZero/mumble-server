@@ -99,6 +99,7 @@ public:
 	QString qsRegHost;
 	QString qsRegLocation;
 	QUrl qurlRegWeb;
+	QString qsFancyRestApiUrl;
 	bool bBonjour;
 
 	QRegularExpression qrUserName;

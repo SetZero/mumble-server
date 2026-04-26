@@ -1,0 +1,3 @@
+# Exclude Rust build artifacts - these are rebuilt inside Docker and
+# would otherwise bloat the build context by several GB.
+**/target/

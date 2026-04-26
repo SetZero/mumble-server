@@ -59,6 +59,9 @@ add_library(mumble_server_object_lib OBJECT
 	"OpenGraphPlugin.cpp"
 	"OpenGraphPlugin.h"
 
+	"PluginHostManager.cpp"
+	"PluginHostManager.h"
+
 
 	"${SHARED_SOURCE_DIR}/ACL.cpp"
 	"${SHARED_SOURCE_DIR}/ACL.h"
@@ -115,6 +118,39 @@ target_include_directories(mumble_server_object_lib
 find_pkg(Qt6 COMPONENTS Network REQUIRED)
 
 target_link_libraries(mumble_server_object_lib PUBLIC shared Qt6::Sql Qt6::Network nlohmann_json::nlohmann_json)
+
+# Qt6 internal headers (e.g. qhash.h) trigger -Walloc-size-larger-than= on GCC
+# because of allocation expressions that GCC's static analysis cannot bound.
+# These are false positives in third-party code; suppress the diagnostic for
+# this target only.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+	target_compile_options(mumble_server_object_lib PRIVATE -Wno-alloc-size-larger-than)
+endif()
+
+# --- mumble-plugin-host (Rust cdylib) -------------------------------------
+# The Rust crate is built out-of-tree (cargo build -p mumble-plugin-host) and
+# its cbindgen-generated header is written to
+#   3rdparty/mumble-plugin-host/host/include/mumble_plugin_host.h
+# Link against the prebuilt shared library if present; otherwise expect the
+# packager to drop the artefact next to the server binary at runtime and link
+# only against the import lib (Windows) / nothing (ELF: dlopen-resolved).
+set(MUMBLE_PLUGIN_HOST_DIR "${CMAKE_SOURCE_DIR}/3rdparty/mumble-plugin-host")
+target_include_directories(mumble_server_object_lib PUBLIC
+    "${MUMBLE_PLUGIN_HOST_DIR}/host/include"
+    "${MUMBLE_PLUGIN_HOST_DIR}/include"
+)
+find_library(MUMBLE_PLUGIN_HOST_LIB
+    NAMES mumble_plugin_host
+    HINTS
+        "${MUMBLE_PLUGIN_HOST_DIR}/lib"
+        "${MUMBLE_PLUGIN_HOST_DIR}/host/target/release"
+        "${MUMBLE_PLUGIN_HOST_DIR}/target/release"
+)
+if(MUMBLE_PLUGIN_HOST_LIB)
+    target_link_libraries(mumble_server_object_lib PUBLIC "${MUMBLE_PLUGIN_HOST_LIB}")
+else()
+    message(WARNING "mumble_plugin_host library not found - build it with `cargo build --release -p mumble-plugin-host` inside 3rdparty/mumble-plugin-host or drop the artefact in ${MUMBLE_PLUGIN_HOST_DIR}/lib.")
+endif()
 
 if(static)
 	# MariaDB and MySQL
