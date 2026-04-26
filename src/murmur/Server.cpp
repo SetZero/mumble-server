@@ -459,6 +459,7 @@ void Server::readParams() {
 	iPluginMessageLimit                = Meta::mp->iPluginMessageLimit;
 	iPluginMessageBurst                = Meta::mp->iPluginMessageBurst;
 	broadcastListenerVolumeAdjustments = Meta::mp->broadcastListenerVolumeAdjustments;
+	qsFancyRestApiUrl                  = Meta::mp->qsFancyRestApiUrl;
 	m_suggestVersion                   = Meta::mp->m_suggestVersion;
 	m_suggestPositional                = Meta::mp->suggestPositional;
 	m_suggestPushToTalk                = Meta::mp->suggestPushToTalk;
