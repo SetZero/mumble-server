@@ -119,6 +119,14 @@ find_pkg(Qt6 COMPONENTS Network REQUIRED)
 
 target_link_libraries(mumble_server_object_lib PUBLIC shared Qt6::Sql Qt6::Network nlohmann_json::nlohmann_json)
 
+# Qt6 internal headers (e.g. qhash.h) trigger -Walloc-size-larger-than= on GCC
+# because of allocation expressions that GCC's static analysis cannot bound.
+# These are false positives in third-party code; suppress the diagnostic for
+# this target only.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+	target_compile_options(mumble_server_object_lib PRIVATE -Wno-alloc-size-larger-than)
+endif()
+
 # --- mumble-plugin-host (Rust cdylib) -------------------------------------
 # The Rust crate is built out-of-tree (cargo build -p mumble-plugin-host) and
 # its cbindgen-generated header is written to

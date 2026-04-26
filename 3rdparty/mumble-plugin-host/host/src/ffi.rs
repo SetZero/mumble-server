@@ -17,8 +17,7 @@ use crate::context::{HostContext, PluginHostCallbacks};
 use crate::host::Host;
 
 /// Opaque handle returned by [`plugin_host_create`].
-///
-/// cbindgen:opaque
+// cbindgen:opaque
 #[repr(C)]
 #[derive(Debug)]
 pub struct PluginHostHandle {

@@ -14,9 +14,7 @@
 /**
  * Opaque handle returned by [`plugin_host_create`].
  */
-typedef struct PluginHostHandle {
-  uint8_t _private[0];
-} PluginHostHandle;
+typedef struct PluginHostHandle PluginHostHandle;
 
 /**
  * C-callable callback table the server fills in and passes to

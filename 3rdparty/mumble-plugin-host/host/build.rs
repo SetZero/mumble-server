@@ -28,9 +28,25 @@ fn main() {
                 let _ = std::fs::create_dir_all(parent);
             }
             let _ = bindings.write_to_file(&publish);
+            make_opaque_handle_forward_decl(&publish);
         }
         Err(e) => {
             println!("cargo:warning=cbindgen failed: {e}");
         }
+    }
+}
+
+/// Replace cbindgen's zero-size-array struct body for `PluginHostHandle` with
+/// an opaque forward declaration.  The zero-size array `uint8_t _private[0]`
+/// is a GCC extension that triggers `-Wpedantic` when the header is compiled
+/// as C++; a forward-declaration-only typedef is valid ISO C and ISO C++.
+fn make_opaque_handle_forward_decl(header: &std::path::Path) {
+    let Ok(src) = std::fs::read_to_string(header) else {
+        return;
+    };
+    const BODY: &str = "typedef struct PluginHostHandle {\n  uint8_t _private[0];\n} PluginHostHandle;";
+    const FORWARD: &str = "typedef struct PluginHostHandle PluginHostHandle;";
+    if src.contains(BODY) {
+        let _ = std::fs::write(header, src.replace(BODY, FORWARD));
     }
 }
