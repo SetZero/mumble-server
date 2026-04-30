@@ -11,11 +11,17 @@
 #include <QUrlQuery>
 
 OEmbedPlugin::OEmbedPlugin(const QString &providerName, const QString &urlPattern,
-							 const QString &oembedEndpoint, QObject *parent)
+						 const QString &oembedEndpoint, QObject *parent,
+						 UrlTransform ogUrlTransform)
 	: LinkPreviewPlugin(parent),
 	  m_name(providerName),
 	  m_urlPattern(urlPattern, QRegularExpression::CaseInsensitiveOption),
-	  m_oembedEndpoint(oembedEndpoint) {
+	  m_oembedEndpoint(oembedEndpoint),
+	  m_ogUrlTransform(std::move(ogUrlTransform)) {
+}
+
+QUrl OEmbedPlugin::transformUrlForOgFallback(const QUrl &url) const {
+	return m_ogUrlTransform ? m_ogUrlTransform(url) : url;
 }
 
 QString OEmbedPlugin::name() const {
