@@ -82,7 +82,8 @@
     PROCESS_MUMBLE_TCP_MESSAGE(PchatPinFetchResponse, 130) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyTypingIndicator, 131) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyLinkPreviewRequest, 132) \
-    PROCESS_MUMBLE_TCP_MESSAGE(FancyLinkPreviewResponse, 133)
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyLinkPreviewResponse, 133) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyWatchSync, 134)
 
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.

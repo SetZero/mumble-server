@@ -3424,6 +3424,47 @@ void Server::msgFancyLinkPreviewResponse(ServerUser *, MumbleProto::FancyLinkPre
 	// Server-to-client only; silently drop if received from a client.
 }
 
+// ---------------------------------------------------------------------------
+// Fancy Mumble: watch-together (ID 134)
+// ---------------------------------------------------------------------------
+
+void Server::msgFancyWatchSync(ServerUser *uSource, MumbleProto::FancyWatchSync &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	// Determine the channel to broadcast in.  For Start events the
+	// channel is carried in the event payload; for all other event
+	// kinds we relay within the sender's current channel.
+	Channel *c = nullptr;
+	if (msg.has_start() && msg.start().has_channel_id()) {
+		c = qhChannels.value(msg.start().channel_id());
+	} else {
+		c = uSource->cChannel;
+	}
+	if (!c) {
+		return;
+	}
+
+	// Fill in the sender's session so recipients know who emitted the event.
+	msg.set_actor(uSource->uiSession);
+
+	// Broadcast to all Fancy >= 0.2.15 clients in the channel except the sender.
+	const auto minVersion = Version::fromComponents(0, 2, 15);
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->uiSession == uSource->uiSession) {
+			continue;
+		}
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersion) {
+			continue;
+		}
+		sendMessage(su, msg);
+	}
+}
+
 
 #undef RATELIMIT
 #undef MSG_SETUP

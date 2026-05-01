@@ -301,7 +301,7 @@ void LinkPreviewManager::onFetchResolved(std::shared_ptr< PendingRequest > pendi
 	}
 
 	pending->embeds.append(embed);
-	const int embedIndex = pending->embeds.size() - 1;
+	const int embedIndex = static_cast< int >(pending->embeds.size() - 1);
 
 	// If the resolving plugin produced no description, supplement it with an
 	// OpenGraph fetch.  The URL used for that fetch may be rewritten by the

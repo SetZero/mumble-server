@@ -61,12 +61,13 @@ QString DirectMediaPlugin::humanFileSize(quint64 bytes) {
 	constexpr double KB = 1024.0;
 	constexpr double MB = 1024.0 * 1024.0;
 	constexpr double GB = 1024.0 * 1024.0 * 1024.0;
+	const double bytesAsDouble = static_cast< double >(bytes);
 	if (bytes >= static_cast< quint64 >(GB))
-		return QStringLiteral("%1 GiB").arg(bytes / GB, 0, 'f', 2);
+		return QStringLiteral("%1 GiB").arg(bytesAsDouble / GB, 0, 'f', 2);
 	if (bytes >= static_cast< quint64 >(MB))
-		return QStringLiteral("%1 MiB").arg(bytes / MB, 0, 'f', 2);
+		return QStringLiteral("%1 MiB").arg(bytesAsDouble / MB, 0, 'f', 2);
 	if (bytes >= static_cast< quint64 >(KB))
-		return QStringLiteral("%1 KiB").arg(bytes / KB, 0, 'f', 1);
+		return QStringLiteral("%1 KiB").arg(bytesAsDouble / KB, 0, 'f', 1);
 	return QStringLiteral("%1 B").arg(bytes);
 }
 

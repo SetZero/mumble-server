@@ -522,7 +522,7 @@ QString OpenGraphPlugin::readingTime(const QString &mainText) {
 		return {};
 	const auto words = mainText.split(QRegularExpression(QStringLiteral(R"(\s+)")),
 									 Qt::SkipEmptyParts);
-	const int wordCount = words.size();
+	const int wordCount = static_cast< int >(words.size());
 	if (wordCount < 80)
 		return {};
 	// 220 words/min is a typical online-reading benchmark.

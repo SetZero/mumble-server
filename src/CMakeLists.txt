@@ -38,6 +38,18 @@ find_pkg(Protobuf REQUIRED)
 
 add_compile_options(${MUMBLE_COMPILER_FLAGS})
 
+# GCC 13's -Walloc-size-larger-than= heuristic produces false positives when
+# Qt6's QHash<>::detach()/operator[]/emplace() (qhash.h) are inlined into user
+# code: GCC concludes that nSpans could reach ULLONG_MAX when in reality the
+# value is bounded by qsizetype's positive range. Suppress only this sub
+# warning, applied AFTER MUMBLE_COMPILER_FLAGS so the -Wall in there does not
+# re-enable it. The link-options copy is needed because LTO re-runs the
+# optimizer at link time and must see the suppression too.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+	add_compile_options("-Wno-alloc-size-larger-than")
+	add_link_options("-Wno-alloc-size-larger-than")
+endif()
+
 add_library(shared STATIC)
 
 protobuf_generate(LANGUAGE cpp TARGET shared PROTOS ${PROTO_FILE} OUT_VAR BUILT_PROTO_FILES)
