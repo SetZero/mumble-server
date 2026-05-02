@@ -7,6 +7,9 @@ license = "MIT"
 
 [dependencies]
 mumble-plugin-api = { path = "../api" }
+# Wire types generated from the TypeSpec definition under
+# `typespec-poc/`. See `typespec-poc/README.md`.
+mumble-file-server-types = { path = "../file-server-types" }
 
 # Async runtime + HTTP server
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time", "io-util", "fs"] }

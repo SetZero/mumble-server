@@ -1,0 +1,16 @@
+# TypeSpec compiler configuration for the file-server PoC.
+#
+# Run `npx tsp compile .` from this directory; outputs land in
+# `./tsp-output/{emitter}/`.
+emit:
+  - "@typespec/openapi3"
+  - "@typespec/protobuf"
+
+options:
+  "@typespec/openapi3":
+    emitter-output-dir: "{project-root}/tsp-output/openapi3"
+    openapi-versions:
+      - "3.1.0"
+    file-type: yaml
+  "@typespec/protobuf":
+    emitter-output-dir: "{project-root}/tsp-output/protobuf"

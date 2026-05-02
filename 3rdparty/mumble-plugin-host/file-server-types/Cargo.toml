@@ -1,0 +1,24 @@
+[package]
+name = "mumble-file-server-types"
+version = "0.1.0"
+edition = "2021"
+description = "Generated Rust bindings for the file-server REST API. Built from the TypeSpec definition in ../file-server/typespec-poc/."
+license = "MIT"
+publish = false
+
+# Intentionally NOT inheriting `[lints] workspace = true`. The crate's
+# only purpose is to expose typify-generated code, and the workspace
+# lints (deny missing_docs, unused_results, etc.) trip on generated
+# code we do not own. Default rustc lints still apply.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+typify = "0.2"
+schemars = "0.8"
+serde_json = "1"
+serde_yml = "0.0.12"
+prettyplease = "0.2"
+syn = { version = "2", features = ["full"] }

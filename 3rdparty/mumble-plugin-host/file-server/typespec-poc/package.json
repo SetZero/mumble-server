@@ -1,0 +1,21 @@
+{
+  "name": "mumble-file-server-typespec-poc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PoC: TypeSpec schema-first definition of the Mumble Fancy file-server REST API.",
+  "type": "module",
+  "scripts": {
+    "build": "tsp compile .",
+    "watch": "tsp compile . --watch",
+    "format": "tsp format \"**/*.tsp\"",
+    "verify": "powershell -NoProfile -File ./scripts/verify-generated.ps1",
+    "diff-cpp-protos": "powershell -NoProfile -File ./scripts/diff-against-cpp-protos.ps1"
+  },
+  "dependencies": {
+    "@typespec/compiler": "^0.65.0",
+    "@typespec/http": "^0.65.0",
+    "@typespec/openapi": "^0.65.0",
+    "@typespec/openapi3": "^0.65.0",
+    "@typespec/protobuf": "^0.65.0"
+  }
+}

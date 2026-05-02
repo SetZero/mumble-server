@@ -1,0 +1,474 @@
+openapi: 3.1.0
+info:
+  title: Mumble Fancy File Server
+  version: 0.0.0
+tags:
+  - name: discovery
+  - name: files
+  - name: emotes
+paths:
+  /capabilities:
+    get:
+      operationId: Capabilities_get
+      description: Public, unauthenticated discovery endpoint.
+      parameters: []
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResponse'
+      tags:
+        - discovery
+  /emotes:
+    get:
+      operationId: Emotes_list
+      description: Public list of every server emote. No auth required.
+      parameters: []
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmoteListResponse'
+        default:
+          description: An unexpected error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - emotes
+    post:
+      operationId: Emotes_upload
+      description: 'Admin-only: upload a new emote.'
+      parameters:
+        - name: authorization
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/Bearer'
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmoteUploadResponse'
+        default:
+          description: An unexpected error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - emotes
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/EmoteUploadFormMultiPart'
+  /emotes/{shortcode}:
+    delete:
+      operationId: Emotes_remove
+      description: 'Admin-only: delete an emote by shortcode.'
+      parameters:
+        - name: shortcode
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: authorization
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/Bearer'
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmoteDeleteResponse'
+        default:
+          description: An unexpected error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - emotes
+  /files:
+    post:
+      operationId: Files_upload
+      description: |-
+        Multipart upload. The session id and per-session upload token are
+        passed as query params (the token was previously delivered to the
+        client via plugin data).
+      parameters:
+        - name: session
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: uint32
+          explode: false
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+          explode: false
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+        default:
+          description: An unexpected error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - files
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UploadFormMultiPart'
+  /files/{file_id}:
+    get:
+      operationId: Files_download
+      description: |-
+        Signed-URL download. The triplet (`ex`, `is`, `hm`) is the HMAC
+        envelope minted at upload time. `ticket` is required for non-public
+        files and is obtained from `POST /files/{file_id}/auth`.
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: ex
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/HexString'
+          explode: false
+        - name: is
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/HexString'
+          explode: false
+        - name: hm
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/HexString'
+          explode: false
+        - name: ticket
+          in: query
+          required: false
+          schema:
+            type: string
+          explode: false
+      responses:
+        '200':
+          description: The request has succeeded.
+          headers:
+            content-length:
+              required: true
+              schema:
+                type: integer
+                format: uint64
+            content-disposition:
+              required: true
+              schema:
+                type: string
+          content:
+            '*/*':
+              schema:
+                contentMediaType: '*/*'
+        default:
+          description: An unexpected error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - files
+  /files/{file_id}/auth:
+    post:
+      operationId: Files_preAuth
+      description: |-
+        Exchange a credential (password or session JWT) for a single-use
+        download ticket. The credential travels in the `Authorization`
+        header, never in the URL.
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: authorization
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/Bearer'
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        default:
+          description: An unexpected error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+      tags:
+        - files
+components:
+  schemas:
+    AccessMode:
+      type: string
+      enum:
+        - public
+        - password
+        - session
+      description: Access mode chosen by the uploader.
+    ApiError:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable message safe to surface to clients.
+    AuthResponse:
+      type: object
+      required:
+        - ticket
+        - ttl_seconds
+      properties:
+        ticket:
+          type: string
+          description: Opaque single-use ticket appended to the GET URL as `?ticket=`.
+        ttl_seconds:
+          type: integer
+          format: uint64
+    Bearer:
+      type: string
+      format: password
+      description: Opaque bearer credential (password or session JWT).
+    CapabilitiesResponse:
+      type: object
+      required:
+        - plugin
+        - mumble_version
+        - fancy_version
+        - features
+        - limits
+      properties:
+        plugin:
+          $ref: '#/components/schemas/PluginInfo'
+        mumble_version:
+          $ref: '#/components/schemas/VersionInfo'
+        fancy_version:
+          $ref: '#/components/schemas/VersionInfo'
+        features:
+          $ref: '#/components/schemas/Features'
+        limits:
+          $ref: '#/components/schemas/Limits'
+    EmoteDeleteResponse:
+      type: object
+      required:
+        - ok
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+    EmoteDto:
+      type: object
+      required:
+        - shortcode
+        - alias_emoji
+        - image_data_url
+      properties:
+        shortcode:
+          type: string
+        alias_emoji:
+          type: string
+        description:
+          type: string
+        image_data_url:
+          type: string
+          format: uri
+          description: '`data:` URL containing the base64-encoded image bytes.'
+    EmoteListResponse:
+      type: object
+      required:
+        - emotes
+      properties:
+        emotes:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmoteDto'
+    EmoteUploadFormMultiPart:
+      type: object
+      required:
+        - shortcode
+        - alias_emoji
+        - file
+      properties:
+        shortcode:
+          type: object
+        alias_emoji:
+          type: object
+        description:
+          type: object
+        file:
+          type: object
+          description: Image bytes (PNG/JPEG/GIF/WebP/SVG).
+    EmoteUploadResponse:
+      type: object
+      required:
+        - shortcode
+      properties:
+        shortcode:
+          type: string
+    Features:
+      type: object
+      required:
+        - file_uploads
+        - custom_emotes
+        - file_ttl
+        - delete_on_download
+        - delete_on_disconnect
+      properties:
+        file_uploads:
+          type: boolean
+        custom_emotes:
+          type: boolean
+        file_ttl:
+          type: boolean
+        delete_on_download:
+          type: boolean
+        delete_on_disconnect:
+          type: boolean
+    HexString:
+      type: string
+      format: hex
+      description: Hex-encoded unsigned integer (lowercase, no `0x` prefix).
+    Limits:
+      type: object
+      required:
+        - max_file_size_bytes
+        - max_total_storage_bytes
+        - ttl_seconds
+      properties:
+        max_file_size_bytes:
+          type: integer
+          format: uint64
+        max_total_storage_bytes:
+          type: integer
+          format: uint64
+        ttl_seconds:
+          type: integer
+          format: uint64
+    PluginInfo:
+      type: object
+      required:
+        - name
+        - version
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+    UploadFormMultiPart:
+      type: object
+      required:
+        - file
+        - channel_id
+        - mode
+      properties:
+        file:
+          type: object
+          description: 'Required: the file bytes.'
+        channel_id:
+          type: object
+          description: Channel id the upload is announced in.
+        mode:
+          type: object
+          description: One of "public" | "password" | "session".
+        password:
+          type: object
+          description: Required iff `mode == "password"`.
+      description: Multipart fields accepted by `POST /files`.
+    UploadResponse:
+      type: object
+      required:
+        - file_id
+        - download_url
+        - access_mode
+        - expires_at
+        - size_bytes
+      properties:
+        file_id:
+          type: string
+        download_url:
+          type: string
+          format: uri
+        access_mode:
+          $ref: '#/components/schemas/AccessMode'
+        expires_at:
+          anyOf:
+            - type: integer
+              format: uint64
+            - type: 'null'
+          description: Unix-seconds expiry, or null if TTL disabled.
+        size_bytes:
+          type: integer
+          format: uint64
+    VersionInfo:
+      type: object
+      required:
+        - major
+        - minor
+        - patch
+        - display
+      properties:
+        major:
+          anyOf:
+            - type: integer
+              format: uint16
+            - type: 'null'
+        minor:
+          anyOf:
+            - type: integer
+              format: uint16
+            - type: 'null'
+        patch:
+          anyOf:
+            - type: integer
+              format: uint16
+            - type: 'null'
+        display:
+          type: string
+          description: Pre-formatted "MAJOR.MINOR.PATCH" or "unknown".
+servers:
+  - url: http://127.0.0.1:64739
+    description: Default loopback bind from FileServerConfig
+    variables: {}

@@ -1,0 +1,7 @@
+node_modules/
+package-lock.json
+# tsp-output/ is intentionally checked in: downstream Rust and C++
+# builds consume the openapi.yaml / .proto files directly, and we want
+# them to compile without requiring Node.js to be installed. Editors of
+# the .tsp files MUST run `npm run build` before committing so the
+# checked-in artifacts stay in sync; CI verifies via `verify.ps1`.
