@@ -1337,3 +1337,81 @@ message FancyLinkPreviewResponse {
 	optional string request_id = 1;
 	repeated Embed embeds = 2;
 }
+
+// ---------------------------------------------------------------------------
+// Watch-together (Fancy Mumble extension, ID 134)
+// ---------------------------------------------------------------------------
+
+// Synchronised video playback control.
+// Wire type ID = 134.
+message FancyWatchSync {
+	optional string session_id = 1;
+	optional uint32 actor = 2;
+
+	enum SourceKind {
+		DIRECT_MEDIA = 0;
+		YOUTUBE      = 1;
+	}
+
+	enum PlaybackState {
+		PAUSED  = 0;
+		PLAYING = 1;
+		ENDED   = 2;
+	}
+
+	message Start {
+		optional uint32 channel_id = 1;
+		optional string source_url = 2;
+		optional SourceKind source_kind = 3;
+		optional string title = 4;
+		optional uint32 host_session = 5;
+	}
+
+	message State {
+		optional PlaybackState state = 1;
+		optional double current_time = 2;
+		optional uint64 updated_at_ms = 3;
+		optional uint32 host_session = 4;
+	}
+
+	message Member {
+		optional uint32 session = 1;
+	}
+
+	message StateRequest {
+	}
+
+	message End {
+	}
+
+	message HostTransfer {
+		optional uint32 new_host_session = 1;
+	}
+
+	oneof event {
+		Start        start          = 10;
+		State        state          = 11;
+		Member       join           = 12;
+		Member       leave          = 13;
+		StateRequest state_request  = 14;
+		End          end            = 15;
+		HostTransfer host_transfer  = 16;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Screen drawing overlay (Fancy Mumble extension, ID 135)
+// ---------------------------------------------------------------------------
+
+// Client -> Server -> Channel: relay a drawing stroke over a screen-share.
+// Wire type ID = 135.
+message FancyDrawStroke {
+	optional uint32 sender_session = 1;
+	optional uint32 channel_id = 2;
+	optional string stroke_id = 3;
+	optional uint32 color = 4;
+	optional float width = 5;
+	repeated float points = 6 [packed = true];
+	optional bool is_end = 7;
+	optional bool is_clear = 8;
+}

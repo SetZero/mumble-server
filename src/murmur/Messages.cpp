@@ -3424,6 +3424,77 @@ void Server::msgFancyLinkPreviewResponse(ServerUser *, MumbleProto::FancyLinkPre
 	// Server-to-client only; silently drop if received from a client.
 }
 
+// ---------------------------------------------------------------------------
+// Fancy Mumble: watch-together (ID 134)
+// ---------------------------------------------------------------------------
+
+void Server::msgFancyWatchSync(ServerUser *uSource, MumbleProto::FancyWatchSync &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	// Fill in the sender's session so recipients know who emitted the event.
+	msg.set_actor(uSource->uiSession);
+
+	// Relay to all Fancy clients in the same channel as the sender.
+	Channel *c = uSource->cChannel;
+	if (!c) {
+		return;
+	}
+
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->uiSession == uSource->uiSession) {
+			continue;
+		}
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value()
+			|| su->m_FancyVersion.value() < Version::fromComponents(0, 2, 0)) {
+			continue;
+		}
+		sendMessage(su, msg);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: screen-drawing overlay (ID 135)
+// ---------------------------------------------------------------------------
+
+void Server::msgFancyDrawStroke(ServerUser *uSource, MumbleProto::FancyDrawStroke &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (!msg.has_channel_id()) {
+		return;
+	}
+
+	const auto channelId = msg.channel_id();
+	Channel *c = qhChannels.value(channelId);
+	if (!c) {
+		return;
+	}
+
+	// Stamp the sender's session so the receiver can attribute the stroke.
+	msg.set_sender_session(uSource->uiSession);
+
+	// Broadcast to every Fancy client in the channel except the sender.
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->uiSession == uSource->uiSession) {
+			continue;
+		}
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value()
+			|| su->m_FancyVersion.value() < Version::fromComponents(0, 2, 0)) {
+			continue;
+		}
+		sendMessage(su, msg);
+	}
+}
+
 
 #undef RATELIMIT
 #undef MSG_SETUP
