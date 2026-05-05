@@ -16,6 +16,7 @@
 #include <QUrl>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 class Server;
@@ -56,6 +57,11 @@ private:
 		uint32_t userSession;
 		QString requestId;
 		int remainingFetches;
+		// Number of media-preview fetches still in flight across all
+		// embeds.  The response is sent only when both this and
+		// remainingFetches hit zero so the client receives previews
+		// (favicons, hero images, ...) along with the metadata.
+		int remainingMediaFetches = 0;
 		QList< QJsonObject > embeds;
 	};
 
@@ -87,9 +93,31 @@ private:
 	void onFetchFailed(std::shared_ptr< PendingRequest > pending);
 	void trySendResponse(std::shared_ptr< PendingRequest > pending);
 
-	void sendResponse(uint32_t userSession, const QString &requestId,
-					  const QList< QJsonObject > &embeds);
-	static void populateProtoEmbed(void *protoEmbed, const QJsonObject &json);
+	// Schedules server-side downscaled-JPEG fetches for any media URL
+	// references inside the supplied embed (image, thumbnail, favicon).
+	// The supplied callback is invoked once every scheduled fetch has
+	// completed (success or failure).
+	void enrichEmbedWithPreviews(int embedIndex, std::shared_ptr< PendingRequest > pending);
+
+        // Returns true when the embed lacks a text description and would
+        // benefit from a secondary OpenGraph fetch to fill it in.
+        static bool needsOgEnrichment(const QJsonObject &embed);
+
+        // Merges OG-derived fields into an existing embed, filling only the
+        // slots that are currently empty (title, author, video etc. are kept).
+        static void mergeOgIntoTarget(QJsonObject &target, const QJsonObject &og);
+
+        // Returns the registered OpenGraph plugin instance, if any.
+        std::optional< std::reference_wrapper< LinkPreviewPlugin > > findOpenGraphPlugin() const;
+
+        // Returns the first (highest-priority) registered plugin that claims
+        // it can handle @p url, if any.  Used to delegate provider-specific
+        // URL transforms without hardcoding them in the manager.
+        std::optional< std::reference_wrapper< LinkPreviewPlugin > > findHandlingPlugin(const QUrl &url) const;
+
+        void sendResponse(uint32_t userSession, const QString &requestId,
+                          const QList< QJsonObject > &embeds);
+        static void populateProtoEmbed(void *protoEmbed, const QJsonObject &json);
 };
 
 #endif // LINK_PREVIEW_MANAGER_H_

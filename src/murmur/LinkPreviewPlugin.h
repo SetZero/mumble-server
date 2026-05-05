@@ -34,10 +34,14 @@ public:
 	virtual void fetchPreview(const QUrl &url, QNetworkAccessManager *nam,
 							  SuccessCallback onSuccess, FailureCallback onFailure) = 0;
 
-	// Shared security / utility helpers available to all plugins.
-	static bool isSafeUrl(const QUrl &url);
-	static bool isPrivateAddress(const QString &host);
-	static QString decodeHtmlEntities(const QString &input);
+        /// Return the URL that should be used for a secondary OpenGraph
+        /// fallback fetch when the primary plugin produced no description.
+        ///
+        /// Plugins that serve broken / JS-rendered HTML on their canonical
+        /// URL (e.g. Reddit) override this to supply an alternative URL
+        /// (e.g. old.reddit.com) that returns proper SSR HTML with og: tags.
+        /// The default implementation is the identity function.
+        virtual QUrl transformUrlForOgFallback(const QUrl &url) const { return url; }
 
 	static constexpr int MAX_REDIRECTS      = 5;
 	// 20 s gives slow upstreams (YouTube/Spotify oembed, Cloudflare-fronted
@@ -46,6 +50,17 @@ public:
 	// DNS/TLS caches.
 	static constexpr int FETCH_TIMEOUT_MS   = 20000;
 	static constexpr int MAX_RESPONSE_BYTES = 1024 * 1024;
+
+	/// Returns false for non-HTTP(S) schemes and private/loopback addresses
+	/// (SSRF protection).
+	static bool isSafeUrl(const QUrl &url);
+
+	/// Returns true when @p host resolves to a private or loopback range.
+	static bool isPrivateAddress(const QString &host);
+
+	/// Replaces common HTML entities (&amp; &lt; &gt; &quot; &#39; &apos;)
+	/// with their plain-text equivalents.
+	static QString decodeHtmlEntities(const QString &input);
 };
 
 #endif // LINK_PREVIEW_PLUGIN_H_

@@ -5,7 +5,9 @@
 
 #include "LinkPreviewManager.h"
 
+#include "DirectMediaPlugin.h"
 #include "LinkPreviewPlugin.h"
+#include "MediaPreviewBuilder.h"
 #include "OEmbedPlugin.h"
 #include "OpenGraphPlugin.h"
 #include "Server.h"
@@ -13,6 +15,8 @@
 #include "Mumble.pb.h"
 
 #include <QDateTime>
+#include <QJsonArray>
+#include <QUrl>
 
 #include <algorithm>
 
@@ -57,15 +61,30 @@ void LinkPreviewManager::initDefaultPlugins() {
 	addOEmbed("TikTok",
 			  R"(https?://(?:www\.)?tiktok\.com/)",
 			  "https://www.tiktok.com/oembed");
-	addOEmbed("Reddit",
-			  R"(https?://(?:www\.)?reddit\.com/r/)",
-			  "https://www.reddit.com/oembed");
+	// Reddit's www.reddit.com serves a JS-only SPA so its OG tags are never
+	// present in a plain HTTP fetch.  We supply a URL transform that rewrites
+	// any reddit.com URL to old.reddit.com, which still serves SSR HTML with
+	// full og: meta tags.  The transform lives here, next to the registration,
+	// rather than as a special case inside the manager.
+	registerPlugin(std::make_unique< OEmbedPlugin >(
+		QStringLiteral("Reddit"),
+		QStringLiteral(R"(https?://(?:www\.)?reddit\.com/r/)"),
+		QStringLiteral("https://www.reddit.com/oembed"),
+		this,
+		[](QUrl u) {
+			u.setHost(QStringLiteral("old.reddit.com"));
+			return u;
+		}));
 	addOEmbed("Dailymotion",
 			  R"(https?://(?:www\.)?dailymotion\.com/video/)",
 			  "https://www.dailymotion.com/services/oembed");
 	addOEmbed("Dailymotion Short",
 			  R"(https?://dai\.ly/)",
 			  "https://www.dailymotion.com/services/oembed");
+
+	// Direct media URLs are handled with high priority so the resulting
+	// embed already carries the inlined preview bytes.
+	registerPlugin(std::make_unique<DirectMediaPlugin>(this));
 
 	registerPlugin(std::make_unique<OpenGraphPlugin>(this));
 }
@@ -225,10 +244,99 @@ void LinkPreviewManager::tryPluginChain(const QUrl &url, std::vector< LinkPrevie
 
 // ---- Fetch completion tracking --------------------------------------
 
+bool LinkPreviewManager::needsOgEnrichment(const QJsonObject &embed) {
+	return embed.value(QStringLiteral("description")).toString().isEmpty()
+		&& embed.value(QStringLiteral("summary")).toString().isEmpty();
+}
+
+std::optional< std::reference_wrapper< LinkPreviewPlugin > >
+LinkPreviewManager::findOpenGraphPlugin() const {
+	for (const auto &p : m_plugins) {
+		if (dynamic_cast< OpenGraphPlugin * >(p.get()) != nullptr)
+			return *p;
+	}
+	return std::nullopt;
+}
+
+std::optional< std::reference_wrapper< LinkPreviewPlugin > >
+LinkPreviewManager::findHandlingPlugin(const QUrl &url) const {
+	for (const auto &p : m_plugins) {
+		if (p->canHandle(url))
+			return *p;
+	}
+	return std::nullopt;
+}
+
+void LinkPreviewManager::mergeOgIntoTarget(QJsonObject &target, const QJsonObject &og) {
+	const QStringList scalarKeys = {
+		QStringLiteral("description"),    QStringLiteral("summary"),
+		QStringLiteral("site_name"),      QStringLiteral("canonical_url"),
+		QStringLiteral("lang"),           QStringLiteral("published_time"),
+		QStringLiteral("modified_time"),  QStringLiteral("reading_time"),
+		QStringLiteral("content_type"),   QStringLiteral("favicon"),
+	};
+	for (const QString &key : scalarKeys) {
+		if (target.value(key).toString().isEmpty() && !og.value(key).toString().isEmpty())
+			target.insert(key, og.value(key));
+	}
+	const QStringList objectKeys = {
+		QStringLiteral("image"), QStringLiteral("thumbnail"), QStringLiteral("author"),
+	};
+	for (const QString &key : objectKeys) {
+		if (target.value(key).toObject().isEmpty() && !og.value(key).toObject().isEmpty())
+			target.insert(key, og.value(key));
+	}
+	if (target.value(QStringLiteral("keywords")).toArray().isEmpty()
+		&& !og.value(QStringLiteral("keywords")).toArray().isEmpty()) {
+		target.insert(QStringLiteral("keywords"), og.value(QStringLiteral("keywords")));
+	}
+}
+
 void LinkPreviewManager::onFetchResolved(std::shared_ptr< PendingRequest > pending,
-										 const QJsonObject &embed, const QUrl & /*url*/) {
-	if (!embed.isEmpty())
-		pending->embeds.append(embed);
+										 const QJsonObject &embed, const QUrl &url) {
+	if (embed.isEmpty()) {
+		--pending->remainingFetches;
+		trySendResponse(pending);
+		return;
+	}
+
+	pending->embeds.append(embed);
+	const int embedIndex = static_cast< int >(pending->embeds.size() - 1);
+
+	// If the resolving plugin produced no description, supplement it with an
+	// OpenGraph fetch.  The URL used for that fetch may be rewritten by the
+	// plugin that originally handled this URL (e.g. Reddit's OEmbedPlugin
+	// rewrites www.reddit.com -> old.reddit.com to get proper SSR HTML).
+	if (needsOgEnrichment(embed) && url.isValid() && LinkPreviewPlugin::isSafeUrl(url)) {
+		if (auto ogOpt = findOpenGraphPlugin()) {
+			auto &og = ogOpt->get();
+			const auto handlerOpt = findHandlingPlugin(url);
+			const QUrl ogUrl = handlerOpt
+				? handlerOpt->get().transformUrlForOgFallback(url)
+				: url;
+			qInfo() << "[LinkPreview] no description for" << url.toString()
+					<< "-> running OpenGraph fallback on" << ogUrl.toString();
+			auto onMergeDone = [this, embedIndex, pending]() {
+				enrichEmbedWithPreviews(embedIndex, pending);
+				--pending->remainingFetches;
+				trySendResponse(pending);
+			};
+			og.fetchPreview(
+				ogUrl, m_networkManager.get(),
+				[this, embedIndex, pending, onMergeDone](const QJsonObject &ogEmbed) {
+					if (embedIndex < pending->embeds.size() && !ogEmbed.isEmpty()) {
+						QJsonObject merged = pending->embeds[embedIndex];
+						mergeOgIntoTarget(merged, ogEmbed);
+						pending->embeds[embedIndex] = merged;
+					}
+					onMergeDone();
+				},
+				[onMergeDone]() { onMergeDone(); });
+			return;
+		}
+	}
+
+	enrichEmbedWithPreviews(embedIndex, pending);
 	--pending->remainingFetches;
 	trySendResponse(pending);
 }
@@ -239,22 +347,105 @@ void LinkPreviewManager::onFetchFailed(std::shared_ptr< PendingRequest > pending
 }
 
 void LinkPreviewManager::trySendResponse(std::shared_ptr< PendingRequest > pending) {
-	if (pending->remainingFetches > 0)
+	if (pending->remainingFetches > 0 || pending->remainingMediaFetches > 0)
 		return;
 
 	m_pendingRequests.remove(pending->requestId);
 	sendResponse(pending->userSession, pending->requestId, pending->embeds);
 }
 
+// ---- Server-side image preview enrichment ---------------------------
+
+void LinkPreviewManager::enrichEmbedWithPreviews(int embedIndex,
+												 std::shared_ptr< PendingRequest > pending) {
+	// Each (sub-object key, max-dimension) pair we want to enrich.
+	const struct {
+		const char *key;
+		int maxDim;
+	} targets[] = {
+		{ "image", MediaPreviewBuilder::DEFAULT_MAX_DIM },
+		{ "thumbnail", MediaPreviewBuilder::DEFAULT_MAX_DIM },
+		{ "favicon", MediaPreviewBuilder::FAVICON_MAX_DIM },
+	};
+
+	for (const auto &t : targets) {
+		QJsonObject sub = pending->embeds[embedIndex].value(QLatin1String(t.key)).toObject();
+		if (sub.isEmpty())
+			continue;
+		// If the source plugin already inlined the preview bytes, skip.
+		if (sub.contains(QStringLiteral("preview_data_b64")))
+			continue;
+		const QString urlStr = sub.value(QStringLiteral("url")).toString();
+		if (urlStr.isEmpty())
+			continue;
+		QUrl url(urlStr);
+		if (!url.isValid() || !LinkPreviewPlugin::isSafeUrl(url))
+			continue;
+
+		++pending->remainingMediaFetches;
+		auto *builder = new MediaPreviewBuilder(this);
+		const QString key = QLatin1String(t.key);
+		builder->fetchAndDownscale(
+			url, m_networkManager.get(), t.maxDim, MediaPreviewBuilder::JPEG_QUALITY,
+			[this, embedIndex, pending, key, builder](
+				const std::optional< MediaPreviewBuilder::Result > &res) {
+				builder->deleteLater();
+				if (embedIndex < pending->embeds.size()) {
+					QJsonObject embed = pending->embeds[embedIndex];
+					QJsonObject sub   = embed.value(key).toObject();
+					if (res) {
+						sub.insert(QStringLiteral("preview_data_b64"),
+								   QString::fromLatin1(res->jpeg.toBase64()));
+						sub.insert(QStringLiteral("preview_mime"), res->mime);
+						sub.insert(QStringLiteral("preview_width"), res->previewWidth);
+						sub.insert(QStringLiteral("preview_height"), res->previewHeight);
+						sub.insert(QStringLiteral("original_size"),
+								   static_cast< qint64 >(res->originalSize));
+						if (!sub.contains(QStringLiteral("width")) && res->originalWidth > 0)
+							sub.insert(QStringLiteral("width"), res->originalWidth);
+						if (!sub.contains(QStringLiteral("height")) && res->originalHeight > 0)
+							sub.insert(QStringLiteral("height"), res->originalHeight);
+					}
+					// Keep the upstream URL even when inlining failed — the
+					// frontend's previewSrc() prefers data_url when present, and
+					// falls back to url only when allowExternalResources is true,
+					// so we don't silently drop content the user expects to see.
+					embed.insert(key, sub);
+					pending->embeds[embedIndex] = embed;
+				}
+				--pending->remainingMediaFetches;
+				trySendResponse(pending);
+			});
+	}
+}
+
 // ---- Build protobuf response and send to client ---------------------
 
 static void populateProtoMedia(MumbleProto::FancyLinkPreviewResponse::Embed::Media *media, const QJsonObject &obj) {
-	if (obj.contains("url"))
-		media->set_url(obj.value("url").toString().toStdString());
-	if (obj.contains("width"))
-		media->set_width(obj.value("width").toInt());
-	if (obj.contains("height"))
-		media->set_height(obj.value("height").toInt());
+	if (obj.contains(QStringLiteral("url")))
+		media->set_url(obj.value(QStringLiteral("url")).toString().toStdString());
+	if (obj.contains(QStringLiteral("width")))
+		media->set_width(obj.value(QStringLiteral("width")).toInt());
+	if (obj.contains(QStringLiteral("height")))
+		media->set_height(obj.value(QStringLiteral("height")).toInt());
+
+	const QString b64 = obj.value(QStringLiteral("preview_data_b64")).toString();
+	if (!b64.isEmpty()) {
+		QByteArray bytes = QByteArray::fromBase64(b64.toLatin1());
+		if (!bytes.isEmpty()) {
+			media->set_preview_data(bytes.constData(), static_cast< std::size_t >(bytes.size()));
+		}
+	}
+	if (obj.contains(QStringLiteral("preview_mime")))
+		media->set_preview_mime(obj.value(QStringLiteral("preview_mime")).toString().toStdString());
+	if (obj.contains(QStringLiteral("preview_width")))
+		media->set_preview_width(obj.value(QStringLiteral("preview_width")).toInt());
+	if (obj.contains(QStringLiteral("preview_height")))
+		media->set_preview_height(obj.value(QStringLiteral("preview_height")).toInt());
+	if (obj.contains(QStringLiteral("original_size"))) {
+		media->set_original_size(
+			static_cast< std::uint32_t >(obj.value(QStringLiteral("original_size")).toDouble()));
+	}
 }
 
 void LinkPreviewManager::populateProtoEmbed(void *rawEmbed, const QJsonObject &json) {
@@ -301,6 +492,63 @@ void LinkPreviewManager::populateProtoEmbed(void *rawEmbed, const QJsonObject &j
 			author->set_name(authorObj.value("name").toString().toStdString());
 		if (authorObj.contains("url"))
 			author->set_url(authorObj.value("url").toString().toStdString());
+	}
+
+	// --- Rich extensions ---------------------------------------------
+
+	QJsonObject faviconObj = json.value(QStringLiteral("favicon")).toObject();
+	if (!faviconObj.isEmpty())
+		populateProtoMedia(embed->mutable_favicon(), faviconObj);
+
+	if (json.contains(QStringLiteral("canonical_url")))
+		embed->set_canonical_url(json.value(QStringLiteral("canonical_url")).toString().toStdString());
+	if (json.contains(QStringLiteral("lang")))
+		embed->set_lang(json.value(QStringLiteral("lang")).toString().toStdString());
+	if (json.contains(QStringLiteral("published_time")))
+		embed->set_published_time(
+			json.value(QStringLiteral("published_time")).toString().toStdString());
+	if (json.contains(QStringLiteral("modified_time")))
+		embed->set_modified_time(
+			json.value(QStringLiteral("modified_time")).toString().toStdString());
+	if (json.contains(QStringLiteral("summary")))
+		embed->set_summary(json.value(QStringLiteral("summary")).toString().toStdString());
+	if (json.contains(QStringLiteral("content_type")))
+		embed->set_content_type(
+			json.value(QStringLiteral("content_type")).toString().toStdString());
+	if (json.contains(QStringLiteral("content_length"))) {
+		embed->set_content_length(
+			static_cast< std::uint64_t >(json.value(QStringLiteral("content_length")).toDouble()));
+	}
+	if (json.contains(QStringLiteral("media_duration")))
+		embed->set_media_duration(
+			json.value(QStringLiteral("media_duration")).toString().toStdString());
+	if (json.contains(QStringLiteral("nsfw")))
+		embed->set_nsfw(json.value(QStringLiteral("nsfw")).toBool());
+	if (json.contains(QStringLiteral("reading_time")))
+		embed->set_reading_time(
+			json.value(QStringLiteral("reading_time")).toString().toStdString());
+	if (json.contains(QStringLiteral("fetched_at")))
+		embed->set_fetched_at(json.value(QStringLiteral("fetched_at")).toString().toStdString());
+
+	const QJsonArray keywordsArr = json.value(QStringLiteral("keywords")).toArray();
+	for (const QJsonValue &v : keywordsArr) {
+		const QString s = v.toString();
+		if (!s.isEmpty())
+			embed->add_keywords(s.toStdString());
+	}
+
+	const QJsonArray fieldsArr = json.value(QStringLiteral("fields")).toArray();
+	for (const QJsonValue &v : fieldsArr) {
+		const QJsonObject fo = v.toObject();
+		if (fo.isEmpty())
+			continue;
+		auto *protoField = embed->add_fields();
+		if (fo.contains(QStringLiteral("name")))
+			protoField->set_name(fo.value(QStringLiteral("name")).toString().toStdString());
+		if (fo.contains(QStringLiteral("value")))
+			protoField->set_value(fo.value(QStringLiteral("value")).toString().toStdString());
+		if (fo.contains(QStringLiteral("inline")))
+			protoField->set_inline_(fo.value(QStringLiteral("inline")).toBool());
 	}
 }
 
