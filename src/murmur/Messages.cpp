@@ -3471,7 +3471,18 @@ void Server::msgFancyWatchSync(ServerUser *uSource, MumbleProto::FancyWatchSync 
 
 void Server::msgFancyDrawStroke(ServerUser *uSource, MumbleProto::FancyDrawStroke &msg) {
 	MSG_SETUP(ServerUser::Authenticated);
-	RATELIMIT(uSource);
+
+	// Drawing strokes are emitted as a high-frequency burst (multiple
+	// packets per second while the user drags the pointer). The default
+	// general-purpose leaky bucket (1 msg/s sustained, 5 burst) drops
+	// most of them silently and produces broken strokes on receivers.
+	// They are conceptually identical to plugin-data relay messages, so
+	// we use the same higher-rate bucket here (4 msg/s, 15 burst by
+	// default; tunable via `pluginmessagelimit` / `pluginmessageburst`).
+	if (uSource->m_pluginMessageBucket.ratelimit(1)) {
+		qWarning("Dropping draw stroke from \"%s\" (%d)", qUtf8Printable(uSource->qsName), uSource->uiSession);
+		return;
+	}
 
 	if (!msg.has_channel_id()) {
 		return;

@@ -1488,4 +1488,11 @@ message FancyDrawStroke {
 	repeated float points = 6 [packed = true];
 	optional bool is_end = 7;
 	optional bool is_clear = 8;
+	// Stroke width as a fraction of the shared content's pixel HEIGHT.
+	// Resolution-independent companion to `width`.
+	optional float width_frac = 9;
+	// When set together with `is_clear`, wipes ALL strokes in the
+	// channel (every sender) instead of just the sender's own.
+	// Reserved for the active screen-sharer.
+	optional bool clear_all = 10;
 }
