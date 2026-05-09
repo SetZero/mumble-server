@@ -20,7 +20,6 @@
 > - **Built-in file server**: HTTP file server with CORS support and offline texture/description fetching
 > - **Subscribe permissions**: Per-channel subscription model with associated message notifications
 > - **Feature detection**: Handshake mechanism so clients can discover server capabilities
-> - **GeoIP**: GeoIP resolver for user location information
 > - **JSON logging**: Structured JSON log output format
 > - **Extended ACLs**: Additional permission types (`DeleteMessage`, `KeyOwner`, improved ACL settings UI)
 

@@ -1615,24 +1615,8 @@ void Server::newClient() {
 
 		auto const peerAddress = sock->peerAddress();
 		auto const peerPort    = sock->peerPort();
-		auto const peerAddressString = peerAddress.toString().toStdString();
 		log(QString(R"({"event": "new_connection", "payload": {"connection": "%1"}})")
 				.arg(addressToString(peerAddress, peerPort)));
-
-		m_geoIpResolver.resolve(peerAddressString, [this, peerAddress, peerPort](const GeoIpInformation &data) {
-			std::string geoIpInfo;
-			if(data.status == GeoIpStatus::SUCCESS && data.data) {
-				geoIpInfo = GeoIpResolver::getGeoIpSuccessDataAsJson(data.query, *(data.data));
-			} else if(data.message) {
-				geoIpInfo = R"({"status": "Unknown", "message": ")" + *data.message + R"("})";
-			} else {
-				geoIpInfo = R"({"status": "Unknown", "message": "unknown error"})";
-			}
-
-			log(QString(R"({"event": "geoip", "payload": {"connection": "%1", "data": %2}})")
-					.arg(addressToString(peerAddress, peerPort))
-					.arg(QString::fromStdString(geoIpInfo)));
-		});
 
 		u->setToS();
 
