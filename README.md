@@ -1,5 +1,29 @@
 ![Mumble screenshot](screenshots/Mumble.png)
 
+> [!NOTE]
+> **This is a custom fork of the Mumble server ([mumble-voip/mumble](https://github.com/mumble-voip/mumble)) with extended features.**
+> It is designed to work with the [FancyMumble client](https://github.com/Fancy-Mumble/FancyMumble) and is **not** a drop-in replacement for the standard Mumble server.
+>
+> **Recommended build method:** Use [fancy-mumble/mumble-docker](https://github.com/Fancy-Mumble/mumble-docker) for building and deploying this server.
+>
+> **Associated client:** [https://github.com/Fancy-Mumble/FancyMumble](https://github.com/Fancy-Mumble/FancyMumble)
+>
+> ### Custom features (compared to upstream Mumble)
+> - **End-to-end encryption**: Signal protocol integration for encrypted messaging and persistent encrypted channels
+> - **Persistent chat**: Server-side persistent chat with message queuing, pinning, read notifications, delete ACLs, and key-ownership permissions
+> - **Message reactions**: Emoji reactions on chat messages using custom Mumble protocol messages
+> - **Push notifications**: Android push notification support
+> - **WebRTC / SFU**: Multi-stream WebRTC streaming with a server-side Selective Forwarding Unit (SFU) for screen sharing
+> - **Draw / Whiteboard**: Real-time collaborative drawing feature
+> - **Watch Together**: Synchronized media watching in channels
+> - **Link previews**: Server-side URL preview generation with MIME-type detection
+> - **Built-in file server**: HTTP file server with CORS support and offline texture/description fetching
+> - **Subscribe permissions**: Per-channel subscription model with associated message notifications
+> - **Feature detection**: Handshake mechanism so clients can discover server capabilities
+> - **GeoIP**: GeoIP resolver for user location information
+> - **JSON logging**: Structured JSON log output format
+> - **Extended ACLs**: Additional permission types (`DeleteMessage`, `KeyOwner`, improved ACL settings UI)
+
 # Mumble - Open Source voice-chat software
 
 [![https://www.mumble.info](https://img.shields.io/badge/Website-https%3A%2F%2Fwww.mumble.info-blue?style=for-the-badge)](https://www.mumble.info)
