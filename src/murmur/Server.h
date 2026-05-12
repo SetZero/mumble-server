@@ -403,6 +403,16 @@ public:
 	/// Used to validate edit ownership (only the original sender can edit).
 	QHash< QString, uint32_t > m_messageOwners;
 
+	/// Latest broadcast onboarding config. Empty by default; set via
+	/// `FancyOnboardingConfigUpdate` from a Write-permitted user on the
+	/// root channel. Sent to every Fancy 0.3.1+ client after ServerSync.
+	MumbleProto::FancyOnboardingConfig m_onboardingConfig;
+	/// Per-cert-hash onboarding responses. Looked up on
+	/// `FancyOnboardingResponseQuery` and used to apply the
+	/// answer-mapped ACL group memberships when the response is
+	/// updated.
+	QHash< QString, MumbleProto::FancyOnboardingResponse > m_onboardingResponses;
+
 
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,

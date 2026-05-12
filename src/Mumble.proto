@@ -1496,3 +1496,74 @@ message FancyDrawStroke {
 	// Reserved for the active screen-sharer.
 	optional bool clear_all = 10;
 }
+
+// ---------------------------------------------------------------------------
+// Onboarding workflow (Fancy Mumble extension, IDs 136-140)
+// ---------------------------------------------------------------------------
+
+// Admin-managed questionnaire shown to new members on first join.
+// The server stores the latest config and broadcasts FancyOnboardingConfig
+// to every client after ServerSync (and again whenever an admin updates it).
+// Wire type ID = 136.
+message FancyOnboardingConfig {
+	message Answer {
+		optional string id = 1;
+		optional string label = 2;
+		repeated uint32 channel_ids = 3;
+		repeated string group_names = 4;
+		optional string emoji = 5;
+		optional string description = 6;
+	}
+
+	message Question {
+		optional string id = 1;
+		optional string text = 2;
+		optional bool multi_select = 3;
+		repeated Answer answers = 4;
+		optional bool ask_before_join = 5;
+		optional bool required = 6;
+	}
+
+	optional uint32 version = 1;
+	optional bool enabled = 2;
+	repeated uint32 default_channel_ids = 3;
+	repeated Question questions = 4;
+	optional uint64 revision = 5;
+	optional string updated_by = 6;
+	optional uint64 updated_at = 7;
+}
+
+// Admin -> Server: persist a new onboarding config.  Server validates
+// admin permission, stamps revision/updated_at/updated_by, then
+// broadcasts the resulting FancyOnboardingConfig to all clients.
+// Wire type ID = 137.
+message FancyOnboardingConfigUpdate {
+	optional FancyOnboardingConfig config = 1;
+}
+
+// User -> Server: submit answers to the questionnaire.  Server stores
+// the response keyed by user cert hash and applies the resulting ACL
+// group memberships across the affected channels.
+// Wire type ID = 138.
+message FancyOnboardingResponse {
+	message Selection {
+		optional string question_id = 1;
+		repeated string answer_ids = 2;
+	}
+	optional string user_hash = 1;
+	optional uint64 submitted_at = 2;
+	repeated Selection selections = 3;
+	optional uint64 config_revision = 4;
+}
+
+// User -> Server: query their previously-stored response.
+// Wire type ID = 139.
+message FancyOnboardingResponseQuery {
+}
+
+// Server -> User: deliver a previously-stored response.  An absent
+// `response` field signals "no stored response".
+// Wire type ID = 140.
+message FancyOnboardingResponseDeliver {
+	optional FancyOnboardingResponse response = 1;
+}

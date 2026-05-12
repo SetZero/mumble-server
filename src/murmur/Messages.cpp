@@ -682,6 +682,15 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			break;
 	}
 
+	// Send the active onboarding config to Fancy 0.3.1+ clients so the
+	// onboarding modal can render immediately after connect without an
+	// extra round-trip.
+	if (uSource->m_FancyVersion.has_value()
+		&& uSource->m_FancyVersion.value() >= Version::fromComponents(0, 3, 1)
+		&& m_onboardingConfig.has_enabled()) {
+		sendMessage(uSource, m_onboardingConfig);
+	}
+
 	log(uSource, "Authenticated");
 
 	emit userConnected(uSource);
@@ -3512,6 +3521,101 @@ void Server::msgFancyDrawStroke(ServerUser *uSource, MumbleProto::FancyDrawStrok
 		}
 		sendMessage(su, msg);
 	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: onboarding workflow (IDs 136-140) - introduced in 0.3.1
+// ---------------------------------------------------------------------------
+
+void Server::msgFancyOnboardingConfig(ServerUser *, MumbleProto::FancyOnboardingConfig &) {
+	// Server -> Client only; ignore inbound.
+}
+
+void Server::msgFancyOnboardingConfigUpdate(ServerUser *uSource,
+											MumbleProto::FancyOnboardingConfigUpdate &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	// Only users with Write permission on the root channel can edit
+	// the onboarding flow (mirrors how server-wide config edits are
+	// authorised elsewhere).
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+
+	if (!msg.has_config()) {
+		return;
+	}
+
+	MumbleProto::FancyOnboardingConfig config = msg.config();
+	// Server-side metadata stamping; clients leave these empty.
+	const uint64_t prevRevision = m_onboardingConfig.has_revision() ? m_onboardingConfig.revision() : 0;
+	config.set_revision(prevRevision + 1);
+	config.set_updated_by(uSource->qsHash.toStdString());
+	config.set_updated_at(static_cast< uint64_t >(QDateTime::currentMSecsSinceEpoch()));
+
+	m_onboardingConfig = config;
+
+	// Broadcast to every Fancy 0.3.1+ client.
+	const Version::full_t minVersion = Version::fromComponents(0, 3, 1);
+	for (ServerUser *u : qhUsers) {
+		if (u->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!u->m_FancyVersion.has_value() || u->m_FancyVersion.value() < minVersion) {
+			continue;
+		}
+		sendMessage(u, m_onboardingConfig);
+	}
+
+	log(uSource, QString("onboarding config updated (revision %1, %2 questions)")
+					 .arg(m_onboardingConfig.revision())
+					 .arg(m_onboardingConfig.questions_size()));
+}
+
+void Server::msgFancyOnboardingResponse(ServerUser *uSource,
+										MumbleProto::FancyOnboardingResponse &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (uSource->qsHash.isEmpty()) {
+		// Without a TLS certificate hash we cannot key the response
+		// stably across reconnects.
+		return;
+	}
+
+	// Stamp the sender's identity & timestamp; clients leave these empty.
+	msg.set_user_hash(uSource->qsHash.toStdString());
+	msg.set_submitted_at(static_cast< uint64_t >(QDateTime::currentMSecsSinceEpoch()));
+
+	m_onboardingResponses[uSource->qsHash] = msg;
+
+	log(uSource, QString("onboarding response stored (%1 selections, revision %2)")
+					 .arg(msg.selections_size())
+					 .arg(msg.has_config_revision() ? msg.config_revision() : 0));
+}
+
+void Server::msgFancyOnboardingResponseQuery(ServerUser *uSource,
+											 MumbleProto::FancyOnboardingResponseQuery &) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	MumbleProto::FancyOnboardingResponseDeliver reply;
+	if (!uSource->qsHash.isEmpty() && m_onboardingResponses.contains(uSource->qsHash)) {
+		*reply.mutable_response() = m_onboardingResponses.value(uSource->qsHash);
+	}
+	sendMessage(uSource, reply);
+}
+
+void Server::msgFancyOnboardingResponseDeliver(ServerUser *,
+											   MumbleProto::FancyOnboardingResponseDeliver &) {
+	// Server -> Client only; ignore inbound.
 }
 
 

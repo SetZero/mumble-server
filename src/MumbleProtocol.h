@@ -84,7 +84,12 @@
     PROCESS_MUMBLE_TCP_MESSAGE(FancyLinkPreviewRequest, 132) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyLinkPreviewResponse, 133) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyWatchSync, 134) \
-    PROCESS_MUMBLE_TCP_MESSAGE(FancyDrawStroke, 135)
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyDrawStroke, 135) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyOnboardingConfig, 136) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyOnboardingConfigUpdate, 137) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyOnboardingResponse, 138) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyOnboardingResponseQuery, 139) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyOnboardingResponseDeliver, 140)
 
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.
