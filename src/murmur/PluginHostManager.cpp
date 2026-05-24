@@ -13,6 +13,10 @@
 #include "Mumble.pb.h"
 
 #include <QtCore/QDebug>
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
+#include <QtCore/QJsonValue>
 #include <QtCore/QReadLocker>
 #include <QtCore/QSettings>
 
@@ -33,7 +37,7 @@ PluginHostManager::PluginHostManager(Server *server, QObject *parent)
 	cb.current_channel         = &PluginHostManager::currentChannelTrampoline;
 	cb.get_config              = &PluginHostManager::getConfigTrampoline;
 	cb.free_string             = &PluginHostManager::freeStringTrampoline;
-        cb.send_fancy_live_doc_invite = &PluginHostManager::sendFancyLiveDocInviteTrampoline;
+        cb.send_plugin_message    = &PluginHostManager::sendPluginMessageTrampoline;
 	m_handle = plugin_host_create(&cb);
 }
 
@@ -72,16 +76,59 @@ void PluginHostManager::onPluginData(uint32_t senderSession, const QString &data
 	                           static_cast< size_t >(data.size()));
 }
 
-void PluginHostManager::onFancyLiveDocOpen(uint32_t senderSession, uint32_t channelId,
-                                           const QString &slug, const QString &title) {
+void PluginHostManager::onPluginMessage(uint32_t senderSession, const QString &senderName,
+                                        const ::MumbleProto::PluginMessage &msg) {
         if (!m_handle) {
                 return;
         }
-        const QByteArray slugUtf8  = slug.toUtf8();
-        const QByteArray titleUtf8 = title.toUtf8();
-        plugin_host_on_fancy_live_doc_open(m_handle, static_cast< uint32_t >(m_server->iServerNum),
-                                           senderSession, channelId,
-                                           slugUtf8.constData(), titleUtf8.constData());
+        const QByteArray senderNameUtf8  = senderName.toUtf8();
+        const QByteArray pluginNameUtf8  = QByteArray::fromStdString(msg.plugin_name());
+        const QByteArray payloadTypeUtf8 = QByteArray::fromStdString(msg.payload_type());
+        const std::string &payload       = msg.payload();
+        QVector< uint32_t > targets;
+        targets.reserve(msg.target_sessions_size());
+        for (int i = 0; i < msg.target_sessions_size(); ++i) {
+                targets.append(msg.target_sessions(i));
+        }
+        const bool channelPresent = msg.has_channel_id();
+        const uint32_t channelId  = channelPresent ? msg.channel_id() : 0u;
+        plugin_host_on_plugin_message(
+                m_handle, static_cast< uint32_t >(m_server->iServerNum), senderSession,
+                senderNameUtf8.constData(), pluginNameUtf8.constData(), payloadTypeUtf8.constData(),
+                payload.empty() ? nullptr : reinterpret_cast< const uint8_t * >(payload.data()),
+                payload.size(), targets.isEmpty() ? nullptr : targets.constData(),
+                static_cast< size_t >(targets.size()), channelPresent, channelId);
+}
+
+void PluginHostManager::fillRegistry(::MumbleProto::PluginRegistry &out) const {
+        out.Clear();
+        if (!m_handle) {
+                return;
+        }
+        char *json = plugin_host_get_registry_json(m_handle);
+        if (!json) {
+                return;
+        }
+        const QByteArray raw(json);
+        plugin_host_free_string(json);
+        // The Rust host gives us a JSON document {"plugins":[{...},...]}.
+        // We deliberately avoid pulling in a JSON dependency here and
+        // instead parse with QJsonDocument which is already available.
+        QJsonParseError err{};
+        QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
+        if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+                return;
+        }
+        const QJsonArray plugins = doc.object().value(QStringLiteral("plugins")).toArray();
+        for (const QJsonValue &v : plugins) {
+                const QJsonObject obj = v.toObject();
+                auto *entry = out.add_plugins();
+                entry->set_plugin_name(obj.value(QStringLiteral("plugin_name")).toString().toStdString());
+                entry->set_version(obj.value(QStringLiteral("version")).toString().toStdString());
+                entry->set_plugin_slot(static_cast< uint32_t >(
+                        obj.value(QStringLiteral("plugin_slot")).toInt(0)));
+                entry->set_info_json(obj.value(QStringLiteral("info_json")).toString().toStdString());
+        }
 }
 int PluginHostManager::sendPluginDataTrampoline(void *userData, uint32_t /*serverId*/,
                                                 uint32_t targetSession, const char *dataId,
@@ -229,12 +276,11 @@ char *PluginHostManager::getConfigTrampoline(void *userData, const char *key) {
 		return resolveHostKey(key);
 	}
 
-        // Plugins provide fully qualified keys (e.g. "plugin.live-doc.enabled")
+        // Plugins provide fully qualified keys (e.g. "plugin.fancy-live-doc.enabled")
         // so we look them up verbatim in the server configuration table.
         // For the .ini fallback we try the raw key first (snake_case) and
-        // then a camelCase variant (e.g. "plugin.live-doc.state_path" ->
-        // "plugin.live-doc.statePath") to match Mumble's camelCase naming
-        // convention.  Operators may use either form in the .ini file.
+        // then a camelCase variant to also match Mumble's traditional
+        // camelCase naming convention.  Operators may use either form.
         const std::string fullKey(key);
         QString value;
         self->m_server->m_dbWrapper.getConfigurationTo(
@@ -263,26 +309,52 @@ void PluginHostManager::freeStringTrampoline(void * /*userData*/, char *ptr) {
         }
 }
 
-int PluginHostManager::sendFancyLiveDocInviteTrampoline(void *userData, uint32_t /*serverId*/,
-                                                        uint32_t targetSession, uint32_t channelId,
-                                                        const char *slug, const char *title,
-                                                        const char *wsUrl, const char *token) {
+int PluginHostManager::sendPluginMessageTrampoline(void *userData, uint32_t /*serverId*/,
+                                                   const char *pluginName, const char *payloadType,
+                                                   const uint8_t *payload, size_t payloadLen,
+                                                   const uint32_t *targetSessions, size_t targetLen,
+                                                   bool channelIdPresent, uint32_t channelId) {
         auto *self = static_cast< PluginHostManager * >(userData);
         if (!self || !self->m_server) {
                 return -1;
         }
         QReadLocker rl(&self->m_server->qrwlVoiceThread);
-        ServerUser *target = self->m_server->qhUsers.value(targetSession);
-        if (!target) {
-                return -2;
+
+        MumbleProto::PluginMessage msg;
+        msg.set_plugin_name(pluginName ? pluginName : "");
+        msg.set_payload_type(payloadType ? payloadType : "");
+        msg.set_sender_session(0); // server-originated
+        if (payload && payloadLen > 0) {
+                msg.set_payload(payload, payloadLen);
         }
-        MumbleProto::FancyLiveDocInvite msg;
-        msg.set_server_id(std::to_string(self->m_server->iServerNum));
-        msg.set_channel_id(channelId);
-        if (slug)  { msg.set_slug(slug); }
-        if (title) { msg.set_title(title); }
-        if (wsUrl) { msg.set_ws_url(wsUrl); }
-        if (token) { msg.set_token(token); }
-        self->m_server->sendMessage(target, msg);
+        if (channelIdPresent) {
+                msg.set_channel_id(channelId);
+        }
+
+        QVector< uint32_t > recipients;
+        if (targetSessions && targetLen > 0) {
+                recipients.reserve(static_cast< int >(targetLen));
+                for (size_t i = 0; i < targetLen; ++i) {
+                        recipients.append(targetSessions[i]);
+                        msg.add_target_sessions(targetSessions[i]);
+                }
+        } else if (channelIdPresent) {
+                ::Channel *chan = self->m_server->qhChannels.value(channelId);
+                if (chan) {
+                        for (::User *u : chan->qlUsers) {
+                                recipients.append(static_cast< uint32_t >(u->uiSession));
+                        }
+                }
+        }
+        if (recipients.isEmpty()) {
+                return 0; // nothing to deliver, treat as success
+        }
+        for (uint32_t session : recipients) {
+                ServerUser *target = self->m_server->qhUsers.value(session);
+                if (!target) {
+                        continue;
+                }
+                self->m_server->sendMessage(target, msg);
+        }
         return 0;
 }

@@ -10,10 +10,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 mumble-plugin-api = { path = "../api" }
-mumble-file-server = { path = "../file-server" }
-mumble-live-doc = { path = "../live-doc" }
 
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+abi_stable = "0.11"
+zstd = { version = "0.13", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

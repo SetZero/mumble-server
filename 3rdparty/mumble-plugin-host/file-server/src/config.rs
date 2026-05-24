@@ -1,13 +1,13 @@
 //! Configuration for the file-server plugin.
 //!
-//! All values are read from the host's [`PluginContext::get_config`] hook
+//! All values are read from the host's `HostFacade::get_config` hook
 //! at startup. Defaults match the values documented in the plan.
 
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use mumble_plugin_api::PluginContext;
+use crate::host_facade::HostFacade;
 
 /// Hard upper bound on `max_total_storage_bytes`. The plugin refuses to
 /// start with a configured value above this.
@@ -16,8 +16,6 @@ pub const MAX_TOTAL_STORAGE_LIMIT: u64 = 10 * 1024 * 1024 * 1024;
 /// Configuration for the file-server plugin.
 #[derive(Debug, Clone)]
 pub struct FileServerConfig {
-    /// Whether the plugin is enabled at all.
-    pub enabled: bool,
     /// IP address the embedded HTTP server binds to.
     ///
     /// Defaults to `127.0.0.1` because the plugin only speaks plain HTTP
@@ -69,7 +67,7 @@ pub struct FileServerConfig {
 impl FileServerConfig {
     /// Load configuration from the plugin context. Unknown keys are
     /// ignored; missing keys fall back to defaults.
-    pub fn from_context(ctx: &dyn PluginContext) -> Result<Self, ConfigError> {
+    pub fn from_context(ctx: &dyn HostFacade) -> Result<Self, ConfigError> {
         let port = parse_or(ctx, "port", 64739_u16)?;
         let bind_address: IpAddr = parse_or(
             ctx,
@@ -77,7 +75,6 @@ impl FileServerConfig {
             IpAddr::from([127, 0, 0, 1]),
         )?;
         let mut cfg = Self {
-            enabled: parse_or(ctx, "enabled", true)?,
             bind_address,
             port,
             tls_terminated_by_proxy: parse_or(ctx, "tls_terminated_by_proxy", false)?,
@@ -170,7 +167,7 @@ pub enum ConfigError {
     },
 }
 
-fn parse_or<T>(ctx: &dyn PluginContext, key: &str, default: T) -> Result<T, ConfigError>
+fn parse_or<T>(ctx: &dyn HostFacade, key: &str, default: T) -> Result<T, ConfigError>
 where
     T: std::str::FromStr,
 {
@@ -191,14 +188,14 @@ mod tests {
     #[derive(Debug)]
     struct StubCtx(std::collections::HashMap<&'static str, String>);
 
-    impl PluginContext for StubCtx {
+    impl HostFacade for StubCtx {
         fn send_plugin_data(
             &self,
             _server_id: u32,
             _target_session: u32,
             _data_id: &str,
             _data: &[u8],
-        ) -> mumble_plugin_api::Result<()> {
+        ) -> crate::host_facade::FacadeResult<()> {
             Ok(())
         }
         fn is_session_active(&self, _server_id: u32, _session: u32) -> bool {
@@ -241,7 +238,6 @@ mod tests {
     fn defaults_when_no_config() {
         let ctx = ctx_with(&[]);
         let cfg = FileServerConfig::from_context(&ctx).expect("loads defaults");
-        assert!(cfg.enabled);
         assert_eq!(cfg.port, 64739);
         assert_eq!(cfg.base_url, "http://127.0.0.1:64739");
         assert!(cfg.delete_on_ttl);

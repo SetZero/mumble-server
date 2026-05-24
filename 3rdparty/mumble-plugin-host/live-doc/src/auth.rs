@@ -5,7 +5,7 @@
 //! another session.  Tokens are short-lived
 //! ([`crate::HANDSHAKE_JWT_TTL_SECS`]) and signed with HMAC-SHA256.
 
-use jsonwebtoken::{decode, encode, errors::Error as JwtError, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, encode, errors::Error as JwtError, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use mumble_plugin_api::{ChannelId, ServerId, SessionId};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,8 +56,13 @@ pub fn issue_handshake_jwt(
 }
 
 /// Verify a handshake token and return its claims.
+///
+/// `Validation::default()` currently pins to HS256, but we set it
+/// explicitly so a future change to the upstream default cannot
+/// silently widen the accepted algorithm set (e.g. let `alg: none`
+/// tokens through).
 pub fn verify_handshake_jwt(secret: &[u8], token: &str) -> Result<HandshakeClaims, JwtError> {
-    let mut validation = Validation::default();
+    let mut validation = Validation::new(Algorithm::HS256);
     validation.leeway = 5;
     decode::<HandshakeClaims>(token, &DecodingKey::from_secret(secret), &validation)
         .map(|d| d.claims)
@@ -82,5 +87,27 @@ mod tests {
     fn jwt_rejects_other_secret() {
         let tok = issue_handshake_jwt(b"aaaaaaaaaaaaaaaa", 1, 42, 7, "design-notes", 60).unwrap();
         assert!(verify_handshake_jwt(b"bbbbbbbbbbbbbbbb", &tok).is_err());
+    }
+
+    #[test]
+    fn jwt_rejects_wrong_algorithm() {
+        use jsonwebtoken::Header;
+        let secret = b"deadbeefdeadbeefdeadbeefdeadbeef";
+        let claims = HandshakeClaims {
+            server_id: 1,
+            session_id: 42,
+            channel_id: 7,
+            doc_slug: "x".into(),
+            exp: u64::MAX / 2,
+            iat: 0,
+        };
+        // Sign with HS384 - our verifier only accepts HS256.
+        let tok = encode(
+            &Header::new(Algorithm::HS384),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap();
+        assert!(verify_handshake_jwt(secret, &tok).is_err());
     }
 }

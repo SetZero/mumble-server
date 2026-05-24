@@ -583,6 +583,18 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 	sendMessage(uSource, mpss);
 
+	// Tell new Fancy 0.4.0+ clients which plugins the server has
+	// loaded.  Older clients ignore the unknown message ID.
+	if (m_pluginHost && m_pluginHost->isLoaded()
+		&& uSource->m_FancyVersion.has_value()
+		&& uSource->m_FancyVersion.value() >= Version::fromComponents(0, 4, 0)) {
+		MumbleProto::PluginRegistry mpreg;
+		m_pluginHost->fillRegistry(mpreg);
+		if (mpreg.plugins_size() > 0) {
+			sendMessage(uSource, mpreg);
+		}
+	}
+
 	// Transmit user's listeners - this has to be done AFTER the server-sync message has been sent to uSource as the
 	// client may require its own session ID for processing the listeners properly.
 	mpus.Clear();
@@ -3620,61 +3632,63 @@ void Server::msgFancyOnboardingResponseDeliver(ServerUser *,
 
 
 // ---------------------------------------------------------------------------
-// Fancy Mumble: live-doc workflow (IDs 141-143) - introduced in 0.3.2
+// Fancy Mumble: generic plugin envelope (IDs 200-201) - introduced in 0.4.0
 // ---------------------------------------------------------------------------
 
-void Server::msgFancyLiveDocOpen(ServerUser *uSource, MumbleProto::FancyLiveDocOpen &msg) {
+void Server::msgPluginMessage(ServerUser *uSource, MumbleProto::PluginMessage &msg) {
 	MSG_SETUP(ServerUser::Authenticated);
 	RATELIMIT(uSource);
 
-	if (!msg.has_channel_id() || !msg.has_slug()) {
-		return;
-	}
-	if (!m_pluginHost || !m_pluginHost->isLoaded()) {
-		return;
-	}
-	m_pluginHost->onFancyLiveDocOpen(
-		uSource->uiSession,
-		msg.channel_id(),
-		QString::fromStdString(msg.slug()),
-		msg.has_title() ? QString::fromStdString(msg.title()) : QString());
-}
-
-void Server::msgFancyLiveDocInvite(ServerUser *, MumbleProto::FancyLiveDocInvite &) {
-	// Server -> Client only; ignore inbound.
-}
-
-void Server::msgFancyLiveDocAnnounce(ServerUser *uSource, MumbleProto::FancyLiveDocAnnounce &msg) {
-	MSG_SETUP(ServerUser::Authenticated);
-	RATELIMIT(uSource);
-
-	if (!msg.has_channel_id() || !msg.has_slug()) {
-		return;
-	}
-	Channel *c = qhChannels.value(msg.channel_id());
-	if (!c) {
+	if (msg.plugin_name().empty()) {
 		return;
 	}
 
-	// Stamp the opener identity from the server to prevent spoofing.
-	msg.set_opener_session(uSource->uiSession);
-	msg.set_opener_name(uSource->qsName.toStdString());
+	// Stamp authoritative sender identity to prevent client spoofing.
+	msg.set_sender_session(uSource->uiSession);
+	msg.set_sender_name(uSource->qsName.toStdString());
 
-	// Fan-out to every Fancy 0.3.2+ client in the channel except the opener.
-	const auto minVersionAnnounce = Version::fromComponents(0, 3, 2);
-	for (User *p : c->qlUsers) {
-		auto *su = static_cast< ServerUser * >(p);
-		if (su->uiSession == uSource->uiSession) {
-			continue;
+	if (m_pluginHost && m_pluginHost->isLoaded()) {
+		m_pluginHost->onPluginMessage(uSource->uiSession, uSource->qsName, msg);
+	}
+
+	// Optional client-side relay: deliver to explicit target_sessions
+	// and/or every member of channel_id when set.  Clients use this
+	// to broadcast (e.g. live-doc Announce) without going through a
+	// server-side plugin.
+	const auto minVersion = Version::fromComponents(0, 4, 0);
+	QSet< uint32_t > delivered;
+	auto deliverTo = [&](ServerUser *su) {
+		if (!su || su->uiSession == uSource->uiSession) {
+			return;
 		}
 		if (su->sState != ServerUser::Authenticated) {
-			continue;
+			return;
 		}
-		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersionAnnounce) {
-			continue;
+		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersion) {
+			return;
 		}
+		if (delivered.contains(su->uiSession)) {
+			return;
+		}
+		delivered.insert(su->uiSession);
 		sendMessage(su, msg);
+	};
+
+	for (int i = 0; i < msg.target_sessions_size(); ++i) {
+		deliverTo(qhUsers.value(msg.target_sessions(i)));
 	}
+	if (msg.has_channel_id()) {
+		Channel *c = qhChannels.value(msg.channel_id());
+		if (c) {
+			for (User *p : c->qlUsers) {
+				deliverTo(static_cast< ServerUser * >(p));
+			}
+		}
+	}
+}
+
+void Server::msgPluginRegistry(ServerUser *, MumbleProto::PluginRegistry &) {
+	// Server -> Client only; ignore inbound.
 }
 
 

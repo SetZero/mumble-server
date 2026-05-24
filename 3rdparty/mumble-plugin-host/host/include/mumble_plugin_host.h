@@ -12,6 +12,16 @@
 #include <stdbool.h>
 
 /**
+ * Current envelope format version.
+ */
+#define ENVELOPE_VERSION 1
+
+/**
+ * Bit flag: payload is zstd-compressed.
+ */
+#define FLAG_ZSTD 1
+
+/**
  * Opaque handle returned by [`plugin_host_create`].
  */
 typedef struct PluginHostHandle PluginHostHandle;
@@ -51,8 +61,7 @@ typedef struct PluginHostCallbacks {
                                   uint32_t channel);
   /**
    * Returns true if `session` has all the permissions in
-   * `permission_flags` on `channel`. `permission_flags` is a bitmask
-   * of `ChanACL::Perm` values; channel `0` is the root channel.
+   * `permission_flags` on `channel` (a bitmask of `ChanACL::Perm`).
    */
   bool (*has_permission)(void *user_data,
                          uint32_t server_id,
@@ -62,8 +71,7 @@ typedef struct PluginHostCallbacks {
   /**
    * Returns the channel id `session` is currently in, written through
    * `out_channel`.  Returns `true` on success, `false` if the session
-   * is unknown (in which case `out_channel` is unmodified).  Used by
-   * plugins to defend against client-supplied channel id spoofing.
+   * is unknown.
    */
   bool (*current_channel)(void *user_data,
                           uint32_t server_id,
@@ -80,17 +88,22 @@ typedef struct PluginHostCallbacks {
    */
   void (*free_string)(void *user_data, char *ptr);
   /**
-   * Deliver a `FancyLiveDocInvite` (wire ID 142) to a single session.
-   * Returns 0 on success, non-zero on error.
+   * Dispatch a generic `PluginMessage` envelope (wire ID 200).  The
+   * host C++ side decides routing: every session in `target_sessions`
+   * receives the envelope; if that slice is empty and `channel_id`
+   * is set (non-zero `channel_id_present`), every member of the
+   * channel receives it instead.  Returns 0 on success.
    */
-  int (*send_fancy_live_doc_invite)(void *user_data,
-                                    uint32_t server_id,
-                                    uint32_t target_session,
-                                    uint32_t channel_id,
-                                    const char *slug,
-                                    const char *title,
-                                    const char *ws_url,
-                                    const char *token);
+  int (*send_plugin_message)(void *user_data,
+                             uint32_t server_id,
+                             const char *plugin_name,
+                             const char *payload_type,
+                             const uint8_t *payload,
+                             uintptr_t payload_len,
+                             const uint32_t *target_sessions,
+                             uintptr_t target_len,
+                             bool channel_id_present,
+                             uint32_t channel_id);
 } PluginHostCallbacks;
 
 #ifdef __cplusplus
@@ -160,19 +173,51 @@ void plugin_host_on_plugin_data(struct PluginHostHandle *handle,
                                 uintptr_t data_len);
 
 /**
- * Notify the host of an inbound `FancyLiveDocOpen` (wire ID 141).
+ * Notify the host of an inbound generic `PluginMessage` (wire ID 200).
+ * The host routes the envelope to the single plugin whose name matches
+ * `plugin_name`; unknown names are dropped with a debug log.
  *
  * # Safety
- * `handle` must be valid; `slug` and `title` must be NUL-terminated UTF-8
- * strings (or NULL, which is treated as the empty string).
+ * `handle` must be valid; every `*const c_char` argument must be either
+ * NUL-terminated UTF-8 or NULL (treated as empty).  `payload` must
+ * point to at least `payload_len` readable bytes (or NULL when
+ * `payload_len` is 0); same contract for `target_sessions` as a
+ * `*const u32` of length `target_len`.
  */
 
-void plugin_host_on_fancy_live_doc_open(struct PluginHostHandle *handle,
-                                        uint32_t server_id,
-                                        uint32_t sender_session,
-                                        uint32_t channel_id,
-                                        const char *slug,
-                                        const char *title);
+void plugin_host_on_plugin_message(struct PluginHostHandle *handle,
+                                   uint32_t server_id,
+                                   uint32_t sender_session,
+                                   const char *sender_name,
+                                   const char *plugin_name,
+                                   const char *payload_type,
+                                   const uint8_t *payload,
+                                   uintptr_t payload_len,
+                                   const uint32_t *target_sessions,
+                                   uintptr_t target_len,
+                                   bool channel_id_present,
+                                   uint32_t channel_id);
+
+/**
+ * Return the JSON-encoded plugin registry payload that the C++ server
+ * embeds in a `PluginRegistry` message right after `ServerSync`.  The
+ * returned pointer is heap-allocated by Rust (`CString::into_raw`) and
+ * must be freed via [`plugin_host_free_string`].  Returns NULL only on
+ * catastrophic allocation failure.
+ *
+ * # Safety
+ * `handle` must come from [`plugin_host_create`].
+ */
+ char *plugin_host_get_registry_json(struct PluginHostHandle *handle);
+
+/**
+ * Free a string previously returned by [`plugin_host_get_registry_json`].
+ *
+ * # Safety
+ * `ptr` must be either NULL or a pointer obtained from
+ * [`plugin_host_get_registry_json`]; calling it on anything else is UB.
+ */
+ void plugin_host_free_string(char *ptr);
 
 #ifdef __cplusplus
 }  // extern "C"

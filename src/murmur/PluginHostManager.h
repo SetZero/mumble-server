@@ -9,10 +9,16 @@
 #include <QByteArray>
 #include <QObject>
 #include <QString>
+#include <QVector>
 
 #include <cstdint>
 
 #include "mumble_plugin_host.h"
+
+namespace MumbleProto {
+class PluginMessage;
+class PluginRegistry;
+}
 
 class Server;
 
@@ -43,9 +49,17 @@ public:
 	/// Forward an inbound PluginDataTransmission to the plugin host.
 	void onPluginData(uint32_t senderSession, const QString &dataId, const QByteArray &data);
 
-        /// Forward an inbound FancyLiveDocOpen (wire ID 141) to the plugin host.
-        void onFancyLiveDocOpen(uint32_t senderSession, uint32_t channelId,
-                                const QString &slug, const QString &title);
+        /// Forward an inbound generic PluginMessage (wire ID 200) to the
+        /// plugin host.  The host dispatches to the single plugin whose
+        /// name matches msg.plugin_name(); unknown names are dropped.
+        /// `senderName` is stamped server-side from the user's display
+        /// name at the time of receipt.
+        void onPluginMessage(uint32_t senderSession, const QString &senderName,
+                             const ::MumbleProto::PluginMessage &msg);
+
+        /// Build the PluginRegistry message for the currently loaded
+        /// set of plugins.  The server sends this right after ServerSync.
+        void fillRegistry(::MumbleProto::PluginRegistry &out) const;
 
         /// Whether the host loaded successfully.
         bool isLoaded() const { return m_handle != nullptr; }
@@ -63,10 +77,11 @@ private:
                                              uint32_t *outChannel);
         static char *getConfigTrampoline(void *userData, const char *key);
         static void freeStringTrampoline(void *userData, char *ptr);
-        static int sendFancyLiveDocInviteTrampoline(void *userData, uint32_t serverId,
-                                                    uint32_t targetSession, uint32_t channelId,
-                                                    const char *slug, const char *title,
-                                                    const char *wsUrl, const char *token);
+        static int sendPluginMessageTrampoline(void *userData, uint32_t serverId,
+                                               const char *pluginName, const char *payloadType,
+                                               const uint8_t *payload, size_t payloadLen,
+                                               const uint32_t *targetSessions, size_t targetLen,
+                                               bool channelIdPresent, uint32_t channelId);
 
         Server *m_server;
         PluginHostHandle *m_handle;

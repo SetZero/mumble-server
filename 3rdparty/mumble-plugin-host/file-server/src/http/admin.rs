@@ -206,6 +206,7 @@ fn hex_digit(b: u8) -> Result<u8, ()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test code - panics are acceptable")]
 mod tests {
     use super::*;
 

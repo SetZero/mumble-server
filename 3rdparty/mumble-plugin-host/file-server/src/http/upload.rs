@@ -4,12 +4,13 @@ use std::path::PathBuf;
 
 use axum::extract::{Multipart, Query, State};
 use axum::Json;
-use mumble_plugin_api::{permissions, PluginContext};
+use mumble_plugin_api::permissions;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::auth::hash_password;
+use crate::host_facade::HostFacade;
 use crate::http::common::ApiError;
 use crate::signing::{self, NO_EXPIRY, NONCE_BYTES};
 use crate::state::AppState;
@@ -109,7 +110,7 @@ pub async fn upload(
 /// admin can disable file sharing in specific channels without
 /// affecting the rest of the server.
 fn enforce_share_permissions(
-    plugin_ctx: &dyn PluginContext,
+    plugin_ctx: &dyn HostFacade,
     session_id: u32,
     channel_id: u32,
     mode: AccessMode,
@@ -429,8 +430,8 @@ mod tests {
         }
     }
 
-    impl PluginContext for PermCtx {
-        fn send_plugin_data(&self, _: u32, _: u32, _: &str, _: &[u8]) -> mumble_plugin_api::Result<()> {
+    impl HostFacade for PermCtx {
+        fn send_plugin_data(&self, _: u32, _: u32, _: &str, _: &[u8]) -> crate::host_facade::FacadeResult<()> {
             Ok(())
         }
         fn is_session_active(&self, _: u32, _: u32) -> bool {

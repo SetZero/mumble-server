@@ -1,21 +1,25 @@
-//! Handle `FancyLiveDocOpen` (wire ID 141) requests from clients.
+//! Handle live-doc `OpenRequest` envelopes from clients.
 //!
 //! When a session asks to open a doc, the plugin:
 //!
 //! 1. Verifies the session is currently in the requested channel
 //!    and has the required permissions.
-//! 2. Mints a short-lived handshake JWT and delivers a native
-//!    `FancyLiveDocInvite` (wire ID 142) directly to the requester.
-//! 3. Announce fan-out (wire ID 143) is handled by the client and
-//!    server: the opener's client sends `FancyLiveDocAnnounce` and
-//!    the server relays it to channel peers.
+//! 2. Mints a short-lived handshake JWT and delivers an `Invite`
+//!    payload back to the requester through the generic
+//!    `PluginMessage` envelope (wire ID 200, `payload_type`
+//!    `"Invite"`).
+//! 3. Announce fan-out is handled client-side via another
+//!    `PluginMessage` envelope (`payload_type = "Announce"`) that
+//!    the server relays to channel peers.
 
-use mumble_plugin_api::{ChannelId, LiveDocInviteParams, ServerId, SessionId};
+use mumble_plugin_api::{ChannelId, ServerId, SessionId};
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::auth::issue_handshake_jwt;
+use crate::host_facade::PluginMessageArgs;
 use crate::state::AppState;
-use crate::HANDSHAKE_JWT_TTL_SECS;
+use crate::{HANDSHAKE_JWT_TTL_SECS, PLUGIN_NAME};
 
 /// Request payload used when the open path comes via `on_plugin_data`
 /// (legacy path, kept for completeness).
@@ -53,7 +57,7 @@ pub fn sanitize_slug(raw: &str) -> Option<String> {
     }
 }
 
-/// Entry point invoked from the native `on_fancy_live_doc_open` hook.
+/// Typed entry point shared by both open-request paths.
 pub async fn handle_open_request_typed(
     state: &AppState,
     server_id: ServerId,
@@ -121,12 +125,29 @@ fn send_invite(
     ) else {
         return;
     };
-    if let Err(err) = state.ctx().send_fancy_live_doc_invite(
+    let payload = json!({
+        "channelId": channel_id,
+        "slug": slug,
+        "title": title,
+        "wsUrl": ws_url,
+        "token": token,
+    });
+    let bytes = match serde_json::to_vec(&payload) {
+        Ok(b) => b,
+        Err(err) => {
+            tracing::warn!(?err, "failed to encode live-doc invite payload");
+            return;
+        }
+    };
+    let targets = [sender];
+    if let Err(err) = state.ctx().send_plugin_message(PluginMessageArgs {
         server_id,
-        sender,
-        channel_id,
-        &LiveDocInviteParams { slug, title, ws_url, token: &token },
-    ) {
+        plugin_name: PLUGIN_NAME,
+        payload_type: "Invite",
+        payload: &bytes,
+        target_sessions: &targets,
+        channel_id: None,
+    }) {
         tracing::warn!(?err, "failed to send live-doc invite");
     }
 }

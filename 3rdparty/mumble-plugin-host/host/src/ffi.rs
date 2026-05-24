@@ -101,9 +101,9 @@ pub unsafe extern "C" fn plugin_host_on_client_connected(
             server_id,
             session_id: session,
             // SAFETY: caller promises NUL-terminated UTF-8 or NULL.
-            username: unsafe { cstr_to_string(username) },
+            username: abi_stable::std_types::RString::from(unsafe { cstr_to_string(username) }),
             // SAFETY: same contract.
-            cert_hash: unsafe { cstr_to_string(cert_hash) },
+            cert_hash: abi_stable::std_types::RString::from(unsafe { cstr_to_string(cert_hash) }),
         };
         host.on_client_connected(info);
     })
@@ -154,28 +154,96 @@ pub unsafe extern "C" fn plugin_host_on_plugin_data(
     })
 }
 
-/// Notify the host of an inbound `FancyLiveDocOpen` (wire ID 141).
+/// Notify the host of an inbound generic `PluginMessage` (wire ID 200).
+/// The host routes the envelope to the single plugin whose name matches
+/// `plugin_name`; unknown names are dropped with a debug log.
 ///
 /// # Safety
-/// `handle` must be valid; `slug` and `title` must be NUL-terminated UTF-8
-/// strings (or NULL, which is treated as the empty string).
+/// `handle` must be valid; every `*const c_char` argument must be either
+/// NUL-terminated UTF-8 or NULL (treated as empty).  `payload` must
+/// point to at least `payload_len` readable bytes (or NULL when
+/// `payload_len` is 0); same contract for `target_sessions` as a
+/// `*const u32` of length `target_len`.
 #[no_mangle]
-pub unsafe extern "C" fn plugin_host_on_fancy_live_doc_open(
+pub unsafe extern "C" fn plugin_host_on_plugin_message(
     handle: *mut PluginHostHandle,
     server_id: u32,
     sender_session: u32,
+    sender_name: *const c_char,
+    plugin_name: *const c_char,
+    payload_type: *const c_char,
+    payload: *const u8,
+    payload_len: usize,
+    target_sessions: *const u32,
+    target_len: usize,
+    channel_id_present: bool,
     channel_id: u32,
-    slug: *const c_char,
-    title: *const c_char,
 ) {
-    ffi_guard("plugin_host_on_fancy_live_doc_open", (), || {
+    ffi_guard("plugin_host_on_plugin_message", (), || {
         let Some(host) = (unsafe { handle_ref(handle) }) else { return };
-        // SAFETY: caller promises NUL-terminated UTF-8 or NULL.
-        let slug_s = unsafe { cstr_to_string(slug) };
-        // SAFETY: same contract.
-        let title_s = unsafe { cstr_to_string(title) };
-        host.on_fancy_live_doc_open(server_id, sender_session, channel_id, slug_s, title_s);
+        // SAFETY: caller contract above.
+        let sender_name_s = unsafe { cstr_to_string(sender_name) };
+        let plugin_name_s = unsafe { cstr_to_string(plugin_name) };
+        let payload_type_s = unsafe { cstr_to_string(payload_type) };
+        let payload_vec: Vec<u8> = if payload.is_null() || payload_len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: caller guarantees `payload` valid for `payload_len`.
+            unsafe { std::slice::from_raw_parts(payload, payload_len) }.to_vec()
+        };
+        let targets: Vec<u32> = if target_sessions.is_null() || target_len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: caller guarantees `target_sessions` valid for `target_len` u32s.
+            unsafe { std::slice::from_raw_parts(target_sessions, target_len) }.to_vec()
+        };
+        host.on_plugin_message(crate::host::PluginMessageInArgs {
+            server_id,
+            sender: sender_session,
+            sender_name: sender_name_s,
+            plugin_name: plugin_name_s,
+            payload_type: payload_type_s,
+            payload: payload_vec,
+            target_sessions: targets,
+            channel_id: if channel_id_present { Some(channel_id) } else { None },
+        });
     })
+}
+
+/// Return the JSON-encoded plugin registry payload that the C++ server
+/// embeds in a `PluginRegistry` message right after `ServerSync`.  The
+/// returned pointer is heap-allocated by Rust (`CString::into_raw`) and
+/// must be freed via [`plugin_host_free_string`].  Returns NULL only on
+/// catastrophic allocation failure.
+///
+/// # Safety
+/// `handle` must come from [`plugin_host_create`].
+#[no_mangle]
+pub unsafe extern "C" fn plugin_host_get_registry_json(
+    handle: *mut PluginHostHandle,
+) -> *mut c_char {
+    ffi_guard("plugin_host_get_registry_json", std::ptr::null_mut(), || {
+        let Some(host) = (unsafe { handle_ref(handle) }) else { return std::ptr::null_mut() };
+        let json = host.registry_json();
+        match std::ffi::CString::new(json) {
+            Ok(c) => c.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
+}
+
+/// Free a string previously returned by [`plugin_host_get_registry_json`].
+///
+/// # Safety
+/// `ptr` must be either NULL or a pointer obtained from
+/// [`plugin_host_get_registry_json`]; calling it on anything else is UB.
+#[no_mangle]
+pub unsafe extern "C" fn plugin_host_free_string(ptr: *mut c_char) {
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: caller promises pointer came from CString::into_raw.
+    drop(unsafe { std::ffi::CString::from_raw(ptr) });
 }
 
 // -- helpers --------------------------------------------------------------

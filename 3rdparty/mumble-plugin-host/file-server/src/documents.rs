@@ -33,7 +33,7 @@ pub struct RevisionMeta {
 }
 
 /// Append-only document store backed by an independent connection
-/// to the same `SQLite` DB used by `Storage` (SQLite serialises
+/// to the same `SQLite` DB used by `Storage` (`SQLite` serialises
 /// writes at the file level so the two stores coexist safely).
 /// Revision blobs live under `{storage_path}/doc-revisions/{id}`.
 #[derive(Debug)]
@@ -71,7 +71,7 @@ impl DocumentsStore {
         let size = body.len() as u64;
         let now = unix_millis_now();
 
-        let conn = self.db.lock().expect("docs db mutex poisoned");
+        let conn = self.db.lock().map_err(|_| poisoned_mutex_err())?;
         let tx_rev: u32 = conn
             .prepare(
                 "SELECT COALESCE(MAX(rev_seq), 0) + 1 FROM document_revisions WHERE doc_name = ?1",
@@ -93,7 +93,7 @@ impl DocumentsStore {
     /// Fetch the body of the latest revision, or `None` when no
     /// revisions exist.
     pub fn get_latest(&self, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        let conn = self.db.lock().expect("docs db mutex poisoned");
+        let conn = self.db.lock().map_err(|_| poisoned_mutex_err())?;
         let row: Option<(String,)> = conn
             .prepare(
                 "SELECT r.id FROM documents d \
@@ -112,7 +112,7 @@ impl DocumentsStore {
     /// Fetch the body of a specific revision, or `None` when no such
     /// revision exists.
     pub fn get_revision(&self, name: &str, rev_seq: u32) -> Result<Option<Vec<u8>>, StorageError> {
-        let conn = self.db.lock().expect("docs db mutex poisoned");
+        let conn = self.db.lock().map_err(|_| poisoned_mutex_err())?;
         let row: Option<(String,)> = conn
             .prepare(
                 "SELECT id FROM document_revisions WHERE doc_name = ?1 AND rev_seq = ?2",
@@ -128,7 +128,7 @@ impl DocumentsStore {
 
     /// List all revisions for a document, newest first.
     pub fn list_revisions(&self, name: &str) -> Result<Vec<RevisionMeta>, StorageError> {
-        let conn = self.db.lock().expect("docs db mutex poisoned");
+        let conn = self.db.lock().map_err(|_| poisoned_mutex_err())?;
         let mut stmt = conn.prepare(
             "SELECT rev_seq, size_bytes, sha256, created_at \
              FROM document_revisions WHERE doc_name = ?1 ORDER BY rev_seq DESC",
@@ -183,7 +183,12 @@ fn random_id() -> String {
     hex::encode(buf)
 }
 
+fn poisoned_mutex_err() -> StorageError {
+    StorageError::Io(std::io::Error::other("docs db mutex poisoned"))
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test code - panics are acceptable")]
 mod tests {
     use super::*;
     use tempfile::TempDir;

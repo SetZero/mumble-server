@@ -5,12 +5,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mumble_plugin_api::{ChannelId, PluginContext, ServerId, SessionId};
+use mumble_plugin_api::{ChannelId, ServerId, SessionId};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::config::LiveDocConfig;
 use crate::doc::{DocKey, DocRoom};
+use crate::host_facade::HostFacade;
 use crate::persistence::{persist_room, try_seed_room};
 
 /// Wallclock state shared across the plugin.
@@ -22,8 +23,12 @@ pub struct AppState {
 #[derive(Debug)]
 struct AppStateInner {
     cfg: Arc<LiveDocConfig>,
-    ctx: Arc<dyn PluginContext>,
+    ctx: Arc<dyn HostFacade>,
     jwt_secret: Vec<u8>,
+    /// Shared HTTP client used for all file-server I/O.  Configured
+    /// with a tight per-request timeout so a slow / unreachable
+    /// file-server can't wedge the live-doc state machine.
+    http_client: reqwest::Client,
     rooms: Mutex<HashMap<DocKey, RoomEntry>>,
 }
 
@@ -39,19 +44,34 @@ struct RoomEntry {
     teardown_task: Option<JoinHandle<()>>,
 }
 
+/// Maximum time a single file-server request is allowed to take
+/// before reqwest aborts it.  Tight on purpose so a stuck file-server
+/// can't stall the whole plugin.
+const FILE_SERVER_TIMEOUT_SECS: u64 = 5;
+/// Maximum time we allow for the initial TCP connect to the
+/// file-server.  Separate from the overall request timeout so that
+/// "host unreachable" fails fast instead of eating the full budget.
+const FILE_SERVER_CONNECT_TIMEOUT_SECS: u64 = 2;
+
 impl AppState {
     /// Construct fresh state and load (or generate) the JWT secret.
-    pub fn new(cfg: Arc<LiveDocConfig>, ctx: Arc<dyn PluginContext>) -> Self {
+    pub fn new(cfg: Arc<LiveDocConfig>, ctx: Arc<dyn HostFacade>) -> Self {
         let jwt_secret = cfg
             .jwt_secret
             .as_ref()
             .map(|s| s.as_bytes().to_vec())
             .unwrap_or_else(generate_secret);
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(FILE_SERVER_TIMEOUT_SECS))
+            .connect_timeout(Duration::from_secs(FILE_SERVER_CONNECT_TIMEOUT_SECS))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             inner: Arc::new(AppStateInner {
                 cfg,
                 ctx,
                 jwt_secret,
+                http_client,
                 rooms: Mutex::new(HashMap::new()),
             }),
         }
@@ -68,31 +88,42 @@ impl AppState {
     }
 
     /// Plugin context handle.
-    pub fn ctx(&self) -> &Arc<dyn PluginContext> {
+    pub fn ctx(&self) -> &Arc<dyn HostFacade> {
         &self.inner.ctx
     }
 
-    /// Get-or-create a room for the given key.  When the room is
-    /// freshly created, persistence is attempted (best-effort) before
-    /// the room is exposed.
+    /// Get-or-create a room for the given key.
+    ///
+    /// On creation, the room is inserted into the registry *before*
+    /// seeding so the registry mutex isn't held across the
+    /// file-server HTTP call.  Concurrent callers all observe the
+    /// same Arc<DocRoom>; the seed and any client edits are
+    /// applied to the shared doc and commute via Yjs CRDT semantics,
+    /// so it does not matter which happens first.
     pub async fn ensure_room(&self, key: DocKey) -> Arc<DocRoom> {
-        let mut rooms = self.inner.rooms.lock().await;
-        if let Some(existing) = rooms.get_mut(&key) {
-            if let Some(t) = existing.teardown_task.take() {
-                t.abort();
+        let (room, needs_seed) = {
+            let mut rooms = self.inner.rooms.lock().await;
+            if let Some(existing) = rooms.get_mut(&key) {
+                if let Some(t) = existing.teardown_task.take() {
+                    t.abort();
+                }
+                (existing.room.clone(), false)
+            } else {
+                let room = Arc::new(DocRoom::new(key.clone()));
+                let _ = rooms.insert(
+                    key,
+                    RoomEntry {
+                        room: room.clone(),
+                        sessions: Vec::new(),
+                        teardown_task: None,
+                    },
+                );
+                (room, true)
             }
-            return existing.room.clone();
+        };
+        if needs_seed {
+            try_seed_room(&self.inner.cfg, &self.inner.http_client, &room).await;
         }
-        let room = Arc::new(DocRoom::new(key.clone()));
-        try_seed_room(&self.inner.cfg, &room).await;
-        let _ = rooms.insert(
-            key,
-            RoomEntry {
-                room: room.clone(),
-                sessions: Vec::new(),
-                teardown_task: None,
-            },
-        );
         room
     }
 
@@ -168,7 +199,7 @@ impl AppState {
         rooms.clear();
         drop(rooms);
         for room in to_persist {
-            persist_room(&self.inner.cfg, &room).await;
+            persist_room(&self.inner.cfg, &self.inner.http_client, &room).await;
         }
     }
 
@@ -193,7 +224,7 @@ impl AppState {
             rooms.remove(key).map(|e| e.room)
         };
         if let Some(room) = room {
-            persist_room(&self.inner.cfg, &room).await;
+            persist_room(&self.inner.cfg, &self.inner.http_client, &room).await;
             tracing::info!(?key, "live-doc room torn down");
         }
     }

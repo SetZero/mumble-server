@@ -1,41 +1,58 @@
-//! Public trait definitions for Mumble server plugins.
+//! Public, ABI-stable trait definitions for Mumble server plugins.
 //!
-//! This crate defines the contract between the C++ Mumble server (via the
-//! `mumble-plugin-host` cdylib) and individual plugin implementations.
-//! Plugins implement [`MumblePlugin`] and use the [`PluginContext`] handle
-//! passed to them on load to call back into the server (deliver plugin
-//! data, query session state, look up channel ACLs, read config values).
+//! Plugins are compiled as `cdylib` crates and loaded at runtime by the
+//! `mumble-plugin-host`.  The boundary uses [`abi_stable`] so plugins
+//! remain compatible across `rustc` versions and minor host upgrades.
 //!
-//! Keep this crate dependency-free apart from `thiserror`/`async-trait` so
-//! it remains cheap to depend on.
+//! # Async model
+//!
+//! Cross-FFI trait calls are deliberately **synchronous**.  Each plugin
+//! owns its private `tokio` runtime and `block_on`s inside the trait
+//! impls.  Lifecycle hooks fire at human-scale frequencies (client
+//! connect, plugin-data message) so the per-call cost is negligible,
+//! and this gives strong fault isolation: a plugin runtime panicking
+//! cannot poison the host.
+//!
+//! # Wire-level plugin info
+//!
+//! Every plugin advertises a typed [`PluginInfo`] block which the host
+//! serialises to JSON, optionally compresses with `zstd`, and ships to
+//! connected clients as `fancy-plugin-info` plugin-data.  Payloads are
+//! hard-capped at [`PLUGIN_INFO_MAX_BYTES`] uncompressed.
 
-use std::fmt::Debug;
-use std::sync::Arc;
+#![warn(missing_docs)]
 
+use abi_stable::{
+    StableAbi, declare_root_module_statics, library::RootModule, package_version_strings,
+    sabi_types::VersionStrings, std_types::RString,
+};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Result alias used throughout the plugin API.
-pub type Result<T> = std::result::Result<T, PluginError>;
+pub mod permissions;
+pub mod plugin;
 
-/// Errors that may be returned from plugin lifecycle and event hooks.
-#[derive(Debug, Error)]
-pub enum PluginError {
-    /// Plugin configuration was invalid or required keys were missing.
-    #[error("invalid plugin configuration: {0}")]
-    Config(String),
+pub use crate::plugin::{
+    MumblePlugin, MumblePlugin_TO, PluginContext, PluginContext_TO, PluginMessageIn,
+    PluginMessageOut,
+};
 
-    /// I/O error during plugin operation (e.g. file system, network).
-    #[error("plugin i/o error: {0}")]
-    Io(#[from] std::io::Error),
+/// Magic constant identifying the on-wire shape of [`MumblePlugin`] and
+/// [`PluginContext`].  Bumped whenever method signatures change.
+///
+/// The host refuses to load any cdylib that exposes a different value
+/// from its [`FancyPluginMod::abi_version`] field.
+pub const PLUGIN_ABI_VERSION: u32 = 2;
 
-    /// Plugin attempted to use the context after it was disposed.
-    #[error("plugin context has been disposed")]
-    ContextDisposed,
+/// Hard cap on the uncompressed size of a plugin's [`PluginInfo`] JSON.
+///
+/// Enforced by the host at load time and again before broadcasting.
+/// 64 KiB is generous for hundreds of debug rows while preventing a
+/// rogue plugin from clogging the control channel.
+pub const PLUGIN_INFO_MAX_BYTES: usize = 64 * 1024;
 
-    /// Catch-all for plugin-specific errors that don't map cleanly above.
-    #[error("plugin error: {0}")]
-    Other(String),
-}
+/// Plugin-data id used to broadcast [`PluginInfo`] payloads to clients.
+pub const PLUGIN_INFO_DATA_ID: &str = "fancy-plugin-info";
 
 /// Identifier for a Mumble virtual server within a single murmur process.
 pub type ServerId = u32;
@@ -47,241 +64,222 @@ pub type SessionId = u32;
 pub type ChannelId = u32;
 
 /// Snapshot of information about a newly connected client.
-#[derive(Debug, Clone)]
+#[repr(C)]
+#[derive(Debug, Clone, StableAbi)]
 pub struct ClientInfo {
     /// Virtual server the client connected to.
     pub server_id: ServerId,
     /// Session id assigned to this client by the server.
     pub session_id: SessionId,
     /// Username the client authenticated as.
-    pub username: String,
+    pub username: RString,
     /// Hex-encoded SHA-1 hash of the client's TLS certificate, or empty
     /// string if the client did not present one.
-    pub cert_hash: String,
+    pub cert_hash: RString,
 }
 
-/// Server-side handle that plugins use to call back into the host.
-///
-/// Implementations are provided by `mumble-plugin-host`; plugins receive
-/// an `Arc<dyn PluginContext>` in [`MumblePlugin::on_load`] and may keep
-/// it for the lifetime of the plugin.
-pub trait PluginContext: Send + Sync + Debug {
-    /// Send a `PluginDataTransmission` message to a single connected
-    /// client session. The data is opaque bytes; consumers usually
-    /// JSON-serialize a payload identified by `data_id`.
-    fn send_plugin_data(
-        &self,
-        server_id: ServerId,
-        target_session: SessionId,
-        data_id: &str,
-        data: &[u8],
-    ) -> Result<()>;
+/// Errors that may be returned from plugin lifecycle and event hooks.
+#[repr(u8)]
+#[derive(Debug, Clone, Error, StableAbi)]
+pub enum PluginError {
+    /// Plugin configuration was invalid or required keys were missing.
+    #[error("invalid plugin configuration: {0}")]
+    Config(RString),
 
-    /// Returns `true` if the given session is currently connected to the
-    /// virtual server.
-    fn is_session_active(&self, server_id: ServerId, session: SessionId) -> bool;
+    /// I/O error during plugin operation.
+    #[error("plugin i/o error: {0}")]
+    Io(RString),
 
-    /// Returns `true` if the given session is allowed to enter the given
-    /// channel according to the server's ACLs.
-    fn user_has_channel_access(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-        channel: ChannelId,
-    ) -> bool;
+    /// Plugin attempted to use the context after it was disposed.
+    #[error("plugin context has been disposed")]
+    ContextDisposed,
 
-    /// Returns `true` if the given session has all the permissions in
-    /// `permission_flags` on `channel` according to the server's ACL
-    /// system. `permission_flags` is a bitmask using the constants in
-    /// the [`permissions`] module (mirroring Mumble's `ChanACL::Perm`).
-    ///
-    /// Use channel id `0` (the root channel) to check server-wide
-    /// administrative permissions: e.g. `Write` on the root channel is
-    /// the canonical "is admin" check that the `SuperUser` and the
-    /// `admin` group inherit.
-    fn has_permission(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-        channel: ChannelId,
-        permission_flags: u32,
-    ) -> bool;
+    /// Catch-all for plugin-specific errors.
+    #[error("plugin error: {0}")]
+    Other(RString),
+}
 
-    /// Returns the channel the session is currently in, or `None` if the
-    /// session is unknown.  Plugins use this to enforce that an action
-    /// referencing a channel really came from a user inside that channel
-    /// (defence against client-side spoofing).
-    ///
-    /// Default implementation returns `None` so existing test impls keep
-    /// compiling; the production host implementation overrides it.
-    fn current_channel(&self, server_id: ServerId, session: SessionId) -> Option<ChannelId> {
-        let _ = (server_id, session);
-        None
-    }
-
-    /// Look up a configuration value for the calling plugin. Keys must be
-    /// fully qualified (e.g. `"plugin.live-doc.enabled"`); the host looks them
-    /// up verbatim in the server config table.
-    fn get_config(&self, key: &str) -> Option<String>;
-
-    /// Deliver a `FancyLiveDocInvite` (wire ID 142) directly to a single
-    /// connected session. The server serialises the proto and sends it over the
-    /// TCP control channel. Returns an error if the session is unknown or the
-    /// callback is not wired.
-    fn send_fancy_live_doc_invite(
-        &self,
-        server_id: ServerId,
-        target_session: SessionId,
-        channel_id: ChannelId,
-        invite: &LiveDocInviteParams,
-    ) -> Result<()> {
-        let _ = (server_id, target_session, channel_id, invite);
-        Ok(())
+impl From<std::io::Error> for PluginError {
+    fn from(e: std::io::Error) -> Self {
+        PluginError::Io(RString::from(e.to_string()))
     }
 }
 
-/// Parameters for a `FancyLiveDocInvite` message sent to a client.
-///
-/// Grouped to avoid a `too_many_arguments` violation on the trait method.
-#[derive(Debug, Clone)]
-pub struct LiveDocInviteParams<'a> {
-    /// Document slug (URL-safe identifier within the channel).
-    pub slug: &'a str,
-    /// Human-readable document title shown in the client UI.
-    pub title: &'a str,
-    /// WebSocket URL the client should connect to for Yjs sync.
-    pub ws_url: &'a str,
-    /// Short-lived JWT authorising the WS handshake.
-    pub token: &'a str,
+/// Result alias used throughout the FFI surface.
+pub type PluginResult<T> = abi_stable::std_types::RResult<T, PluginError>;
+
+/// Free-form key/value pair surfaced in the developer Server Info panel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebugRow {
+    /// Short label shown in the left column.
+    pub label: String,
+    /// Value shown in the right column.  Plugins should redact secrets
+    /// themselves; the host does not inspect this string.
+    pub value: String,
 }
 
-/// Bit values for [`PluginContext::has_permission`].
+/// Typed information a plugin advertises about itself.
 ///
-/// These mirror the Mumble C++ `ChanACL::Perm` enum; only the subset
-/// useful to plugins is exposed here. Combine flags with `|`.
-pub mod permissions {
-    /// Write access on a channel; on the root channel this is the
-    /// canonical "is server admin" permission.
-    pub const WRITE: u32 = 0x1;
-    /// May traverse the channel tree through this channel.
-    pub const TRAVERSE: u32 = 0x2;
-    /// May enter (join) the channel.
-    pub const ENTER: u32 = 0x4;
-    /// May speak (transmit audio) in the channel.
-    pub const SPEAK: u32 = 0x8;
-    /// May mute or deafen other users in the channel.
-    pub const MUTE_DEAFEN: u32 = 0x10;
-    /// May move users into or out of the channel.
-    pub const MOVE: u32 = 0x20;
-    /// May create sub-channels.
-    pub const MAKE_CHANNEL: u32 = 0x40;
-    /// May link channels together.
-    pub const LINK_CHANNEL: u32 = 0x80;
-    /// May whisper into the channel.
-    pub const WHISPER: u32 = 0x100;
-    /// May post text messages in the channel.
-    pub const TEXT_MESSAGE: u32 = 0x200;
-    /// May create temporary channels.
-    pub const MAKE_TEMP_CHANNEL: u32 = 0x400;
-    /// May listen to (subscribe to) the channel.
-    pub const LISTEN: u32 = 0x800;
-    /// May delete messages in the channel.
-    pub const DELETE_MESSAGE: u32 = 0x1000;
-    /// May subscribe to push notifications for the channel.
-    pub const SUBSCRIBE_PUSH: u32 = 0x2000;
-    /// May upload and share files in the channel (any access mode).
-    /// Denying this prevents the user from uploading files at all.
-    pub const SHARE_FILES: u32 = 0x4000;
-    /// May share files via publicly accessible links
-    /// (modes `public` and `password`).  When denied, the user may
-    /// still upload `session`-scoped files (downloadable only by
-    /// currently-connected users) but cannot create links that work
-    /// outside the server.
-    pub const SHARE_FILES_PUBLIC: u32 = 0x8000;
-    /// Root-channel only: may kick users.
-    pub const KICK: u32 = 0x10000;
-    /// Root-channel only: may ban users.
-    pub const BAN: u32 = 0x20000;
-    /// Root-channel only: may register users.
-    pub const REGISTER: u32 = 0x40000;
-    /// Root-channel only: may self-register.
-    pub const SELF_REGISTER: u32 = 0x80000;
-    /// Root-channel only: may reset other users' customisation content.
-    pub const RESET_USER_CONTENT: u32 = 0x100000;
-    /// Root-channel only: may own/manage cryptographic keys.
-    pub const KEY_OWNER: u32 = 0x200000;
-    /// Root-channel only: may add and remove custom server emotes.
-    pub const MANAGE_EMOTES: u32 = 0x400000;
+/// The host serialises this to JSON, optionally compresses with `zstd`,
+/// and forwards it to connected clients.  The client renders the typed
+/// top-level fields with localised labels and falls back to a generic
+/// `label / value` table for [`Self::debug_rows`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginInfo {
+    /// One-line human-readable description of what the plugin does.
+    pub description: String,
+    /// Optional author/maintainer attribution.
+    pub author: Option<String>,
+    /// Optional homepage / source-repository URL.
+    pub homepage: Option<String>,
+    /// Short capability tags ("http", "websocket", "persistence", ...).
+    pub capabilities: Vec<String>,
+    /// Free-form runtime stats (listening ports, active session counts,
+    /// feature flags) for the developer panel.
+    pub debug_rows: Vec<DebugRow>,
 }
 
-/// Lifecycle and event hooks implemented by every plugin.
+impl PluginInfo {
+    /// Serialise to JSON and verify the result fits within
+    /// [`PLUGIN_INFO_MAX_BYTES`].  Returns the JSON bytes ready to ship.
+    pub fn to_validated_json(&self) -> Result<Vec<u8>, PluginInfoError> {
+        let bytes = serde_json::to_vec(self).map_err(PluginInfoError::Encode)?;
+        if bytes.len() > PLUGIN_INFO_MAX_BYTES {
+            return Err(PluginInfoError::TooLarge { size: bytes.len(), limit: PLUGIN_INFO_MAX_BYTES });
+        }
+        Ok(bytes)
+    }
+}
+
+/// Errors produced by [`PluginInfo::to_validated_json`].
+#[derive(Debug, Error)]
+pub enum PluginInfoError {
+    /// Serialisation failure (should not happen for well-formed structs).
+    #[error("plugin info json encode failed: {0}")]
+    Encode(serde_json::Error),
+    /// Payload exceeds the per-plugin size cap.
+    #[error("plugin info payload {size} B exceeds limit of {limit} B")]
+    TooLarge {
+        /// Actual payload size in bytes.
+        size: usize,
+        /// Configured limit ([`PLUGIN_INFO_MAX_BYTES`]).
+        limit: usize,
+    },
+}
+
+/// Stable C-ABI root module exported by every plugin cdylib.
 ///
-/// All hook methods have default no-op implementations so plugins only
-/// need to override what they actually care about.
-#[async_trait::async_trait]
-pub trait MumblePlugin: Send + Sync + Debug {
-    /// Stable identifier for this plugin. Used in config sections
-    /// (`[plugin.<name>]`) and in log messages.
-    fn name(&self) -> &str;
+/// Plugin authors usually wrap the export with the [`fancy_export_plugin`]
+/// macro rather than handwriting the symbol.
+#[repr(C)]
+#[derive(StableAbi)]
+#[sabi(kind(Prefix(prefix_ref = FancyPluginModRef)))]
+#[sabi(missing_field(panic))]
+pub struct FancyPluginMod {
+    /// ABI version this plugin was built against.  Must equal
+    /// [`PLUGIN_ABI_VERSION`] or the host will refuse to load.
+    pub abi_version: u32,
+    /// Factory that constructs the plugin instance.  Called exactly once
+    /// per cdylib load.
+    #[sabi(last_prefix_field)]
+    pub create_plugin:
+        extern "C" fn() -> MumblePlugin_TO<abi_stable::std_types::RBox<()>>,
+}
 
-    /// Called once when the plugin is loaded. The plugin should start any
-    /// background tasks here and store the context handle for later use.
-    async fn on_load(&self, ctx: Arc<dyn PluginContext>) -> Result<()> {
-        let _ = ctx;
-        Ok(())
+impl RootModule for FancyPluginModRef {
+    declare_root_module_statics! {FancyPluginModRef}
+    const BASE_NAME: &'static str = "fancy_plugin";
+    const NAME: &'static str = "fancy_plugin";
+    const VERSION_STRINGS: VersionStrings = package_version_strings!();
+}
+
+impl std::fmt::Debug for FancyPluginMod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FancyPluginMod")
+            .field("abi_version", &self.abi_version)
+            .field("create_plugin", &"<fn>")
+            .finish()
+    }
+}
+
+/// Internal re-export so [`fancy_export_plugin!`] callers do not need to
+/// add `abi_stable` to their own `Cargo.toml`.
+#[doc(hidden)]
+pub mod abi_stable_reexport {
+    pub use abi_stable::*;
+}
+
+/// Convenience macro for plugin crates: export the `cdylib` factory
+/// symbol with the right name, ABI version, and trait-object wrapping.
+///
+/// ```ignore
+/// fancy_export_plugin!(MyPlugin::new);
+/// ```
+#[macro_export]
+macro_rules! fancy_export_plugin {
+    ($factory:expr) => {
+        #[doc(hidden)]
+        #[$crate::abi_stable_reexport::export_root_module]
+        pub fn _fancy_plugin_root_module() -> $crate::FancyPluginModRef {
+            use $crate::abi_stable_reexport::prefix_type::PrefixTypeTrait;
+            $crate::FancyPluginMod {
+                abi_version: $crate::PLUGIN_ABI_VERSION,
+                create_plugin: _fancy_plugin_create,
+            }
+            .leak_into_prefix()
+        }
+
+        #[doc(hidden)]
+        extern "C" fn _fancy_plugin_create() -> $crate::MumblePlugin_TO<
+            $crate::abi_stable_reexport::std_types::RBox<()>,
+        > {
+            let plugin = ($factory)();
+            $crate::MumblePlugin_TO::from_value(
+                plugin,
+                $crate::abi_stable_reexport::sabi_trait::TD_Opaque,
+            )
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
+
+    use super::*;
+
+    #[test]
+    fn plugin_info_json_roundtrip() {
+        let info = PluginInfo {
+            description: "test".into(),
+            author: Some("nobody".into()),
+            homepage: None,
+            capabilities: vec!["http".into(), "ws".into()],
+            debug_rows: vec![DebugRow { label: "port".into(), value: "8080".into() }],
+        };
+        let bytes = info.to_validated_json().expect("encode");
+        let back: PluginInfo = serde_json::from_slice(&bytes).expect("decode");
+        assert_eq!(back.description, info.description);
+        assert_eq!(back.capabilities, info.capabilities);
+        assert_eq!(back.debug_rows.len(), 1);
     }
 
-    /// Called once when the plugin is unloaded (e.g. server shutdown).
-    /// Implementations should perform graceful shutdown of background
-    /// tasks and flush any pending state.
-    async fn on_unload(&self) -> Result<()> {
-        Ok(())
+    #[test]
+    fn plugin_info_too_large_rejected() {
+        let huge = "x".repeat(PLUGIN_INFO_MAX_BYTES + 1);
+        let info = PluginInfo {
+            description: huge,
+            author: None,
+            homepage: None,
+            capabilities: vec![],
+            debug_rows: vec![],
+        };
+        let err = info.to_validated_json().expect_err("must reject");
+        assert!(matches!(err, PluginInfoError::TooLarge { .. }));
     }
 
-    /// Called whenever a client successfully authenticates and is added
-    /// to the server's user table.
-    async fn on_client_connected(&self, info: ClientInfo) -> Result<()> {
-        let _ = info;
-        Ok(())
-    }
-
-    /// Called whenever a client disconnects.
-    async fn on_client_disconnected(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-    ) -> Result<()> {
-        let _ = (server_id, session);
-        Ok(())
-    }
-
-    /// Called when the server receives a `PluginDataTransmission` from a
-    /// client. The plugin may inspect the payload and respond by sending
-    /// further plugin data via the context.
-    async fn on_plugin_data(
-        &self,
-        server_id: ServerId,
-        sender: SessionId,
-        data_id: &str,
-        data: &[u8],
-    ) -> Result<()> {
-        let _ = (server_id, sender, data_id, data);
-        Ok(())
-    }
-
-    /// Called when the server receives a `FancyLiveDocOpen` (wire ID 141) from
-    /// a client requesting to open a collaborative document. The plugin should
-    /// validate the request and respond with a `FancyLiveDocInvite` via
-    /// [`PluginContext::send_fancy_live_doc_invite`].
-    async fn on_fancy_live_doc_open(
-        &self,
-        server_id: ServerId,
-        sender: SessionId,
-        channel_id: ChannelId,
-        slug: &str,
-        title: &str,
-    ) -> Result<()> {
-        let _ = (server_id, sender, channel_id, slug, title);
-        Ok(())
+    #[test]
+    fn abi_version_is_two() {
+        assert_eq!(PLUGIN_ABI_VERSION, 2);
     }
 }

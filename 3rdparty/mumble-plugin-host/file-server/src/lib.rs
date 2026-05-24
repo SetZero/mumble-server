@@ -1,28 +1,27 @@
 ﻿//! `mumble-file-server` - HTTP file sharing plugin for Mumble.
 //!
 //! This crate provides:
-//! * A `FileServerPlugin` implementing [`mumble_plugin_api::MumblePlugin`].
+//! * A [`FileServerPlugin`] implementing
+//!   [`mumble_plugin_api::MumblePlugin`] (loaded as a dynamic cdylib).
 //! * An axum-based HTTP server that handles upload, ticket-exchange and
 //!   signed-URL download.
 //! * SQLite-backed metadata storage with on-disk blobs.
 //! * Three access modes: `public`, `password`, `session`.
-//!
-//! Architectural notes are in `doc/architecture.md` of the workspace.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
+use abi_stable::std_types::{RArc, ROk, RSlice, RStr, RString};
 use mumble_plugin_api::{
-    permissions, ClientInfo, MumblePlugin, PluginContext, PluginError, Result as PluginResult,
-    ServerId, SessionId,
+    permissions, ClientInfo, DebugRow, MumblePlugin, PluginContext_TO, PluginError, PluginInfo,
+    PluginResult, ServerId, SessionId,
 };
 use rand::RngCore;
-use tokio::sync::Mutex;
 
 pub mod auth;
 pub mod config;
 pub mod documents;
 pub mod emotes;
+pub mod host_facade;
 pub mod http;
 pub mod rate_limit;
 pub mod server;
@@ -34,6 +33,7 @@ pub mod tickets;
 
 use crate::auth::issue_session_jwt;
 use crate::config::FileServerConfig;
+use crate::host_facade::{HostFacade, SabiHostCtx};
 use crate::rate_limit::RateLimiter;
 use crate::server::ServerHandle;
 use crate::session::{SessionInfo, SessionMap};
@@ -49,178 +49,271 @@ pub const FILE_ATTACHMENT_DATA_ID: &str = "fancy-file-attachment";
 /// Default JWT TTL for session-mode authentication tokens (24 hours).
 const SESSION_JWT_TTL_SECS: u64 = 24 * 3600;
 
+const PLUGIN_NAME: &str = "fancy-file-server";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// File-server plugin entry point.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct FileServerPlugin {
     inner: Mutex<Option<RunningState>>,
 }
 
-#[derive(Debug)]
 struct RunningState {
-    handle: ServerHandle,
+    handle: Option<ServerHandle>,
+    runtime: tokio::runtime::Runtime,
     state: AppState,
 }
 
 impl FileServerPlugin {
-    /// Create a new (not-yet-loaded) plugin instance.
+    /// Construct a new (not-yet-loaded) plugin instance.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-#[async_trait]
+impl std::fmt::Debug for FileServerPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileServerPlugin").finish_non_exhaustive()
+    }
+}
+
 impl MumblePlugin for FileServerPlugin {
-    fn name(&self) -> &'static str {
-        "fancy-file-server"
+    fn name(&self) -> RStr<'_> {
+        RStr::from(PLUGIN_NAME)
     }
 
-    async fn on_load(&self, ctx: Arc<dyn PluginContext>) -> PluginResult<()> {
-        let cfg = FileServerConfig::from_context(ctx.as_ref())
-            .map_err(|e| PluginError::Config(e.to_string()))?;
-        if !cfg.enabled {
-            tracing::info!("file server disabled by config");
-            return Ok(());
+    fn version(&self) -> RStr<'_> {
+        RStr::from(PLUGIN_VERSION)
+    }
+
+    fn info_json(&self) -> RString {
+        let info = self.build_plugin_info();
+        match info.to_validated_json() {
+            Ok(bytes) => RString::from(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(_) => RString::from("{}"),
         }
-        let cfg = Arc::new(cfg);
+    }
 
-        std::fs::create_dir_all(&cfg.storage_path)?;
+    fn on_load(&self, ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {
+        init_tracing();
+        let facade: Arc<dyn HostFacade> = Arc::new(SabiHostCtx::new(ctx));
+        match build_running_state(facade) {
+            Ok(running) => {
+                if let Ok(mut guard) = self.inner.lock() {
+                    *guard = Some(running);
+                }
+                ROk(())
+            }
+            Err(e) => PluginResult::RErr(e),
+        }
+    }
 
-        let storage = Storage::open(&cfg.storage_path, cfg.max_total_storage_bytes)
-            .map_err(|e| PluginError::Other(format!("storage: {e}")))?;
-        let storage = Arc::new(storage);
-
-        let documents = documents::DocumentsStore::open(&cfg.storage_path)
-            .map_err(|e| PluginError::Other(format!("documents: {e}")))?;
-        let documents = Arc::new(documents);
-
-        let signing_secret = load_or_create_signing_secret(&cfg.storage_path)
-            .map_err(|e| PluginError::Other(format!("signing secret: {e}")))?;
-
-        let app_state = AppState {
-            storage,
-            documents,
-            tickets: Arc::new(TicketStore::new()),
-            sessions: Arc::new(SessionMap::new()),
-            auth_rate_limiter: Arc::new(RateLimiter::new()),
-            signing_secret: Arc::new(signing_secret),
-            config: cfg,
-            plugin_ctx: ctx,
+    fn on_unload(&self) -> PluginResult<()> {
+        let Some(mut running) = self.inner.lock().ok().and_then(|mut g| g.take()) else {
+            return ROk(());
         };
-
-        let handle = server::start(app_state.clone())
-            .await
-            .map_err(PluginError::Io)?;
-
-        *self.inner.lock().await = Some(RunningState {
-            handle,
-            state: app_state,
-        });
-        Ok(())
-    }
-
-    async fn on_unload(&self) -> PluginResult<()> {
-        if let Some(running) = self.inner.lock().await.take() {
-            running.handle.shutdown().await;
+        if let Some(handle) = running.handle.take() {
+            running.runtime.block_on(handle.shutdown());
         }
-        Ok(())
+        ROk(())
     }
 
-    async fn on_client_connected(&self, info: ClientInfo) -> PluginResult<()> {
-        let guard = self.inner.lock().await;
-        let Some(running) = guard.as_ref() else { return Ok(()); };
-
-        let upload_token = generate_token_hex();
-        let session_jwt = issue_session_jwt(
-            running.state.signing_secret.as_ref(),
-            &info.cert_hash,
-            info.session_id,
-            info.server_id,
-            SESSION_JWT_TTL_SECS,
-        )
-        .map_err(|e| PluginError::Other(format!("issue jwt: {e}")))?;
-
-        running.state.sessions.insert(
-            info.session_id,
-            SessionInfo {
-                cert_hash: info.cert_hash.clone(),
-                upload_token: upload_token.clone(),
-            },
-        );
-
-        let payload = serde_json::json!({
-            "type": "file-server-config",
-            "base_url": running.state.config.base_url,
-            "session_id": info.session_id,
-            "upload_token": upload_token,
-            "session_jwt": session_jwt,
-            "max_file_size_bytes": running.state.config.max_file_size_bytes,
-            "delete_on_ttl": running.state.config.delete_on_ttl,
-            "ttl_seconds": running.state.config.ttl.as_secs(),
-            "delete_on_download": running.state.config.delete_on_download,
-            "delete_on_disconnect": running.state.config.delete_on_disconnect,
-            "can_manage_emotes": running.state.plugin_ctx.has_permission(
-                info.server_id,
-                info.session_id,
-                0,
-                permissions::MANAGE_EMOTES,
-            ),
-            // Best-effort UI hint: root-channel permission only.  The
-            // server enforces the actual per-channel permission when
-            // an upload is attempted.
-            "can_share_files": running.state.plugin_ctx.has_permission(
-                info.server_id,
-                info.session_id,
-                0,
-                permissions::SHARE_FILES,
-            ),
-            "can_share_files_public": running.state.plugin_ctx.has_permission(
-                info.server_id,
-                info.session_id,
-                0,
-                permissions::SHARE_FILES_PUBLIC,
-            ),
-        });
-        let bytes = serde_json::to_vec(&payload)
-            .map_err(|e| PluginError::Other(format!("serialize: {e}")))?;
-        running
-            .state
-            .plugin_ctx
-            .send_plugin_data(
-                info.server_id,
-                info.session_id,
-                FILE_SERVER_DATA_ID,
-                &bytes,
-            )?;
-
-        http::emotes::send_emotes_to_session(
-            &running.state,
-            info.server_id,
-            info.session_id,
-        );
-        Ok(())
+    fn on_client_connected(&self, info: ClientInfo) -> PluginResult<()> {
+        let Ok(guard) = self.inner.lock() else {
+            return PluginResult::RErr(PluginError::Other(
+                "file-server state poisoned".into(),
+            ));
+        };
+        let Some(running) = guard.as_ref() else {
+            return ROk(());
+        };
+        let server_id: ServerId = info.server_id;
+        let session_id: SessionId = info.session_id;
+        let cert_hash: String = info.cert_hash.into_string();
+        let username: String = info.username.into_string();
+        if let Err(e) = announce_to_client(running, server_id, session_id, &cert_hash) {
+            tracing::warn!(
+                session = session_id,
+                user = %username,
+                error = %e,
+                "file-server: failed to announce to client"
+            );
+            return PluginResult::RErr(PluginError::Other(e.into()));
+        }
+        http::emotes::send_emotes_to_session(&running.state, server_id, session_id);
+        ROk(())
     }
 
-    async fn on_client_disconnected(
+    fn on_client_disconnected(
         &self,
         _server: ServerId,
         session: SessionId,
     ) -> PluginResult<()> {
-        let guard = self.inner.lock().await;
-        let Some(running) = guard.as_ref() else { return Ok(()); };
+        let Ok(guard) = self.inner.lock() else {
+            return ROk(());
+        };
+        let Some(running) = guard.as_ref() else {
+            return ROk(());
+        };
         let removed = running.state.sessions.remove(session);
         if let Some(info) = removed.as_ref() {
             running.state.tickets.invalidate_for(&info.cert_hash);
         }
         if running.state.config.delete_on_disconnect {
-            // Spawn the (potentially expensive) per-session cleanup so
-            // we don't block the disconnect path (L-3).
             let state = running.state.clone();
-            drop(tokio::spawn(async move {
+            drop(running.runtime.spawn(async move {
                 cleanup_session_files(&state, session);
             }));
         }
-        Ok(())
+        ROk(())
     }
+
+    fn on_plugin_data(
+        &self,
+        _server: ServerId,
+        _sender: SessionId,
+        _data_id: RStr<'_>,
+        _data: RSlice<'_, u8>,
+    ) -> PluginResult<()> {
+        ROk(())
+    }
+}
+
+impl FileServerPlugin {
+    fn build_plugin_info(&self) -> PluginInfo {
+        let mut debug_rows: Vec<DebugRow> = Vec::new();
+        if let Ok(guard) = self.inner.lock() {
+            if let Some(running) = guard.as_ref() {
+                debug_rows.push(DebugRow {
+                    label: "base_url".into(),
+                    value: running.state.config.base_url.clone(),
+                });
+                debug_rows.push(DebugRow {
+                    label: "bind".into(),
+                    value: format!(
+                        "{}:{}",
+                        running.state.config.bind_address, running.state.config.port
+                    ),
+                });
+                debug_rows.push(DebugRow {
+                    label: "max_file_size_bytes".into(),
+                    value: running.state.config.max_file_size_bytes.to_string(),
+                });
+                debug_rows.push(DebugRow {
+                    label: "delete_on_ttl".into(),
+                    value: running.state.config.delete_on_ttl.to_string(),
+                });
+            }
+        }
+        PluginInfo {
+            description: "HTTP file sharing with signed URLs and per-channel ACLs.".into(),
+            author: Some("Fancy Mumble".into()),
+            homepage: None,
+            capabilities: vec!["http".into(), "files".into(), "emotes".into()],
+            debug_rows,
+        }
+    }
+}
+
+fn build_running_state(
+    facade: Arc<dyn HostFacade>,
+) -> Result<RunningState, PluginError> {
+    let cfg = FileServerConfig::from_context(facade.as_ref())
+        .map_err(|e| PluginError::Config(e.to_string().into()))?;
+    let cfg = Arc::new(cfg);
+
+    std::fs::create_dir_all(&cfg.storage_path)
+        .map_err(|e| PluginError::Io(format!("create storage dir: {e}").into()))?;
+
+    let storage = Storage::open(&cfg.storage_path, cfg.max_total_storage_bytes)
+        .map_err(|e| PluginError::Other(format!("storage: {e}").into()))?;
+
+    let documents = documents::DocumentsStore::open(&cfg.storage_path)
+        .map_err(|e| PluginError::Other(format!("documents: {e}").into()))?;
+
+    let signing_secret = load_or_create_signing_secret(&cfg.storage_path)
+        .map_err(|e| PluginError::Other(format!("signing secret: {e}").into()))?;
+
+    let app_state = AppState {
+        storage: Arc::new(storage),
+        documents: Arc::new(documents),
+        tickets: Arc::new(TicketStore::new()),
+        sessions: Arc::new(SessionMap::new()),
+        auth_rate_limiter: Arc::new(RateLimiter::new()),
+        signing_secret: Arc::new(signing_secret),
+        config: cfg,
+        plugin_ctx: facade,
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("fancy-file-server")
+        .build()
+        .map_err(|e| PluginError::Other(format!("tokio runtime: {e}").into()))?;
+
+    let handle = runtime
+        .block_on(server::start(app_state.clone()))
+        .map_err(|e| PluginError::Io(format!("http server start: {e}").into()))?;
+
+    Ok(RunningState {
+        handle: Some(handle),
+        runtime,
+        state: app_state,
+    })
+}
+
+fn announce_to_client(
+    running: &RunningState,
+    server_id: ServerId,
+    session_id: SessionId,
+    cert_hash: &str,
+) -> Result<(), String> {
+    let upload_token = generate_token_hex();
+    let session_jwt = issue_session_jwt(
+        running.state.signing_secret.as_ref(),
+        cert_hash,
+        session_id,
+        server_id,
+        SESSION_JWT_TTL_SECS,
+    )
+    .map_err(|e| format!("issue jwt: {e}"))?;
+
+    running.state.sessions.insert(
+        session_id,
+        SessionInfo {
+            cert_hash: cert_hash.to_owned(),
+            upload_token: upload_token.clone(),
+        },
+    );
+
+    let payload = serde_json::json!({
+        "type": "file-server-config",
+        "base_url": running.state.config.base_url,
+        "session_id": session_id,
+        "upload_token": upload_token,
+        "session_jwt": session_jwt,
+        "max_file_size_bytes": running.state.config.max_file_size_bytes,
+        "delete_on_ttl": running.state.config.delete_on_ttl,
+        "ttl_seconds": running.state.config.ttl.as_secs(),
+        "delete_on_download": running.state.config.delete_on_download,
+        "delete_on_disconnect": running.state.config.delete_on_disconnect,
+        "can_manage_emotes": running.state.plugin_ctx.has_permission(
+            server_id, session_id, 0, permissions::MANAGE_EMOTES,
+        ),
+        "can_share_files": running.state.plugin_ctx.has_permission(
+            server_id, session_id, 0, permissions::SHARE_FILES,
+        ),
+        "can_share_files_public": running.state.plugin_ctx.has_permission(
+            server_id, session_id, 0, permissions::SHARE_FILES_PUBLIC,
+        ),
+    });
+    let bytes = serde_json::to_vec(&payload).map_err(|e| format!("serialize: {e}"))?;
+    running
+        .state
+        .plugin_ctx
+        .send_plugin_data(server_id, session_id, FILE_SERVER_DATA_ID, &bytes)
+        .map_err(|e| format!("send_plugin_data: {e}"))
 }
 
 fn cleanup_session_files(state: &AppState, session: SessionId) {
@@ -244,3 +337,21 @@ fn generate_token_hex() -> String {
 
 /// Re-export the time-helper used by tests.
 pub use signing::now_unix_seconds;
+
+fn init_tracing() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_env("MUMBLE_PLUGIN_LOG")
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .try_init();
+    });
+}
+
+mod plugin_export {
+    use super::FileServerPlugin;
+    mumble_plugin_api::fancy_export_plugin!(FileServerPlugin::new);
+}

@@ -1,12 +1,16 @@
-//! C-callable callback table provided by the Mumble server, plus the
-//! [`HostContext`] adapter that implements [`mumble_plugin_api::PluginContext`].
+//! C-callable callback table provided by the Mumble server, plus a
+//! [`PluginContext`] implementation that bridges plugins back to the
+//! server through those callbacks.
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::os::raw::c_void;
 use std::ptr;
 use std::sync::Arc;
 
-use mumble_plugin_api::{ChannelId, LiveDocInviteParams, PluginContext, PluginError, ServerId, SessionId};
+use abi_stable::std_types::{RNone, ROption, RSlice, RSome, RStr, RString};
+use mumble_plugin_api::{
+    ChannelId, PluginContext, PluginError, PluginMessageOut, PluginResult, ServerId, SessionId,
+};
 
 /// C-callable callback table the server fills in and passes to
 /// [`crate::ffi::plugin_host_create`].
@@ -47,8 +51,7 @@ pub struct PluginHostCallbacks {
     >,
 
     /// Returns true if `session` has all the permissions in
-    /// `permission_flags` on `channel`. `permission_flags` is a bitmask
-    /// of `ChanACL::Perm` values; channel `0` is the root channel.
+    /// `permission_flags` on `channel` (a bitmask of `ChanACL::Perm`).
     pub has_permission: Option<
         unsafe extern "C" fn(
             user_data: *mut c_void,
@@ -61,8 +64,7 @@ pub struct PluginHostCallbacks {
 
     /// Returns the channel id `session` is currently in, written through
     /// `out_channel`.  Returns `true` on success, `false` if the session
-    /// is unknown (in which case `out_channel` is unmodified).  Used by
-    /// plugins to defend against client-supplied channel id spoofing.
+    /// is unknown.
     pub current_channel: Option<
         unsafe extern "C" fn(
             user_data: *mut c_void,
@@ -81,30 +83,33 @@ pub struct PluginHostCallbacks {
     /// Free a string previously returned by [`Self::get_config`].
     pub free_string: Option<unsafe extern "C" fn(user_data: *mut c_void, ptr: *mut c_char)>,
 
-    /// Deliver a `FancyLiveDocInvite` (wire ID 142) to a single session.
-    /// Returns 0 on success, non-zero on error.
-    pub send_fancy_live_doc_invite: Option<
+    /// Dispatch a generic `PluginMessage` envelope (wire ID 200).  The
+    /// host C++ side decides routing: every session in `target_sessions`
+    /// receives the envelope; if that slice is empty and `channel_id`
+    /// is set (non-zero `channel_id_present`), every member of the
+    /// channel receives it instead.  Returns 0 on success.
+    pub send_plugin_message: Option<
         unsafe extern "C" fn(
             user_data: *mut c_void,
             server_id: u32,
-            target_session: u32,
+            plugin_name: *const c_char,
+            payload_type: *const c_char,
+            payload: *const u8,
+            payload_len: usize,
+            target_sessions: *const u32,
+            target_len: usize,
+            channel_id_present: bool,
             channel_id: u32,
-            slug: *const c_char,
-            title: *const c_char,
-            ws_url: *const c_char,
-            token: *const c_char,
         ) -> c_int,
     >,
 }
 
-// SAFETY: The callbacks are required by API contract to be thread-safe.
-// The user_data pointer is owned by the C++ host which guarantees it
-// outlives every plugin call.
+// SAFETY: callbacks are documented as thread-safe; user_data is owned
+// by the C++ host which guarantees it outlives every plugin call.
 unsafe impl Send for PluginHostCallbacks {}
 unsafe impl Sync for PluginHostCallbacks {}
 
-/// Adapter wired to the C callbacks; handed to plugins as
-/// `Arc<dyn PluginContext>`.
+/// Concrete adapter that holds the C callback table.
 #[derive(Debug)]
 pub(crate) struct HostContext {
     pub(crate) callbacks: PluginHostCallbacks,
@@ -114,25 +119,34 @@ impl HostContext {
     pub(crate) fn new(callbacks: PluginHostCallbacks) -> Self {
         Self { callbacks }
     }
-}
 
-impl PluginContext for HostContext {
-    fn send_plugin_data(
+    /// Direct C-callback bridge for `send_plugin_data`.  Used by the
+    /// host itself (not just plugins) to ship `fancy-plugin-info`
+    /// envelopes to newly connected clients.
+    pub(crate) fn send_plugin_data_raw(
         &self,
         server_id: ServerId,
         target_session: SessionId,
         data_id: &str,
         data: &[u8],
-    ) -> mumble_plugin_api::Result<()> {
-        let func = self
-            .callbacks
-            .send_plugin_data
-            .ok_or_else(|| PluginError::Other("send_plugin_data callback missing".into()))?;
-        let id_c = CString::new(data_id)
-            .map_err(|_| PluginError::Other("data_id contains NUL".into()))?;
+    ) -> PluginResult<()> {
+        let func = match self.callbacks.send_plugin_data {
+            Some(f) => f,
+            None => {
+                return PluginResult::RErr(PluginError::Other(
+                    "send_plugin_data callback missing".into(),
+                ))
+            }
+        };
+        let id_c = match CString::new(data_id) {
+            Ok(c) => c,
+            Err(_) => {
+                return PluginResult::RErr(PluginError::Other("data_id contains NUL".into()))
+            }
+        };
         let data_ptr = if data.is_empty() { ptr::null() } else { data.as_ptr() };
-        // SAFETY: callback is non-null, id_c lives until function returns,
-        // data slice is valid for `data.len()` bytes.
+        // SAFETY: callback non-null; id_c lives until return; data slice
+        // is valid for `data.len()` bytes.
         let rc = unsafe {
             func(
                 self.callbacks.user_data,
@@ -144,134 +158,29 @@ impl PluginContext for HostContext {
             )
         };
         if rc == 0 {
-            Ok(())
+            PluginResult::ROk(())
         } else {
-            Err(PluginError::Other(format!("send_plugin_data returned {rc}")))
-        }
-    }
-
-    fn is_session_active(&self, server_id: ServerId, session: SessionId) -> bool {
-        let Some(func) = self.callbacks.is_session_active else { return false };
-        // SAFETY: callback is non-null and primitives are passed by value.
-        unsafe { func(self.callbacks.user_data, server_id, session) }
-    }
-
-    fn user_has_channel_access(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-        channel: ChannelId,
-    ) -> bool {
-        let Some(func) = self.callbacks.user_has_channel_access else { return false };
-        // SAFETY: callback is non-null and primitives are passed by value.
-        unsafe { func(self.callbacks.user_data, server_id, session, channel) }
-    }
-
-    fn has_permission(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-        channel: ChannelId,
-        permission_flags: u32,
-    ) -> bool {
-        let Some(func) = self.callbacks.has_permission else { return false };
-        // SAFETY: callback is non-null and primitives are passed by value.
-        unsafe {
-            func(
-                self.callbacks.user_data,
-                server_id,
-                session,
-                channel,
-                permission_flags,
-            )
-        }
-    }
-
-    fn current_channel(&self, server_id: ServerId, session: SessionId) -> Option<ChannelId> {
-        let func = self.callbacks.current_channel?;
-        let mut out: u32 = 0;
-        // SAFETY: callback is non-null; `out` is a valid stack slot.
-        let ok = unsafe { func(self.callbacks.user_data, server_id, session, &mut out) };
-        if ok { Some(out) } else { None }
-    }
-
-    fn get_config(&self, key: &str) -> Option<String> {
-        let func = self.callbacks.get_config?;
-        let free = self.callbacks.free_string?;
-        let key_c = CString::new(key).ok()?;
-        // SAFETY: both callbacks are non-null; key_c outlives the call;
-        // the returned pointer (if non-null) is owned by us until we hand
-        // it back to `free`.
-        let raw = unsafe { func(self.callbacks.user_data, key_c.as_ptr()) };
-        if raw.is_null() {
-            return None;
-        }
-        // SAFETY: the host promises a NUL-terminated UTF-8 string.
-        let value = unsafe { CStr::from_ptr(raw) }.to_str().ok().map(str::to_owned);
-        // SAFETY: pointer was returned by `get_config` and we only free it once.
-        unsafe { free(self.callbacks.user_data, raw) };
-        value
-    }
-
-    fn send_fancy_live_doc_invite(
-        &self,
-        server_id: ServerId,
-        target_session: SessionId,
-        channel_id: ChannelId,
-        invite: &LiveDocInviteParams<'_>,
-    ) -> mumble_plugin_api::Result<()> {
-        let func = self
-            .callbacks
-            .send_fancy_live_doc_invite
-            .ok_or_else(|| PluginError::Other("send_fancy_live_doc_invite not wired".into()))?;
-        let slug_c = CString::new(invite.slug)
-            .map_err(|_| PluginError::Other("slug contains NUL".into()))?;
-        let title_c = CString::new(invite.title)
-            .map_err(|_| PluginError::Other("title contains NUL".into()))?;
-        let ws_url_c = CString::new(invite.ws_url)
-            .map_err(|_| PluginError::Other("ws_url contains NUL".into()))?;
-        let token_c = CString::new(invite.token)
-            .map_err(|_| PluginError::Other("token contains NUL".into()))?;
-        // SAFETY: callback is non-null; all CString values outlive the call.
-        let rc = unsafe {
-            func(
-                self.callbacks.user_data,
-                server_id,
-                target_session,
-                channel_id,
-                slug_c.as_ptr(),
-                title_c.as_ptr(),
-                ws_url_c.as_ptr(),
-                token_c.as_ptr(),
-            )
-        };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(PluginError::Other(format!(
-                "send_fancy_live_doc_invite returned {rc}"
-            )))
+            PluginResult::RErr(PluginError::Other(
+                format!("send_plugin_data returned {rc}").into(),
+            ))
         }
     }
 }
 
-/// Wraps a shared [`HostContext`] and prefixes every
-/// [`PluginContext::get_config`] key with a plugin-specific namespace
-/// (e.g. `"plugin.live-doc"`).  All other calls delegate directly to the
-/// inner context, so no callback logic is duplicated here.
+/// Plugin-facing context: namespaces config lookups under a per-plugin
+/// prefix (e.g. `"plugin.live-doc"`) and forwards everything else to
+/// the shared [`HostContext`].
 #[derive(Debug)]
 pub(crate) struct ScopedContext {
     inner: Arc<HostContext>,
-    prefix: String,
+    config_prefix: String,
 }
 
 impl ScopedContext {
-    /// Create a new scoped context. `prefix` should be the dot-separated
-    /// plugin section name, e.g. `"plugin.live-doc"`.
-    pub(crate) fn new(inner: Arc<HostContext>, prefix: impl Into<String>) -> Self {
+    pub(crate) fn new(inner: Arc<HostContext>, config_prefix: impl Into<String>) -> Self {
         Self {
             inner,
-            prefix: prefix.into(),
+            config_prefix: config_prefix.into(),
         }
     }
 }
@@ -281,14 +190,19 @@ impl PluginContext for ScopedContext {
         &self,
         server_id: ServerId,
         target_session: SessionId,
-        data_id: &str,
-        data: &[u8],
-    ) -> mumble_plugin_api::Result<()> {
-        self.inner.send_plugin_data(server_id, target_session, data_id, data)
+        data_id: RStr<'_>,
+        data: RSlice<'_, u8>,
+    ) -> PluginResult<()> {
+        self.inner
+            .send_plugin_data_raw(server_id, target_session, data_id.as_str(), data.as_slice())
     }
 
     fn is_session_active(&self, server_id: ServerId, session: SessionId) -> bool {
-        self.inner.is_session_active(server_id, session)
+        let Some(func) = self.inner.callbacks.is_session_active else {
+            return false;
+        };
+        // SAFETY: callback non-null; primitive args passed by value.
+        unsafe { func(self.inner.callbacks.user_data, server_id, session) }
     }
 
     fn user_has_channel_access(
@@ -297,7 +211,11 @@ impl PluginContext for ScopedContext {
         session: SessionId,
         channel: ChannelId,
     ) -> bool {
-        self.inner.user_has_channel_access(server_id, session, channel)
+        let Some(func) = self.inner.callbacks.user_has_channel_access else {
+            return false;
+        };
+        // SAFETY: callback non-null; primitive args passed by value.
+        unsafe { func(self.inner.callbacks.user_data, server_id, session, channel) }
     }
 
     fn has_permission(
@@ -307,24 +225,125 @@ impl PluginContext for ScopedContext {
         channel: ChannelId,
         permission_flags: u32,
     ) -> bool {
-        self.inner.has_permission(server_id, session, channel, permission_flags)
+        let Some(func) = self.inner.callbacks.has_permission else {
+            return false;
+        };
+        // SAFETY: callback non-null; primitive args passed by value.
+        unsafe {
+            func(
+                self.inner.callbacks.user_data,
+                server_id,
+                session,
+                channel,
+                permission_flags,
+            )
+        }
     }
 
-    fn current_channel(&self, server_id: ServerId, session: SessionId) -> Option<ChannelId> {
-        self.inner.current_channel(server_id, session)
-    }
-
-    fn get_config(&self, key: &str) -> Option<String> {
-        self.inner.get_config(&format!("{}.{}", self.prefix, key))
-    }
-
-    fn send_fancy_live_doc_invite(
+    fn current_channel(
         &self,
         server_id: ServerId,
-        target_session: SessionId,
-        channel_id: ChannelId,
-        invite: &LiveDocInviteParams<'_>,
-    ) -> mumble_plugin_api::Result<()> {
-        self.inner.send_fancy_live_doc_invite(server_id, target_session, channel_id, invite)
+        session: SessionId,
+    ) -> ROption<ChannelId> {
+        let Some(func) = self.inner.callbacks.current_channel else {
+            return RNone;
+        };
+        let mut out: u32 = 0;
+        // SAFETY: callback non-null; `out` is a valid stack slot.
+        let ok = unsafe { func(self.inner.callbacks.user_data, server_id, session, &mut out) };
+        if ok {
+            RSome(out)
+        } else {
+            RNone
+        }
+    }
+
+    fn get_config(&self, key: RStr<'_>) -> ROption<RString> {
+        let Some(func) = self.inner.callbacks.get_config else {
+            return RNone;
+        };
+        let Some(free) = self.inner.callbacks.free_string else {
+            return RNone;
+        };
+        let prefixed = format!("{}.{}", self.config_prefix, key.as_str());
+        let Ok(key_c) = CString::new(prefixed) else {
+            return RNone;
+        };
+        // SAFETY: both callbacks non-null; key_c outlives the call; the
+        // returned pointer (if non-null) is owned by us until we free it.
+        let raw = unsafe { func(self.inner.callbacks.user_data, key_c.as_ptr()) };
+        if raw.is_null() {
+            return RNone;
+        }
+        // SAFETY: host promises NUL-terminated UTF-8.
+        let value = unsafe { CStr::from_ptr(raw) }
+            .to_str()
+            .ok()
+            .map(str::to_owned);
+        // SAFETY: pointer was returned by `get_config`; freed exactly once.
+        unsafe { free(self.inner.callbacks.user_data, raw) };
+        match value {
+            Some(v) => RSome(RString::from(v)),
+            None => RNone,
+        }
+    }
+
+    fn send_plugin_message(&self, msg: PluginMessageOut) -> PluginResult<()> {
+        let func = match self.inner.callbacks.send_plugin_message {
+            Some(f) => f,
+            None => {
+                return PluginResult::RErr(PluginError::Other(
+                    "send_plugin_message callback missing".into(),
+                ))
+            }
+        };
+        let plugin_name_c = match CString::new(msg.plugin_name.as_str()) {
+            Ok(c) => c,
+            Err(_) => {
+                return PluginResult::RErr(PluginError::Other(
+                    "plugin_name contains NUL".into(),
+                ))
+            }
+        };
+        let payload_type_c = match CString::new(msg.payload_type.as_str()) {
+            Ok(c) => c,
+            Err(_) => {
+                return PluginResult::RErr(PluginError::Other(
+                    "payload_type contains NUL".into(),
+                ))
+            }
+        };
+        let payload_slice = msg.payload.as_slice();
+        let payload_ptr =
+            if payload_slice.is_empty() { ptr::null() } else { payload_slice.as_ptr() };
+        let targets = msg.target_sessions.as_slice();
+        let targets_ptr = if targets.is_empty() { ptr::null() } else { targets.as_ptr() };
+        let (channel_present, channel_id) = match msg.channel_id {
+            RSome(c) => (true, c),
+            RNone => (false, 0),
+        };
+        // SAFETY: callback non-null; all pointers either NULL or backed
+        // by RVec/CString that live until the call returns.
+        let rc = unsafe {
+            func(
+                self.inner.callbacks.user_data,
+                msg.server_id,
+                plugin_name_c.as_ptr(),
+                payload_type_c.as_ptr(),
+                payload_ptr,
+                payload_slice.len(),
+                targets_ptr,
+                targets.len(),
+                channel_present,
+                channel_id,
+            )
+        };
+        if rc == 0 {
+            PluginResult::ROk(())
+        } else {
+            PluginResult::RErr(PluginError::Other(
+                format!("send_plugin_message returned {rc}").into(),
+            ))
+        }
     }
 }

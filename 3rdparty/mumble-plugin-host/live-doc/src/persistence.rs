@@ -26,12 +26,12 @@ const YJS_MARKER_SUFFIX: &str = "-->";
 /// Try to seed a freshly-created room from the file-server, if a
 /// previous snapshot exists.  Failure is logged and ignored - a
 /// missing snapshot is a normal "first open" condition.
-pub async fn try_seed_room(cfg: &LiveDocConfig, room: &DocRoom) {
+pub async fn try_seed_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: &DocRoom) {
     let Some(url) = cfg.file_server_url.as_deref() else {
         return;
     };
     let filename = room.key().as_filename();
-    match fetch_file(url, cfg.file_server_admin_token.as_deref(), &filename).await {
+    match fetch_file(client, url, cfg.file_server_admin_token.as_deref(), &filename).await {
         Ok(Some(contents)) => {
             if let Some(snapshot) = extract_snapshot(&contents) {
                 if let Err(err) = room.seed_from_snapshot(&snapshot).await {
@@ -50,7 +50,7 @@ pub async fn try_seed_room(cfg: &LiveDocConfig, room: &DocRoom) {
 ///
 /// Returns silently on any failure - persistence is best-effort and
 /// must not block teardown.
-pub async fn persist_room(cfg: &LiveDocConfig, room: &DocRoom) {
+pub async fn persist_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: &DocRoom) {
     let Some(url) = cfg.file_server_url.as_deref() else {
         return;
     };
@@ -68,7 +68,9 @@ pub async fn persist_room(cfg: &LiveDocConfig, room: &DocRoom) {
         B64.encode(&snapshot),
     );
 
-    if let Err(err) = put_file(url, cfg.file_server_admin_token.as_deref(), &filename, body).await {
+    if let Err(err) =
+        put_file(client, url, cfg.file_server_admin_token.as_deref(), &filename, body).await
+    {
         tracing::warn!(?err, ?filename, "live-doc persist failed");
     }
 }
@@ -84,6 +86,7 @@ fn extract_snapshot(body: &str) -> Option<Vec<u8>> {
 }
 
 async fn fetch_file(
+    client: &reqwest::Client,
     base_url: &str,
     admin_token: Option<&str>,
     filename: &str,
@@ -92,12 +95,7 @@ async fn fetch_file(
         return Ok(None);
     };
     let url = format!("{}/admin/documents/{}", base_url.trim_end_matches('/'), filename);
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
-        .bearer_auth(token)
-        .send()
-        .await?;
+    let resp = client.get(&url).bearer_auth(token).send().await?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
@@ -106,6 +104,7 @@ async fn fetch_file(
 }
 
 async fn put_file(
+    client: &reqwest::Client,
     base_url: &str,
     admin_token: Option<&str>,
     filename: &str,
@@ -115,7 +114,6 @@ async fn put_file(
         return Ok(());
     };
     let url = format!("{}/admin/documents/{}", base_url.trim_end_matches('/'), filename);
-    let client = reqwest::Client::new();
     let _response = client
         .put(&url)
         .bearer_auth(token)

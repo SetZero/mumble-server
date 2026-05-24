@@ -1,4 +1,4 @@
-//! Plugin configuration parsed from `[plugin.live-doc]` keys.
+//! Plugin configuration parsed from `plugin.fancy-live-doc.*` keys.
 //!
 //! Mirrors the `file-server` `FileServerConfig` shape so operators
 //! configure both plugins with the same idioms.
@@ -6,8 +6,9 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
-use mumble_plugin_api::PluginContext;
 use thiserror::Error;
+
+use crate::host_facade::HostFacade;
 
 /// Default WS port if `port` is not set in config.
 pub const DEFAULT_PORT: u16 = 64740;
@@ -23,10 +24,10 @@ pub const DEFAULT_TEARDOWN_GRACE_SECS: u64 = 30;
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// Required key is missing.
-    #[error("required config key missing: plugin.live-doc.{0}")]
+    #[error("required config key missing: plugin.fancy-live-doc.{0}")]
     Missing(&'static str),
     /// Value could not be parsed in the expected format.
-    #[error("invalid config value for plugin.live-doc.{key}: {value}")]
+    #[error("invalid config value for plugin.fancy-live-doc.{key}: {value}")]
     Parse {
         /// Offending key name.
         key: &'static str,
@@ -38,8 +39,6 @@ pub enum ConfigError {
 /// Parsed configuration for the live-doc plugin.
 #[derive(Debug, Clone)]
 pub struct LiveDocConfig {
-    /// Whether the plugin is enabled.  When `false`, `on_load` is a no-op.
-    pub enabled: bool,
     /// Socket address the WS server binds to.
     pub bind: SocketAddr,
     /// Public base URL clients should connect to (e.g. `wss://chat.example.com/live-doc`).
@@ -67,13 +66,8 @@ pub struct LiveDocConfig {
 }
 
 impl LiveDocConfig {
-    /// Parse the configuration from a [`PluginContext`].
-    pub fn from_context(ctx: &dyn PluginContext) -> Result<Self, ConfigError> {
-        let enabled = ctx
-            .get_config("enabled")
-            .map(|v| matches!(v.as_str(), "true" | "1" | "yes" | "on"))
-            .unwrap_or(false);
-
+    /// Parse the configuration from a [`HostFacade`].
+    pub fn from_context(ctx: &dyn HostFacade) -> Result<Self, ConfigError> {
         let port = parse_optional("port", ctx.get_config("port").as_deref())?.unwrap_or(DEFAULT_PORT);
         let host: IpAddr = match ctx.get_config("host").as_deref() {
             Some(v) => v.parse().map_err(|_| ConfigError::Parse {
@@ -105,7 +99,6 @@ impl LiveDocConfig {
         .unwrap_or(DEFAULT_TEARDOWN_GRACE_SECS);
 
         Ok(Self {
-            enabled,
             bind: SocketAddr::new(host, port),
             public_url: ctx.get_config("public_url"),
             jwt_secret: ctx.get_config("jwt_secret"),

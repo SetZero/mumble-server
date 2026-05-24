@@ -90,11 +90,10 @@
     PROCESS_MUMBLE_TCP_MESSAGE(FancyOnboardingResponse, 138) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyOnboardingResponseQuery, 139) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyOnboardingResponseDeliver, 140) \
-    PROCESS_MUMBLE_TCP_MESSAGE(FancyLiveDocOpen, 141) \
-    PROCESS_MUMBLE_TCP_MESSAGE(FancyLiveDocInvite, 142) \
-    PROCESS_MUMBLE_TCP_MESSAGE(FancyLiveDocAnnounce, 143) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPoll, 144) \
-    PROCESS_MUMBLE_TCP_MESSAGE(FancyPollVote, 145)
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyPollVote, 145) \
+    PROCESS_MUMBLE_TCP_MESSAGE(PluginMessage, 200) \
+    PROCESS_MUMBLE_TCP_MESSAGE(PluginRegistry, 201)
 
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.

@@ -2,10 +2,9 @@
 
 use std::sync::Arc;
 
-use mumble_plugin_api::PluginContext;
-
 use crate::config::FileServerConfig;
 use crate::documents::DocumentsStore;
+use crate::host_facade::HostFacade;
 use crate::rate_limit::RateLimiter;
 use crate::session::SessionMap;
 use crate::storage::Storage;
@@ -30,5 +29,5 @@ pub struct AppState {
     /// Plugin configuration.
     pub config: Arc<FileServerConfig>,
     /// Handle back into the host (for `is_session_active` / channel ACL checks).
-    pub plugin_ctx: Arc<dyn PluginContext>,
+    pub plugin_ctx: Arc<dyn HostFacade>,
 }

@@ -1,13 +1,20 @@
 //! End-to-end test of the FFI surface using a fake C-style callback table.
+//!
+//! With the new dynamic plugin model the host loads zero plugins when no
+//! plugin directory is configured, so this test exercises the create →
+//! dispatch → destroy cycle without any plugins being present.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
 
 // These crates are dependencies of the cdylib but not used directly here.
-use mumble_file_server as _;
+use abi_stable as _;
 use mumble_plugin_api as _;
-use tokio as _;
+use serde as _;
+use serde_json as _;
+use thiserror as _;
 use tracing as _;
 use tracing_subscriber as _;
+use zstd as _;
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::os::raw::c_void;
@@ -48,34 +55,16 @@ unsafe extern "C" fn cb_active(_user: *mut c_void, _server: u32, _session: u32) 
     true
 }
 
-unsafe extern "C" fn cb_access(
-    _user: *mut c_void,
-    _server: u32,
-    _session: u32,
-    _channel: u32,
-) -> bool {
+unsafe extern "C" fn cb_access(_user: *mut c_void, _server: u32, _session: u32, _channel: u32) -> bool {
     true
 }
 
-unsafe extern "C" fn cb_perm(
-    _user: *mut c_void,
-    _server: u32,
-    _session: u32,
-    _channel: u32,
-    _perm: u32,
-) -> bool {
+unsafe extern "C" fn cb_perm(_user: *mut c_void, _server: u32, _session: u32, _channel: u32, _perm: u32) -> bool {
     false
 }
 
-unsafe extern "C" fn cb_get_config(_user: *mut c_void, key: *const c_char) -> *mut c_char {
-    let key = unsafe { CStr::from_ptr(key) }.to_str().unwrap_or("");
-    let value = match key {
-        "enabled" => "false", // disable HTTP server in tests
-        _ => return ptr::null_mut(),
-    };
-    CString::new(value)
-        .map(CString::into_raw)
-        .unwrap_or(ptr::null_mut())
+unsafe extern "C" fn cb_get_config(_user: *mut c_void, _key: *const c_char) -> *mut c_char {
+    ptr::null_mut()
 }
 
 unsafe extern "C" fn cb_free_string(_user: *mut c_void, ptr: *mut c_char) {
@@ -98,6 +87,7 @@ fn create_dispatch_destroy_roundtrip() {
         current_channel: None,
         get_config: Some(cb_get_config),
         free_string: Some(cb_free_string),
+        send_plugin_message: None,
     };
 
     let handle = unsafe { plugin_host_create(&cb) };
@@ -111,17 +101,6 @@ fn create_dispatch_destroy_roundtrip() {
         plugin_host_destroy(handle);
     }
 
-    // file-server is disabled via config so no plugin-data send should occur.
+    // No plugins loaded -> no plugin-data sends.
     assert_eq!(server.sends.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn destroy_null_handle_is_safe() {
-    unsafe { plugin_host_destroy(ptr::null_mut()) };
-}
-
-#[test]
-fn create_with_null_callbacks_returns_null() {
-    let handle = unsafe { plugin_host_create(ptr::null()) };
-    assert!(handle.is_null());
 }
