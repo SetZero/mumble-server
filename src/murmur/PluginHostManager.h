@@ -64,6 +64,29 @@ public:
         /// Whether the host loaded successfully.
         bool isLoaded() const { return m_handle != nullptr; }
 
+        // ---- Plugin admin (FancyPluginAdmin wire IDs 146-151) ----
+
+        /// JSON snapshot of every known plugin.  See
+        /// `plugin_host_list_plugins` in the generated header for the
+        /// payload shape.  Returns an empty string on failure.
+        QByteArray listPluginsJson() const;
+
+        /// Toggle a plugin's enabled state.  Returns the FFI's JSON
+        /// result envelope ({"ok":true} or {"ok":false,"error":".."}).
+        QByteArray setPluginEnabled(const QString &pluginName, bool enabled);
+
+        /// Download and install a plugin from the marketplace.  The
+        /// new plugin starts disabled.  Returns the FFI's JSON result
+        /// envelope; on success it also carries `plugin_name`.
+        /// `expectedSha256` may be empty to skip the caller-side
+        /// manifest digest check.
+        QByteArray installPlugin(const QString &marketplaceId, const QString &version,
+                                 const QString &manifestUrl, const QString &expectedSha256);
+
+        /// Drop a plugin, delete its cdylib, and clear its
+        /// `plugin.<name>.*` settings.  Returns the FFI's JSON envelope.
+        QByteArray uninstallPlugin(const QString &pluginName);
+
 private:
         // -- C callback trampolines (called from the Rust runtime) --
         static int sendPluginDataTrampoline(void *userData, uint32_t serverId, uint32_t targetSession,
@@ -82,6 +105,8 @@ private:
                                                const uint8_t *payload, size_t payloadLen,
                                                const uint32_t *targetSessions, size_t targetLen,
                                                bool channelIdPresent, uint32_t channelId);
+        static int setConfigTrampoline(void *userData, const char *key, const char *value);
+        static int deleteConfigPrefixTrampoline(void *userData, const char *prefix);
 
         Server *m_server;
         PluginHostHandle *m_handle;

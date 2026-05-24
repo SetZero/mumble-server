@@ -12,12 +12,17 @@
 
 // These crates are dependencies of the cdylib but not used directly here.
 use abi_stable as _;
+use flate2 as _;
 use mumble_plugin_api as _;
 use serde as _;
 use serde_json as _;
+use sha2 as _;
+use tar as _;
 use thiserror as _;
 use tracing as _;
 use tracing_subscriber as _;
+use ureq as _;
+use zip as _;
 use zstd as _;
 
 use std::ffi::{c_char, c_int, CStr, CString};
@@ -103,6 +108,8 @@ fn create_dispatch_destroy_roundtrip() {
         get_config: Some(cb_get_config),
         free_string: Some(cb_free_string),
         send_plugin_message: None,
+        set_config: None,
+        delete_config_prefix: None,
     };
 
     let handle = unsafe { plugin_host_create(&cb) };

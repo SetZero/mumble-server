@@ -583,11 +583,11 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 	sendMessage(uSource, mpss);
 
-	// Tell new Fancy 0.4.0+ clients which plugins the server has
+	// Tell new Fancy 0.3.0+ clients which plugins the server has
 	// loaded.  Older clients ignore the unknown message ID.
 	if (m_pluginHost && m_pluginHost->isLoaded()
 		&& uSource->m_FancyVersion.has_value()
-		&& uSource->m_FancyVersion.value() >= Version::fromComponents(0, 4, 0)) {
+		&& uSource->m_FancyVersion.value() >= Version::fromComponents(0, 3, 0)) {
 		MumbleProto::PluginRegistry mpreg;
 		m_pluginHost->fillRegistry(mpreg);
 		if (mpreg.plugins_size() > 0) {
@@ -3628,6 +3628,247 @@ void Server::msgFancyOnboardingResponseQuery(ServerUser *uSource,
 void Server::msgFancyOnboardingResponseDeliver(ServerUser *,
 											   MumbleProto::FancyOnboardingResponseDeliver &) {
 	// Server -> Client only; ignore inbound.
+}
+
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: plugin admin (IDs 146-151) - introduced in 0.4.0
+// ---------------------------------------------------------------------------
+
+namespace {
+// Fill `out` from the host's `listPluginsJson()` snapshot.
+void buildPluginAdminListMessage(const QByteArray &json, MumbleProto::FancyPluginAdminList &out) {
+	QJsonParseError err{};
+	const QJsonDocument doc = QJsonDocument::fromJson(json, &err);
+	if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+		return;
+	}
+	const QJsonObject root = doc.object();
+	if (root.contains(QStringLiteral("plugins_dir"))) {
+		out.set_plugins_dir(root.value(QStringLiteral("plugins_dir")).toString().toStdString());
+	}
+	const QJsonArray plugins = root.value(QStringLiteral("plugins")).toArray();
+	for (const QJsonValue &v : plugins) {
+		const QJsonObject obj = v.toObject();
+		auto *entry           = out.add_plugins();
+		entry->set_plugin_name(obj.value(QStringLiteral("plugin_name")).toString().toStdString());
+		entry->set_version(obj.value(QStringLiteral("version")).toString().toStdString());
+		entry->set_enabled(obj.value(QStringLiteral("enabled")).toBool(false));
+		if (obj.contains(QStringLiteral("loaded"))) {
+			entry->set_loaded(obj.value(QStringLiteral("loaded")).toBool(false));
+		}
+		if (obj.contains(QStringLiteral("path"))) {
+			entry->set_path(obj.value(QStringLiteral("path")).toString().toStdString());
+		}
+		if (obj.contains(QStringLiteral("info_json"))) {
+			entry->set_info_json(obj.value(QStringLiteral("info_json")).toString().toStdString());
+		}
+		if (obj.contains(QStringLiteral("marketplace_id"))) {
+			entry->set_marketplace_id(
+				obj.value(QStringLiteral("marketplace_id")).toString().toStdString());
+		}
+		if (obj.contains(QStringLiteral("installed_at"))) {
+			entry->set_installed_at(
+				static_cast< uint64_t >(obj.value(QStringLiteral("installed_at")).toDouble(0)));
+		}
+		if (obj.contains(QStringLiteral("builtin"))) {
+			entry->set_builtin(obj.value(QStringLiteral("builtin")).toBool(false));
+		}
+	}
+}
+
+// Decode a `{"ok":..,"error":".."[,"plugin_name":".."]}` envelope.
+struct PluginAdminResult {
+	bool ok;
+	QString error;
+	QString pluginName;
+};
+
+PluginAdminResult parsePluginAdminResult(const QByteArray &json) {
+	PluginAdminResult result{ false, {}, {} };
+	QJsonParseError err{};
+	const QJsonDocument doc = QJsonDocument::fromJson(json, &err);
+	if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+		result.error = QStringLiteral("invalid response from plugin host");
+		return result;
+	}
+	const QJsonObject obj = doc.object();
+	result.ok             = obj.value(QStringLiteral("ok")).toBool(false);
+	result.error          = obj.value(QStringLiteral("error")).toString();
+	result.pluginName     = obj.value(QStringLiteral("plugin_name")).toString();
+	return result;
+}
+
+void sendPluginAdminAck(Server *server, ServerUser *uSource,
+						MumbleProto::FancyPluginAdminAck_Verb verb,
+						const PluginAdminResult &result) {
+	MumbleProto::FancyPluginAdminAck ack;
+	ack.set_verb(verb);
+	ack.set_ok(result.ok);
+	if (!result.error.isEmpty()) {
+		ack.set_error(result.error.toStdString());
+	}
+	if (!result.pluginName.isEmpty()) {
+		ack.set_plugin_name(result.pluginName.toStdString());
+	}
+	server->sendMessage(uSource, ack);
+}
+
+void broadcastPluginAdminList(Server *server) {
+	if (!server->m_pluginHost) {
+		return;
+	}
+	MumbleProto::FancyPluginAdminList reply;
+	buildPluginAdminListMessage(server->m_pluginHost->listPluginsJson(), reply);
+
+	Channel *root = server->qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	for (ServerUser *u : server->qhUsers) {
+		if (u->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!server->hasPermission(u, root, ChanACL::Write)) {
+			continue;
+		}
+		server->sendMessage(u, reply);
+	}
+}
+} // namespace
+
+void Server::msgFancyPluginAdminListRequest(ServerUser *uSource,
+											MumbleProto::FancyPluginAdminListRequest &) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (!m_pluginHost) {
+		return;
+	}
+
+	MumbleProto::FancyPluginAdminList reply;
+	buildPluginAdminListMessage(m_pluginHost->listPluginsJson(), reply);
+	sendMessage(uSource, reply);
+}
+
+void Server::msgFancyPluginAdminList(ServerUser *, MumbleProto::FancyPluginAdminList &) {
+	// Server -> Client only; ignore inbound.
+}
+
+void Server::msgFancyPluginAdminAck(ServerUser *, MumbleProto::FancyPluginAdminAck &) {
+	// Server -> Client only; ignore inbound.
+}
+
+void Server::msgFancyPluginAdminSetEnabled(ServerUser *uSource,
+										   MumbleProto::FancyPluginAdminSetEnabled &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (!m_pluginHost) {
+		PluginAdminResult result{ false, QStringLiteral("plugin host not loaded"), {} };
+		sendPluginAdminAck(this, uSource,
+						   MumbleProto::FancyPluginAdminAck_Verb_SET_ENABLED, result);
+		return;
+	}
+
+	const QString name = QString::fromStdString(msg.plugin_name());
+	const bool enabled = msg.enabled();
+	const QByteArray raw = m_pluginHost->setPluginEnabled(name, enabled);
+	const PluginAdminResult result = parsePluginAdminResult(raw);
+
+	sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_SET_ENABLED, result);
+	if (result.ok) {
+		log(uSource, QString("plugin %1 %2")
+						 .arg(name, QLatin1String(enabled ? "enabled" : "disabled")));
+		broadcastPluginAdminList(this);
+	}
+}
+
+void Server::msgFancyPluginAdminInstall(ServerUser *uSource,
+										MumbleProto::FancyPluginAdminInstall &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (!m_pluginHost) {
+		PluginAdminResult result{ false, QStringLiteral("plugin host not loaded"), {} };
+		sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_INSTALL, result);
+		return;
+	}
+
+	const QString marketplaceId = QString::fromStdString(msg.marketplace_id());
+	const QString version       = msg.has_version() ? QString::fromStdString(msg.version()) : QString();
+	const QString manifestUrl   = QString::fromStdString(msg.manifest_url());
+	const QString expectedSha   = msg.has_expected_sha256()
+									  ? QString::fromStdString(msg.expected_sha256())
+									  : QString();
+
+	const QByteArray raw =
+		m_pluginHost->installPlugin(marketplaceId, version, manifestUrl, expectedSha);
+	const PluginAdminResult result = parsePluginAdminResult(raw);
+
+	sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_INSTALL, result);
+	if (result.ok) {
+		log(uSource,
+			QString("plugin %1 installed (%2)").arg(result.pluginName, marketplaceId));
+		broadcastPluginAdminList(this);
+	} else {
+		log(uSource,
+			QString("plugin install failed (%1): %2").arg(marketplaceId, result.error));
+	}
+}
+
+void Server::msgFancyPluginAdminUninstall(ServerUser *uSource,
+										  MumbleProto::FancyPluginAdminUninstall &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (!m_pluginHost) {
+		PluginAdminResult result{ false, QStringLiteral("plugin host not loaded"), {} };
+		sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_UNINSTALL, result);
+		return;
+	}
+
+	const QString name = QString::fromStdString(msg.plugin_name());
+	const QByteArray raw = m_pluginHost->uninstallPlugin(name);
+	const PluginAdminResult result = parsePluginAdminResult(raw);
+
+	sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_UNINSTALL, result);
+	if (result.ok) {
+		log(uSource, QString("plugin %1 uninstalled").arg(name));
+		broadcastPluginAdminList(this);
+	}
 }
 
 

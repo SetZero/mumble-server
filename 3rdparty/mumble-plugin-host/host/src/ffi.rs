@@ -10,11 +10,12 @@
 
 use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Mutex, MutexGuard};
 
 use mumble_plugin_api::ClientInfo;
 
 use crate::context::{HostContext, PluginHostCallbacks};
-use crate::host::Host;
+use crate::host::{FfiResult, Host};
 
 /// Opaque handle returned by [`plugin_host_create`].
 // cbindgen:opaque
@@ -57,7 +58,7 @@ pub unsafe extern "C" fn plugin_host_create(
         let cb = unsafe { *callbacks };
         let context = HostContext::new(cb);
         match Host::new(context) {
-            Ok(host) => Box::into_raw(Box::new(host)).cast::<PluginHostHandle>(),
+            Ok(host) => Box::into_raw(Box::new(Mutex::new(host))).cast::<PluginHostHandle>(),
             Err(e) => {
                 tracing::error!(error = %e, "failed to construct plugin host");
                 std::ptr::null_mut()
@@ -78,7 +79,7 @@ pub unsafe extern "C" fn plugin_host_destroy(handle: *mut PluginHostHandle) {
             return;
         }
         // SAFETY: handle was produced by `Box::into_raw` in `plugin_host_create`.
-        drop(unsafe { Box::from_raw(handle.cast::<Host>()) });
+        drop(unsafe { Box::from_raw(handle.cast::<Mutex<Host>>()) });
     })
 }
 
@@ -96,7 +97,7 @@ pub unsafe extern "C" fn plugin_host_on_client_connected(
     cert_hash: *const c_char,
 ) {
     ffi_guard("plugin_host_on_client_connected", (), || {
-        let Some(host) = (unsafe { handle_ref(handle) }) else {
+        let Some(host) = (unsafe { handle_lock(handle) }) else {
             return;
         };
         let info = ClientInfo {
@@ -122,7 +123,7 @@ pub unsafe extern "C" fn plugin_host_on_client_disconnected(
     session: u32,
 ) {
     ffi_guard("plugin_host_on_client_disconnected", (), || {
-        let Some(host) = (unsafe { handle_ref(handle) }) else {
+        let Some(host) = (unsafe { handle_lock(handle) }) else {
             return;
         };
         host.on_client_disconnected(server_id, session);
@@ -145,7 +146,7 @@ pub unsafe extern "C" fn plugin_host_on_plugin_data(
     data_len: usize,
 ) {
     ffi_guard("plugin_host_on_plugin_data", (), || {
-        let Some(host) = (unsafe { handle_ref(handle) }) else {
+        let Some(host) = (unsafe { handle_lock(handle) }) else {
             return;
         };
         // SAFETY: caller promises NUL-terminated UTF-8 or NULL.
@@ -186,7 +187,7 @@ pub unsafe extern "C" fn plugin_host_on_plugin_message(
     channel_id: u32,
 ) {
     ffi_guard("plugin_host_on_plugin_message", (), || {
-        let Some(host) = (unsafe { handle_ref(handle) }) else {
+        let Some(host) = (unsafe { handle_lock(handle) }) else {
             return;
         };
         // SAFETY: caller contract above.
@@ -238,7 +239,7 @@ pub unsafe extern "C" fn plugin_host_get_registry_json(
         "plugin_host_get_registry_json",
         std::ptr::null_mut(),
         || {
-            let Some(host) = (unsafe { handle_ref(handle) }) else {
+            let Some(host) = (unsafe { handle_lock(handle) }) else {
                 return std::ptr::null_mut();
             };
             let json = host.registry_json();
@@ -264,15 +265,182 @@ pub unsafe extern "C" fn plugin_host_free_string(ptr: *mut c_char) {
     drop(unsafe { std::ffi::CString::from_raw(ptr) });
 }
 
+/// Plugin-admin: return a JSON snapshot of every known plugin.
+///
+/// Body shape: `{"plugins":[{plugin_name,version,enabled,loaded,path,
+/// info_json,marketplace_id,installed_at,builtin}, ...],"plugins_dir":".."}`.
+/// Returns NULL on allocation failure; otherwise free with
+/// [`plugin_host_free_string`].
+///
+/// # Safety
+/// `handle` must come from [`plugin_host_create`].
+#[no_mangle]
+pub unsafe extern "C" fn plugin_host_list_plugins(
+    handle: *mut PluginHostHandle,
+) -> *mut c_char {
+    ffi_guard("plugin_host_list_plugins", std::ptr::null_mut(), || {
+        let Some(host) = (unsafe { handle_lock(handle) }) else {
+            return std::ptr::null_mut();
+        };
+        let (entries, dir) = host.list_plugins();
+        json_to_cstring(&serde_json::json!({
+            "plugins": entries,
+            "plugins_dir": dir,
+        }))
+    })
+}
+
+/// Plugin-admin: toggle a plugin's enabled state.  Returns a
+/// JSON result envelope (`{"ok":true}` or `{"ok":false,"error":".."}`).
+///
+/// # Safety
+/// `handle` must come from [`plugin_host_create`]; `plugin_name` must be
+/// a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn plugin_host_set_plugin_enabled(
+    handle: *mut PluginHostHandle,
+    plugin_name: *const c_char,
+    enabled: bool,
+) -> *mut c_char {
+    ffi_guard("plugin_host_set_plugin_enabled", std::ptr::null_mut(), || {
+        let Some(mut host) = (unsafe { handle_lock(handle) }) else {
+            return result_to_cstring(&FfiResult::err("invalid handle"));
+        };
+        // SAFETY: caller contract above.
+        let name = unsafe { cstr_to_string(plugin_name) };
+        if name.is_empty() {
+            return result_to_cstring(&FfiResult::err("plugin_name must not be empty"));
+        }
+        let result = match host.set_enabled(&name, enabled) {
+            Ok(()) => FfiResult::ok(),
+            Err(e) => FfiResult::err(e),
+        };
+        result_to_cstring(&result)
+    })
+}
+
+/// Plugin-admin: download a plugin from the marketplace and register
+/// it (in a disabled state).  Returns a JSON result envelope; on
+/// success the envelope also carries `{"plugin_name":".."}`.
+///
+/// # Safety
+/// `handle` must come from [`plugin_host_create`]; every `*const c_char`
+/// argument must be NUL-terminated UTF-8 or NULL.  `expected_sha256`
+/// NULL means "no caller-side digest check on the manifest".
+#[no_mangle]
+pub unsafe extern "C" fn plugin_host_install_plugin(
+    handle: *mut PluginHostHandle,
+    marketplace_id: *const c_char,
+    version: *const c_char,
+    manifest_url: *const c_char,
+    expected_sha256: *const c_char,
+) -> *mut c_char {
+    ffi_guard("plugin_host_install_plugin", std::ptr::null_mut(), || {
+        let Some(mut host) = (unsafe { handle_lock(handle) }) else {
+            return result_to_cstring(&FfiResult::err("invalid handle"));
+        };
+        // SAFETY: caller contract above.
+        let marketplace_id_s = unsafe { cstr_to_string(marketplace_id) };
+        let version_s = unsafe { cstr_to_string(version) };
+        let manifest_url_s = unsafe { cstr_to_string(manifest_url) };
+        let expected = unsafe { cstr_opt(expected_sha256) };
+        if marketplace_id_s.is_empty() || manifest_url_s.is_empty() {
+            return result_to_cstring(&FfiResult::err(
+                "marketplace_id and manifest_url must not be empty",
+            ));
+        }
+        match host.install_plugin(
+            &marketplace_id_s,
+            &version_s,
+            &manifest_url_s,
+            expected.as_deref(),
+        ) {
+            Ok(name) => json_to_cstring(&serde_json::json!({
+                "ok": true,
+                "plugin_name": name,
+            })),
+            Err(e) => result_to_cstring(&FfiResult::err(e)),
+        }
+    })
+}
+
+/// Plugin-admin: drop a plugin, delete the cdylib on disk, and clear
+/// its `plugin.<name>.*` config keys.  Returns a JSON result envelope.
+///
+/// # Safety
+/// `handle` must come from [`plugin_host_create`]; `plugin_name` must
+/// be a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn plugin_host_uninstall_plugin(
+    handle: *mut PluginHostHandle,
+    plugin_name: *const c_char,
+) -> *mut c_char {
+    ffi_guard("plugin_host_uninstall_plugin", std::ptr::null_mut(), || {
+        let Some(mut host) = (unsafe { handle_lock(handle) }) else {
+            return result_to_cstring(&FfiResult::err("invalid handle"));
+        };
+        // SAFETY: caller contract above.
+        let name = unsafe { cstr_to_string(plugin_name) };
+        if name.is_empty() {
+            return result_to_cstring(&FfiResult::err("plugin_name must not be empty"));
+        }
+        let result = match host.uninstall_plugin(&name) {
+            Ok(()) => FfiResult::ok(),
+            Err(e) => FfiResult::err(e),
+        };
+        result_to_cstring(&result)
+    })
+}
+
 // -- helpers --------------------------------------------------------------
 
-/// SAFETY: Caller must ensure `handle` came from [`plugin_host_create`].
-unsafe fn handle_ref<'a>(handle: *mut PluginHostHandle) -> Option<&'a Host> {
+/// Acquire the host mutex.  Returns `None` for a NULL handle; if the
+/// mutex is poisoned the inner guard is still returned because the
+/// plugin host's state is append-only (every mutation either succeeds
+/// or returns an error before mutating shared state) and dropping the
+/// guard would deadlock subsequent calls.
+///
+/// SAFETY: Caller must ensure `handle` came from [`plugin_host_create`]
+/// and has not been passed to [`plugin_host_destroy`].
+unsafe fn handle_lock<'a>(handle: *mut PluginHostHandle) -> Option<MutexGuard<'a, Host>> {
     if handle.is_null() {
         return None;
     }
     // SAFETY: caller guarantees the pointer is valid and outlives the borrow.
-    Some(unsafe { &*handle.cast::<Host>() })
+    let mutex = unsafe { &*handle.cast::<Mutex<Host>>() };
+    match mutex.lock() {
+        Ok(g) => Some(g),
+        Err(poison) => {
+            tracing::error!("plugin host mutex poisoned; recovering inner guard");
+            Some(poison.into_inner())
+        }
+    }
+}
+
+fn result_to_cstring(r: &FfiResult) -> *mut c_char {
+    let json = serde_json::to_string(r).unwrap_or_else(|_| "{\"ok\":false}".to_owned());
+    match std::ffi::CString::new(json) {
+        Ok(c) => c.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+fn json_to_cstring(value: &serde_json::Value) -> *mut c_char {
+    let json = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_owned());
+    match std::ffi::CString::new(json) {
+        Ok(c) => c.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// SAFETY: Caller must ensure `handle` came from [`plugin_host_create`].
+unsafe fn cstr_opt(ptr: *const c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: caller promises NUL-termination.
+    let cstr = unsafe { CStr::from_ptr(ptr) };
+    cstr.to_str().ok().map(str::to_owned)
 }
 
 /// SAFETY: `ptr` must be NUL-terminated UTF-8 or NULL. Returns the empty

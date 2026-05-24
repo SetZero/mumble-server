@@ -92,6 +92,12 @@
     PROCESS_MUMBLE_TCP_MESSAGE(FancyOnboardingResponseDeliver, 140) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPoll, 144) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPollVote, 145) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminListRequest, 146) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminList, 147) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminSetEnabled, 148) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminInstall, 149) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminUninstall, 150) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminAck, 151) \
     PROCESS_MUMBLE_TCP_MESSAGE(PluginMessage, 200) \
     PROCESS_MUMBLE_TCP_MESSAGE(PluginRegistry, 201)
 

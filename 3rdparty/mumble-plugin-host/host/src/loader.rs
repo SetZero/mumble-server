@@ -1,5 +1,6 @@
 //! Discovery and ABI-stable loading of plugin cdylibs at runtime.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use abi_stable::library::lib_header_from_path;
@@ -52,13 +53,19 @@ impl std::fmt::Debug for LoadedPlugin {
 /// the `MUMBLE_PLUGIN_DIRS` env var (platform-specific separator).
 pub fn discover_plugin_dirs(configured: Option<&str>) -> Vec<PathBuf> {
     let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push = |p: PathBuf| {
+        if seen.insert(p.clone()) {
+            out.push(p);
+        }
+    };
     if let Some(c) = configured.map(str::trim).filter(|s| !s.is_empty()) {
-        out.push(PathBuf::from(c));
+        push(PathBuf::from(c));
     }
     if let Ok(env) = std::env::var("MUMBLE_PLUGIN_DIRS") {
         for entry in std::env::split_paths(&env) {
             if !entry.as_os_str().is_empty() {
-                out.push(entry);
+                push(entry);
             }
         }
     }

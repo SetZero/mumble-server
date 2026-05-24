@@ -38,6 +38,8 @@ PluginHostManager::PluginHostManager(Server *server, QObject *parent)
 	cb.get_config              = &PluginHostManager::getConfigTrampoline;
 	cb.free_string             = &PluginHostManager::freeStringTrampoline;
         cb.send_plugin_message    = &PluginHostManager::sendPluginMessageTrampoline;
+        cb.set_config             = &PluginHostManager::setConfigTrampoline;
+        cb.delete_config_prefix   = &PluginHostManager::deleteConfigPrefixTrampoline;
 	m_handle = plugin_host_create(&cb);
 }
 
@@ -355,6 +357,99 @@ int PluginHostManager::sendPluginMessageTrampoline(void *userData, uint32_t /*se
                         continue;
                 }
                 self->m_server->sendMessage(target, msg);
+        }
+        return 0;
+}
+
+// ---------------------------------------------------------------
+// Plugin admin
+// ---------------------------------------------------------------
+
+namespace {
+// Adopt a NUL-terminated string returned by the Rust FFI into a
+// QByteArray and free the original allocation.  Returns an empty
+// QByteArray for NULL.
+QByteArray adoptFfiString(char *ptr) {
+        if (!ptr) {
+                return {};
+        }
+        QByteArray out(ptr);
+        plugin_host_free_string(ptr);
+        return out;
+}
+} // namespace
+
+QByteArray PluginHostManager::listPluginsJson() const {
+        if (!m_handle) {
+                return QByteArray("{\"plugins\":[]}");
+        }
+        return adoptFfiString(plugin_host_list_plugins(m_handle));
+}
+
+QByteArray PluginHostManager::setPluginEnabled(const QString &pluginName, bool enabled) {
+        if (!m_handle) {
+                return QByteArray("{\"ok\":false,\"error\":\"plugin host not loaded\"}");
+        }
+        const QByteArray nameUtf8 = pluginName.toUtf8();
+        return adoptFfiString(
+                plugin_host_set_plugin_enabled(m_handle, nameUtf8.constData(), enabled));
+}
+
+QByteArray PluginHostManager::installPlugin(const QString &marketplaceId, const QString &version,
+                                            const QString &manifestUrl,
+                                            const QString &expectedSha256) {
+        if (!m_handle) {
+                return QByteArray("{\"ok\":false,\"error\":\"plugin host not loaded\"}");
+        }
+        const QByteArray idUtf8       = marketplaceId.toUtf8();
+        const QByteArray verUtf8      = version.toUtf8();
+        const QByteArray urlUtf8      = manifestUrl.toUtf8();
+        const QByteArray shaUtf8      = expectedSha256.toUtf8();
+        const char *shaPtr            = expectedSha256.isEmpty() ? nullptr : shaUtf8.constData();
+        const char *verPtr            = version.isEmpty() ? nullptr : verUtf8.constData();
+        return adoptFfiString(plugin_host_install_plugin(m_handle, idUtf8.constData(), verPtr,
+                                                         urlUtf8.constData(), shaPtr));
+}
+
+QByteArray PluginHostManager::uninstallPlugin(const QString &pluginName) {
+        if (!m_handle) {
+                return QByteArray("{\"ok\":false,\"error\":\"plugin host not loaded\"}");
+        }
+        const QByteArray nameUtf8 = pluginName.toUtf8();
+        return adoptFfiString(plugin_host_uninstall_plugin(m_handle, nameUtf8.constData()));
+}
+
+int PluginHostManager::setConfigTrampoline(void *userData, const char *key, const char *value) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server || !key) {
+                return -1;
+        }
+        const std::string keyStr(key);
+        const std::string valueStr(value ? value : "");
+        self->m_server->m_dbWrapper.setConfiguration(
+                static_cast< unsigned int >(self->m_server->iServerNum), keyStr, valueStr);
+        if (Meta::mp && Meta::mp->qsSettings) {
+                Meta::mp->qsSettings->setValue(QString::fromStdString(keyStr),
+                                               QString::fromStdString(valueStr));
+        }
+        return 0;
+}
+
+int PluginHostManager::deleteConfigPrefixTrampoline(void *userData, const char *prefix) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server || !prefix) {
+                return -1;
+        }
+        const std::string prefixStr(prefix);
+        const auto serverId = static_cast< unsigned int >(self->m_server->iServerNum);
+        const auto all      = self->m_server->m_dbWrapper.getAllConfigurations(serverId);
+        for (const auto &entry : all) {
+                if (entry.first.rfind(prefixStr, 0) == 0) {
+                        self->m_server->m_dbWrapper.clearConfiguration(serverId, entry.first);
+                        if (Meta::mp && Meta::mp->qsSettings) {
+                                Meta::mp->qsSettings->remove(QString::fromStdString(entry.first));
+                        }
+                }
         }
         return 0;
 }

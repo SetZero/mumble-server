@@ -102,6 +102,24 @@ pub struct PluginHostCallbacks {
             channel_id: u32,
         ) -> c_int,
     >,
+
+    /// Persist a configuration value through the host's settings
+    /// layer (typically `mumble-server.ini`).  Returns 0 on success.
+    /// Used by the plugin-admin FFI to toggle plugin enable/disable
+    /// flags so they survive a server restart.
+    pub set_config: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            key: *const c_char,
+            value: *const c_char,
+        ) -> c_int,
+    >,
+
+    /// Delete every configuration key sharing the given prefix.
+    /// Returns 0 on success.  Used when uninstalling a plugin to
+    /// strip its `plugin.<name>.*` keys from the server settings.
+    pub delete_config_prefix:
+        Option<unsafe extern "C" fn(user_data: *mut c_void, prefix: *const c_char) -> c_int>,
 }
 
 // SAFETY: callbacks are documented as thread-safe; user_data is owned
@@ -165,6 +183,43 @@ impl HostContext {
             PluginResult::RErr(PluginError::Other(
                 format!("send_plugin_data returned {rc}").into(),
             ))
+        }
+    }
+
+    /// Persist a configuration value through the host's `set_config`
+    /// callback.  Returns `Err` if the callback is missing, the key or
+    /// value contain interior NULs, or the callback itself reported a
+    /// non-zero status.
+    pub(crate) fn set_config(&self, key: &str, value: &str) -> Result<(), String> {
+        let func = self
+            .callbacks
+            .set_config
+            .ok_or_else(|| "set_config callback missing".to_owned())?;
+        let key_c = CString::new(key).map_err(|_| "key contains NUL".to_owned())?;
+        let val_c = CString::new(value).map_err(|_| "value contains NUL".to_owned())?;
+        // SAFETY: callback non-null; key_c / val_c live until return.
+        let rc = unsafe { func(self.callbacks.user_data, key_c.as_ptr(), val_c.as_ptr()) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(format!("set_config returned {rc}"))
+        }
+    }
+
+    /// Delete every configuration key sharing `prefix` via the host's
+    /// `delete_config_prefix` callback.
+    pub(crate) fn delete_config_prefix(&self, prefix: &str) -> Result<(), String> {
+        let func = self
+            .callbacks
+            .delete_config_prefix
+            .ok_or_else(|| "delete_config_prefix callback missing".to_owned())?;
+        let prefix_c = CString::new(prefix).map_err(|_| "prefix contains NUL".to_owned())?;
+        // SAFETY: callback non-null; prefix_c lives until return.
+        let rc = unsafe { func(self.callbacks.user_data, prefix_c.as_ptr()) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(format!("delete_config_prefix returned {rc}"))
         }
     }
 }

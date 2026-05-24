@@ -104,6 +104,19 @@ typedef struct PluginHostCallbacks {
                              uintptr_t target_len,
                              bool channel_id_present,
                              uint32_t channel_id);
+  /**
+   * Persist a configuration value through the host's settings
+   * layer (typically `mumble-server.ini`).  Returns 0 on success.
+   * Used by the plugin-admin FFI to toggle plugin enable/disable
+   * flags so they survive a server restart.
+   */
+  int (*set_config)(void *user_data, const char *key, const char *value);
+  /**
+   * Delete every configuration key sharing the given prefix.
+   * Returns 0 on success.  Used when uninstalling a plugin to
+   * strip its `plugin.<name>.*` keys from the server settings.
+   */
+  int (*delete_config_prefix)(void *user_data, const char *prefix);
 } PluginHostCallbacks;
 
 #ifdef __cplusplus
@@ -218,6 +231,59 @@ void plugin_host_on_plugin_message(struct PluginHostHandle *handle,
  * [`plugin_host_get_registry_json`]; calling it on anything else is UB.
  */
  void plugin_host_free_string(char *ptr);
+
+/**
+ * Plugin-admin: return a JSON snapshot of every known plugin.
+ *
+ * Body shape: `{"plugins":[{plugin_name,version,enabled,loaded,path,
+ * info_json,marketplace_id,installed_at}, ...],"plugins_dir":".."}`.
+ * Returns NULL on allocation failure; otherwise free with
+ * [`plugin_host_free_string`].
+ *
+ * # Safety
+ * `handle` must come from [`plugin_host_create`].
+ */
+ char *plugin_host_list_plugins(struct PluginHostHandle *handle);
+
+/**
+ * Plugin-admin: toggle a plugin's enabled state.  Returns a
+ * JSON result envelope (`{"ok":true}` or `{"ok":false,"error":".."}`).
+ *
+ * # Safety
+ * `handle` must come from [`plugin_host_create`]; `plugin_name` must be
+ * a NUL-terminated UTF-8 string.
+ */
+
+char *plugin_host_set_plugin_enabled(struct PluginHostHandle *handle,
+                                     const char *plugin_name,
+                                     bool enabled);
+
+/**
+ * Plugin-admin: download a plugin from the marketplace and register
+ * it (in a disabled state).  Returns a JSON result envelope; on
+ * success the envelope also carries `{"plugin_name":".."}`.
+ *
+ * # Safety
+ * `handle` must come from [`plugin_host_create`]; every `*const c_char`
+ * argument must be NUL-terminated UTF-8 or NULL.  `expected_sha256`
+ * NULL means "no caller-side digest check on the manifest".
+ */
+
+char *plugin_host_install_plugin(struct PluginHostHandle *handle,
+                                 const char *marketplace_id,
+                                 const char *version,
+                                 const char *manifest_url,
+                                 const char *expected_sha256);
+
+/**
+ * Plugin-admin: drop a plugin, delete the cdylib on disk, and clear
+ * its `plugin.<name>.*` config keys.  Returns a JSON result envelope.
+ *
+ * # Safety
+ * `handle` must come from [`plugin_host_create`]; `plugin_name` must
+ * be a NUL-terminated UTF-8 string.
+ */
+ char *plugin_host_uninstall_plugin(struct PluginHostHandle *handle, const char *plugin_name);
 
 #ifdef __cplusplus
 }  // extern "C"
