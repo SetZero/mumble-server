@@ -90,6 +90,7 @@ impl LiveDocPlugin {
             homepage: None,
             capabilities: vec!["http".into(), "websocket".into(), "live-doc".into()],
             debug_rows,
+            client_manifest: None,
         }
     }
 }

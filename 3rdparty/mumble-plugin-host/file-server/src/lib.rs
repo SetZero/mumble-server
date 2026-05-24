@@ -206,6 +206,7 @@ impl FileServerPlugin {
             homepage: None,
             capabilities: vec!["http".into(), "files".into(), "emotes".into()],
             debug_rows,
+            client_manifest: None,
         }
     }
 }

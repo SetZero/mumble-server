@@ -29,9 +29,17 @@ use abi_stable::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod client_manifest;
 pub mod permissions;
 pub mod plugin;
 
+pub use crate::client_manifest::{
+    ActionRow, Button, ButtonStyle, Capability, ClientManifest, Component, Interaction,
+    InteractionKind, InteractionResponse, OptionChoice, OptionType, OptionValue, PanelRow,
+    ResponseKind, SelectMenu, SelectOption, SettingsPanel, SlashCommand, SlashCommandOption,
+    TextInput, TextInputStyle, ToastLevel, CLIENT_MANIFEST_SCHEMA_VERSION,
+    INTERACTION_PAYLOAD_TYPE, INTERACTION_RESPONSE_PAYLOAD_TYPE,
+};
 pub use crate::plugin::{
     MumblePlugin, MumblePlugin_TO, PluginContext, PluginContext_TO, PluginMessageIn,
     PluginMessageOut,
@@ -137,6 +145,12 @@ pub struct PluginInfo {
     /// Free-form runtime stats (listening ports, active session counts,
     /// feature flags) for the developer panel.
     pub debug_rows: Vec<DebugRow>,
+    /// Tier-1 client extension manifest.  When set, the Fancy Mumble
+    /// client renders the declared slash commands, settings panels, and
+    /// component vocabulary.  Omitted from the JSON envelope when
+    /// `None`, so legacy plugins remain wire-compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_manifest: Option<ClientManifest>,
 }
 
 impl PluginInfo {
@@ -277,12 +291,14 @@ mod tests {
                 label: "port".into(),
                 value: "8080".into(),
             }],
+            client_manifest: None,
         };
         let bytes = info.to_validated_json().expect("encode");
         let back: PluginInfo = serde_json::from_slice(&bytes).expect("decode");
         assert_eq!(back.description, info.description);
         assert_eq!(back.capabilities, info.capabilities);
         assert_eq!(back.debug_rows.len(), 1);
+        assert!(back.client_manifest.is_none());
     }
 
     #[test]
@@ -294,9 +310,52 @@ mod tests {
             homepage: None,
             capabilities: vec![],
             debug_rows: vec![],
+            client_manifest: None,
         };
         let err = info.to_validated_json().expect_err("must reject");
         assert!(matches!(err, PluginInfoError::TooLarge { .. }));
+    }
+
+    #[test]
+    fn plugin_info_with_client_manifest_roundtrip() {
+        let manifest = ClientManifest {
+            schema_version: CLIENT_MANIFEST_SCHEMA_VERSION,
+            slash_commands: vec![SlashCommand {
+                name: "greet".into(),
+                description: "Send a greeting".into(),
+                options: vec![],
+            }],
+            capabilities: vec![Capability::SlashCommands],
+            settings_panels: vec![],
+        };
+        let info = PluginInfo {
+            description: "with manifest".into(),
+            author: None,
+            homepage: None,
+            capabilities: vec![],
+            debug_rows: vec![],
+            client_manifest: Some(manifest),
+        };
+        let bytes = info.to_validated_json().expect("encode");
+        let back: PluginInfo = serde_json::from_slice(&bytes).expect("decode");
+        let m = back.client_manifest.expect("manifest present");
+        assert_eq!(m.slash_commands.len(), 1);
+        assert_eq!(m.slash_commands[0].name, "greet");
+    }
+
+    #[test]
+    fn plugin_info_omits_manifest_when_none() {
+        let info = PluginInfo {
+            description: "legacy".into(),
+            author: None,
+            homepage: None,
+            capabilities: vec![],
+            debug_rows: vec![],
+            client_manifest: None,
+        };
+        let bytes = info.to_validated_json().expect("encode");
+        let json = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(!json.contains("client_manifest"));
     }
 
     #[test]
