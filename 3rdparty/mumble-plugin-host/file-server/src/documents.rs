@@ -114,9 +114,7 @@ impl DocumentsStore {
     pub fn get_revision(&self, name: &str, rev_seq: u32) -> Result<Option<Vec<u8>>, StorageError> {
         let conn = self.db.lock().map_err(|_| poisoned_mutex_err())?;
         let row: Option<(String,)> = conn
-            .prepare(
-                "SELECT id FROM document_revisions WHERE doc_name = ?1 AND rev_seq = ?2",
-            )?
+            .prepare("SELECT id FROM document_revisions WHERE doc_name = ?1 AND rev_seq = ?2")?
             .query_row(params![name, rev_seq], |row| Ok((row.get(0)?,)))
             .optional()?;
         drop(conn);

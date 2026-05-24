@@ -76,8 +76,7 @@ pub fn build_router(state: AppState) -> Router {
     // than that before the handler even runs.  Override only the upload route
     // to allow up to the configured file-size cap (plus a small overhead for
     // the multipart envelope).
-    let upload_body_limit =
-        (state.config.max_file_size_bytes + FORM_OVERHEAD_BYTES) as usize;
+    let upload_body_limit = (state.config.max_file_size_bytes + FORM_OVERHEAD_BYTES) as usize;
 
     let cors = build_cors_layer(&state.config.allowed_origins);
 
@@ -131,7 +130,11 @@ fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     #[test]

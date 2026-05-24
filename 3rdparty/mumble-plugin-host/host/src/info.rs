@@ -74,8 +74,8 @@ pub fn encode(record: &PluginInfoRecord<'_>) -> Result<Vec<u8>, EnvelopeError> {
     }
 
     let (payload, flags) = if raw.len() >= ZSTD_THRESHOLD {
-        let compressed =
-            zstd::stream::encode_all(raw.as_slice(), ZSTD_LEVEL).map_err(EnvelopeError::Compress)?;
+        let compressed = zstd::stream::encode_all(raw.as_slice(), ZSTD_LEVEL)
+            .map_err(EnvelopeError::Compress)?;
         if compressed.len() < raw.len() {
             (compressed, FLAG_ZSTD)
         } else {
@@ -104,7 +104,12 @@ mod tests {
     #[test]
     fn encodes_small_payload_uncompressed() {
         let v = json!({ "description": "x" });
-        let env = encode(&PluginInfoRecord { name: "p", version: "0.1.0", info: &v }).unwrap();
+        let env = encode(&PluginInfoRecord {
+            name: "p",
+            version: "0.1.0",
+            info: &v,
+        })
+        .unwrap();
         assert_eq!(env[0], ENVELOPE_VERSION);
         assert_eq!(env[1] & FLAG_ZSTD, 0);
         let raw_len = u32::from_le_bytes([env[2], env[3], env[4], env[5]]) as usize;
@@ -115,7 +120,12 @@ mod tests {
     fn encodes_large_payload_with_zstd() {
         let big = "lorem ipsum dolor sit amet ".repeat(64);
         let v = json!({ "description": big });
-        let env = encode(&PluginInfoRecord { name: "p", version: "0.1.0", info: &v }).unwrap();
+        let env = encode(&PluginInfoRecord {
+            name: "p",
+            version: "0.1.0",
+            info: &v,
+        })
+        .unwrap();
         assert_eq!(env[0], ENVELOPE_VERSION);
         assert_eq!(env[1] & FLAG_ZSTD, FLAG_ZSTD);
     }
@@ -124,7 +134,12 @@ mod tests {
     fn rejects_oversized_payload() {
         let huge = "x".repeat(PLUGIN_INFO_MAX_BYTES + 1);
         let v = json!({ "description": huge });
-        let err = encode(&PluginInfoRecord { name: "p", version: "0.1.0", info: &v }).unwrap_err();
+        let err = encode(&PluginInfoRecord {
+            name: "p",
+            version: "0.1.0",
+            info: &v,
+        })
+        .unwrap_err();
         assert!(matches!(err, EnvelopeError::TooLarge { .. }));
     }
 }

@@ -1,8 +1,9 @@
 //! ABI-stable plugin and host context traits.
 
 use abi_stable::{
-    StableAbi, sabi_trait,
+    sabi_trait,
     std_types::{RArc, ROk, ROption, RSlice, RStr, RString},
+    StableAbi,
 };
 
 use crate::{ChannelId, ClientInfo, PluginResult, ServerId, SessionId};
@@ -93,11 +94,7 @@ pub trait PluginContext: Send + Sync + 'static {
 
     /// Returns the channel the session is currently in, or `RNone` if
     /// the session is unknown.
-    fn current_channel(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-    ) -> ROption<ChannelId>;
+    fn current_channel(&self, server_id: ServerId, session: SessionId) -> ROption<ChannelId>;
 
     /// Look up a configuration value scoped to the calling plugin.
     fn get_config(&self, key: RStr<'_>) -> ROption<RString>;
@@ -149,11 +146,7 @@ pub trait MumblePlugin: Send + Sync + 'static {
     }
 
     /// Fires when a client disconnects.
-    fn on_client_disconnected(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-    ) -> PluginResult<()> {
+    fn on_client_disconnected(&self, server_id: ServerId, session: SessionId) -> PluginResult<()> {
         let _ = (server_id, session);
         ROk(())
     }
@@ -178,4 +171,3 @@ pub trait MumblePlugin: Send + Sync + 'static {
         ROk(())
     }
 }
-

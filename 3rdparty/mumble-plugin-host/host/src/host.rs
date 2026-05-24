@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use abi_stable::std_types::{RArc, RNone, RSlice, RSome, RStr, RVec};
 use mumble_plugin_api::{
-    ChannelId, ClientInfo, PLUGIN_INFO_DATA_ID, PluginContext_TO, PluginMessageIn, ServerId,
-    SessionId,
+    ChannelId, ClientInfo, PluginContext_TO, PluginMessageIn, ServerId, SessionId,
+    PLUGIN_INFO_DATA_ID,
 };
 
 use crate::context::{HostContext, ScopedContext};
@@ -42,7 +42,10 @@ impl std::fmt::Debug for Entry {
         f.debug_struct("Entry")
             .field("name", &self.name)
             .field("version", &self.version)
-            .field("info_envelope_len", &self.info_envelope.as_ref().map(Vec::len))
+            .field(
+                "info_envelope_len",
+                &self.info_envelope.as_ref().map(Vec::len),
+            )
             .field("path", &self.plugin.path)
             .finish()
     }
@@ -91,17 +94,21 @@ impl Host {
                             // `plugin.<name>.enabled`; build_entry
                             // already logged the skip.
                         }
-                        Err(e) => tracing::error!(error = %e, path = %path.display(), "plugin build failed"),
+                        Err(e) => {
+                            tracing::error!(error = %e, path = %path.display(), "plugin build failed")
+                        }
                     },
-                    Err(e) => tracing::error!(error = %e, path = %path.display(), "plugin load failed"),
+                    Err(e) => {
+                        tracing::error!(error = %e, path = %path.display(), "plugin load failed")
+                    }
                 }
             }
         }
-        tracing::info!(
-            loaded = plugins.len(),
-            "plugin host ready"
-        );
-        Ok(Self { base_context, plugins })
+        tracing::info!(loaded = plugins.len(), "plugin host ready");
+        Ok(Self {
+            base_context,
+            plugins,
+        })
     }
 
     /// Dispatch a client-connected event to every loaded plugin, then
@@ -114,12 +121,14 @@ impl Host {
                 tracing::warn!(plugin = %entry.name, error = %e, "on_client_connected failed");
             }
             if let Some(envelope) = &entry.info_envelope {
-                if let abi_stable::std_types::RResult::RErr(e) = self.base_context.send_plugin_data_raw(
-                    info.server_id,
-                    info.session_id,
-                    PLUGIN_INFO_DATA_ID,
-                    envelope,
-                ) {
+                if let abi_stable::std_types::RResult::RErr(e) =
+                    self.base_context.send_plugin_data_raw(
+                        info.server_id,
+                        info.session_id,
+                        PLUGIN_INFO_DATA_ID,
+                        envelope,
+                    )
+                {
                     tracing::warn!(plugin = %entry.name, error = %e, "plugin-info delivery failed");
                 }
             }
@@ -129,8 +138,10 @@ impl Host {
     /// Dispatch a client-disconnected event.
     pub(crate) fn on_client_disconnected(&self, server_id: ServerId, session: SessionId) {
         for entry in &self.plugins {
-            if let abi_stable::std_types::RResult::RErr(e) =
-                entry.plugin.plugin.on_client_disconnected(server_id, session)
+            if let abi_stable::std_types::RResult::RErr(e) = entry
+                .plugin
+                .plugin
+                .on_client_disconnected(server_id, session)
             {
                 tracing::warn!(plugin = %entry.name, error = %e, "on_client_disconnected failed");
             }
@@ -148,8 +159,10 @@ impl Host {
         let id = RStr::from(data_id.as_str());
         let bytes = RSlice::from(data.as_slice());
         for entry in &self.plugins {
-            if let abi_stable::std_types::RResult::RErr(e) =
-                entry.plugin.plugin.on_plugin_data(server_id, sender, id, bytes)
+            if let abi_stable::std_types::RResult::RErr(e) = entry
+                .plugin
+                .plugin
+                .on_plugin_data(server_id, sender, id, bytes)
             {
                 tracing::warn!(plugin = %entry.name, error = %e, "on_plugin_data failed");
             }
@@ -174,8 +187,7 @@ impl Host {
             channel_id: args.channel_id.map_or(RNone, RSome),
         };
         let _ = args.target_sessions; // routing happens server-side; ignored here
-        if let abi_stable::std_types::RResult::RErr(e) =
-            entry.plugin.plugin.on_plugin_message(msg)
+        if let abi_stable::std_types::RResult::RErr(e) = entry.plugin.plugin.on_plugin_message(msg)
         {
             tracing::warn!(plugin = %args.plugin_name, error = %e, "on_plugin_message failed");
         }
@@ -261,7 +273,12 @@ fn build_entry(
     if let abi_stable::std_types::RResult::RErr(e) = loaded.plugin.on_load(ctx_to) {
         return Err(BuildEntryError::OnLoad(e.to_string()));
     }
-    Ok(Some(Entry { name, version, info_envelope, plugin: loaded }))
+    Ok(Some(Entry {
+        name,
+        version,
+        info_envelope,
+        plugin: loaded,
+    }))
 }
 
 /// Read `plugin.<name>.enabled` from the host's config callback.  An
@@ -315,7 +332,11 @@ fn build_info_envelope(name: &str, version: &str, loaded: &LoadedPlugin) -> Opti
             return None;
         }
     };
-    match encode(&PluginInfoRecord { name, version, info: &parsed }) {
+    match encode(&PluginInfoRecord {
+        name,
+        version,
+        info: &parsed,
+    }) {
         Ok(bytes) => Some(bytes),
         Err(e) => {
             tracing::warn!(plugin = %name, error = %e, "failed to encode plugin info envelope");

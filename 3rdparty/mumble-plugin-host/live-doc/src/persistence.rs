@@ -31,7 +31,14 @@ pub async fn try_seed_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: 
         return;
     };
     let filename = room.key().as_filename();
-    match fetch_file(client, url, cfg.file_server_admin_token.as_deref(), &filename).await {
+    match fetch_file(
+        client,
+        url,
+        cfg.file_server_admin_token.as_deref(),
+        &filename,
+    )
+    .await
+    {
         Ok(Some(contents)) => {
             if let Some(snapshot) = extract_snapshot(&contents) {
                 if let Err(err) = room.seed_from_snapshot(&snapshot).await {
@@ -68,8 +75,14 @@ pub async fn persist_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: &
         B64.encode(&snapshot),
     );
 
-    if let Err(err) =
-        put_file(client, url, cfg.file_server_admin_token.as_deref(), &filename, body).await
+    if let Err(err) = put_file(
+        client,
+        url,
+        cfg.file_server_admin_token.as_deref(),
+        &filename,
+        body,
+    )
+    .await
     {
         tracing::warn!(?err, ?filename, "live-doc persist failed");
     }
@@ -94,7 +107,11 @@ async fn fetch_file(
     let Some(token) = admin_token else {
         return Ok(None);
     };
-    let url = format!("{}/admin/documents/{}", base_url.trim_end_matches('/'), filename);
+    let url = format!(
+        "{}/admin/documents/{}",
+        base_url.trim_end_matches('/'),
+        filename
+    );
     let resp = client.get(&url).bearer_auth(token).send().await?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
@@ -113,7 +130,11 @@ async fn put_file(
     let Some(token) = admin_token else {
         return Ok(());
     };
-    let url = format!("{}/admin/documents/{}", base_url.trim_end_matches('/'), filename);
+    let url = format!(
+        "{}/admin/documents/{}",
+        base_url.trim_end_matches('/'),
+        filename
+    );
     let _response = client
         .put(&url)
         .bearer_auth(token)

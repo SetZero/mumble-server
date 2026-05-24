@@ -23,8 +23,8 @@
 #![warn(missing_docs)]
 
 use abi_stable::{
-    StableAbi, declare_root_module_statics, library::RootModule, package_version_strings,
-    sabi_types::VersionStrings, std_types::RString,
+    declare_root_module_statics, library::RootModule, package_version_strings,
+    sabi_types::VersionStrings, std_types::RString, StableAbi,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -145,7 +145,10 @@ impl PluginInfo {
     pub fn to_validated_json(&self) -> Result<Vec<u8>, PluginInfoError> {
         let bytes = serde_json::to_vec(self).map_err(PluginInfoError::Encode)?;
         if bytes.len() > PLUGIN_INFO_MAX_BYTES {
-            return Err(PluginInfoError::TooLarge { size: bytes.len(), limit: PLUGIN_INFO_MAX_BYTES });
+            return Err(PluginInfoError::TooLarge {
+                size: bytes.len(),
+                limit: PLUGIN_INFO_MAX_BYTES,
+            });
         }
         Ok(bytes)
     }
@@ -182,8 +185,7 @@ pub struct FancyPluginMod {
     /// Factory that constructs the plugin instance.  Called exactly once
     /// per cdylib load.
     #[sabi(last_prefix_field)]
-    pub create_plugin:
-        extern "C" fn() -> MumblePlugin_TO<abi_stable::std_types::RBox<()>>,
+    pub create_plugin: extern "C" fn() -> MumblePlugin_TO<abi_stable::std_types::RBox<()>>,
 }
 
 impl RootModule for FancyPluginModRef {
@@ -218,26 +220,42 @@ pub mod abi_stable_reexport {
 #[macro_export]
 macro_rules! fancy_export_plugin {
     ($factory:expr) => {
+        // The macro expansion lives in its own private module so that
+        // the inner `#![allow(missing_docs)]` covers the undocumented
+        // `pub static` that `abi_stable`'s `#[export_root_module]`
+        // proc-macro emits.  Without the module wrapper, the
+        // suppression would not reach the generated static and every
+        // downstream plugin would have to add its own `#[allow]`.
         #[doc(hidden)]
-        #[$crate::abi_stable_reexport::export_root_module]
-        pub fn _fancy_plugin_root_module() -> $crate::FancyPluginModRef {
-            use $crate::abi_stable_reexport::prefix_type::PrefixTypeTrait;
-            $crate::FancyPluginMod {
-                abi_version: $crate::PLUGIN_ABI_VERSION,
-                create_plugin: _fancy_plugin_create,
-            }
-            .leak_into_prefix()
-        }
+        pub mod _fancy_plugin_export {
+            #![allow(
+                missing_docs,
+                reason = "abi_stable's #[export_root_module] generates an undocumented static"
+            )]
 
-        #[doc(hidden)]
-        extern "C" fn _fancy_plugin_create() -> $crate::MumblePlugin_TO<
-            $crate::abi_stable_reexport::std_types::RBox<()>,
-        > {
-            let plugin = ($factory)();
-            $crate::MumblePlugin_TO::from_value(
-                plugin,
-                $crate::abi_stable_reexport::sabi_trait::TD_Opaque,
-            )
+            // Make every item in the caller's crate root visible so the
+            // user-supplied factory expression (e.g. `MyPlugin::new`)
+            // resolves the same way it would at the macro call site.
+            use super::*;
+
+            #[$crate::abi_stable_reexport::export_root_module]
+            pub fn _fancy_plugin_root_module() -> $crate::FancyPluginModRef {
+                use $crate::abi_stable_reexport::prefix_type::PrefixTypeTrait;
+                $crate::FancyPluginMod {
+                    abi_version: $crate::PLUGIN_ABI_VERSION,
+                    create_plugin: _fancy_plugin_create,
+                }
+                .leak_into_prefix()
+            }
+
+            extern "C" fn _fancy_plugin_create(
+            ) -> $crate::MumblePlugin_TO<$crate::abi_stable_reexport::std_types::RBox<()>> {
+                let plugin = ($factory)();
+                $crate::MumblePlugin_TO::from_value(
+                    plugin,
+                    $crate::abi_stable_reexport::sabi_trait::TD_Opaque,
+                )
+            }
         }
     };
 }
@@ -255,7 +273,10 @@ mod tests {
             author: Some("nobody".into()),
             homepage: None,
             capabilities: vec!["http".into(), "ws".into()],
-            debug_rows: vec![DebugRow { label: "port".into(), value: "8080".into() }],
+            debug_rows: vec![DebugRow {
+                label: "port".into(),
+                value: "8080".into(),
+            }],
         };
         let bytes = info.to_validated_json().expect("encode");
         let back: PluginInfo = serde_json::from_slice(&bytes).expect("decode");

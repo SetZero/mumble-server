@@ -122,7 +122,11 @@ impl TicketStore {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     #[test]

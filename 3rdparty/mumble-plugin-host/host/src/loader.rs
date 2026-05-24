@@ -3,9 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use abi_stable::library::lib_header_from_path;
-use mumble_plugin_api::{
-    FancyPluginModRef, MumblePlugin_TO, PLUGIN_ABI_VERSION,
-};
+use mumble_plugin_api::{FancyPluginModRef, MumblePlugin_TO, PLUGIN_ABI_VERSION};
 use thiserror::Error;
 
 /// Errors produced while loading a single plugin cdylib.
@@ -44,7 +42,9 @@ pub struct LoadedPlugin {
 
 impl std::fmt::Debug for LoadedPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoadedPlugin").field("path", &self.path).finish()
+        f.debug_struct("LoadedPlugin")
+            .field("path", &self.path)
+            .finish()
     }
 }
 
@@ -165,10 +165,15 @@ mod tests {
     #[test]
     fn discover_collects_configured_and_env() {
         // SAFETY: we are only reading/writing our own env in a single-threaded test.
-        std::env::set_var("MUMBLE_PLUGIN_DIRS", format!("/tmp/a{}/tmp/b", if cfg!(windows) { ";" } else { ":" }));
+        std::env::set_var(
+            "MUMBLE_PLUGIN_DIRS",
+            format!("/tmp/a{}/tmp/b", if cfg!(windows) { ";" } else { ":" }),
+        );
         let dirs = discover_plugin_dirs(Some("/tmp/configured"));
         assert!(dirs.len() >= 2);
-        assert!(dirs.iter().any(|p| p.to_string_lossy().contains("configured")));
+        assert!(dirs
+            .iter()
+            .any(|p| p.to_string_lossy().contains("configured")));
         std::env::remove_var("MUMBLE_PLUGIN_DIRS");
     }
 }

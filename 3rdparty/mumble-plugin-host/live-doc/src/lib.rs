@@ -85,8 +85,7 @@ impl LiveDocPlugin {
             }
         }
         PluginInfo {
-            description: "Real-time collaborative documents over WebSocket (Yjs CRDT)."
-                .into(),
+            description: "Real-time collaborative documents over WebSocket (Yjs CRDT).".into(),
             author: Some("Fancy Mumble".into()),
             homepage: None,
             capabilities: vec!["http".into(), "websocket".into(), "live-doc".into()],
@@ -149,11 +148,7 @@ impl MumblePlugin for LiveDocPlugin {
         ROk(())
     }
 
-    fn on_client_disconnected(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-    ) -> PluginResult<()> {
+    fn on_client_disconnected(&self, server_id: ServerId, session: SessionId) -> PluginResult<()> {
         let Ok(guard) = self.inner.lock() else {
             return ROk(());
         };
@@ -210,8 +205,7 @@ impl MumblePlugin for LiveDocPlugin {
         };
         let _ = (msg.plugin_name, msg.channel_id, msg.sender_name);
         running.runtime.block_on(async move {
-            handle_open_request_typed(&state, server_id, sender, channel_id, &slug, &title)
-                .await;
+            handle_open_request_typed(&state, server_id, sender, channel_id, &slug, &title).await;
         });
         ROk(())
     }
@@ -226,7 +220,10 @@ fn parse_open_request(payload: &[u8]) -> Option<(ChannelId, String, String)> {
         .get("channelId")
         .or_else(|| v.get("channel_id"))
         .and_then(serde_json::Value::as_u64)?;
-    let slug = v.get("slug").and_then(serde_json::Value::as_str)?.to_owned();
+    let slug = v
+        .get("slug")
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
     let title = v
         .get("title")
         .and_then(serde_json::Value::as_str)
@@ -235,9 +232,7 @@ fn parse_open_request(payload: &[u8]) -> Option<(ChannelId, String, String)> {
     Some((channel_id as ChannelId, slug, title))
 }
 
-fn build_running_state(
-    facade: Arc<dyn HostFacade>,
-) -> Result<RunningState, PluginError> {
+fn build_running_state(facade: Arc<dyn HostFacade>) -> Result<RunningState, PluginError> {
     let cfg = LiveDocConfig::from_context(facade.as_ref())
         .map_err(|e| PluginError::Config(e.to_string().into()))?;
     let cfg = Arc::new(cfg);
@@ -253,7 +248,11 @@ fn build_running_state(
         .block_on(ws::serve(state.clone()))
         .map_err(|e| PluginError::Other(format!("ws server: {e}").into()))?;
 
-    tracing::info!(port = cfg.port, "live-doc plugin listening on {}", handle.local_addr());
+    tracing::info!(
+        port = cfg.port,
+        "live-doc plugin listening on {}",
+        handle.local_addr()
+    );
 
     Ok(RunningState {
         handle: Some(handle),

@@ -96,7 +96,9 @@ pub unsafe extern "C" fn plugin_host_on_client_connected(
     cert_hash: *const c_char,
 ) {
     ffi_guard("plugin_host_on_client_connected", (), || {
-        let Some(host) = (unsafe { handle_ref(handle) }) else { return };
+        let Some(host) = (unsafe { handle_ref(handle) }) else {
+            return;
+        };
         let info = ClientInfo {
             server_id,
             session_id: session,
@@ -120,7 +122,9 @@ pub unsafe extern "C" fn plugin_host_on_client_disconnected(
     session: u32,
 ) {
     ffi_guard("plugin_host_on_client_disconnected", (), || {
-        let Some(host) = (unsafe { handle_ref(handle) }) else { return };
+        let Some(host) = (unsafe { handle_ref(handle) }) else {
+            return;
+        };
         host.on_client_disconnected(server_id, session);
     })
 }
@@ -141,7 +145,9 @@ pub unsafe extern "C" fn plugin_host_on_plugin_data(
     data_len: usize,
 ) {
     ffi_guard("plugin_host_on_plugin_data", (), || {
-        let Some(host) = (unsafe { handle_ref(handle) }) else { return };
+        let Some(host) = (unsafe { handle_ref(handle) }) else {
+            return;
+        };
         // SAFETY: caller promises NUL-terminated UTF-8 or NULL.
         let id = unsafe { cstr_to_string(data_id) };
         let bytes: Vec<u8> = if data.is_null() || data_len == 0 {
@@ -180,7 +186,9 @@ pub unsafe extern "C" fn plugin_host_on_plugin_message(
     channel_id: u32,
 ) {
     ffi_guard("plugin_host_on_plugin_message", (), || {
-        let Some(host) = (unsafe { handle_ref(handle) }) else { return };
+        let Some(host) = (unsafe { handle_ref(handle) }) else {
+            return;
+        };
         // SAFETY: caller contract above.
         let sender_name_s = unsafe { cstr_to_string(sender_name) };
         let plugin_name_s = unsafe { cstr_to_string(plugin_name) };
@@ -205,7 +213,11 @@ pub unsafe extern "C" fn plugin_host_on_plugin_message(
             payload_type: payload_type_s,
             payload: payload_vec,
             target_sessions: targets,
-            channel_id: if channel_id_present { Some(channel_id) } else { None },
+            channel_id: if channel_id_present {
+                Some(channel_id)
+            } else {
+                None
+            },
         });
     })
 }
@@ -222,14 +234,20 @@ pub unsafe extern "C" fn plugin_host_on_plugin_message(
 pub unsafe extern "C" fn plugin_host_get_registry_json(
     handle: *mut PluginHostHandle,
 ) -> *mut c_char {
-    ffi_guard("plugin_host_get_registry_json", std::ptr::null_mut(), || {
-        let Some(host) = (unsafe { handle_ref(handle) }) else { return std::ptr::null_mut() };
-        let json = host.registry_json();
-        match std::ffi::CString::new(json) {
-            Ok(c) => c.into_raw(),
-            Err(_) => std::ptr::null_mut(),
-        }
-    })
+    ffi_guard(
+        "plugin_host_get_registry_json",
+        std::ptr::null_mut(),
+        || {
+            let Some(host) = (unsafe { handle_ref(handle) }) else {
+                return std::ptr::null_mut();
+            };
+            let json = host.registry_json();
+            match std::ffi::CString::new(json) {
+                Ok(c) => c.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            }
+        },
+    )
 }
 
 /// Free a string previously returned by [`plugin_host_get_registry_json`].

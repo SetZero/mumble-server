@@ -38,15 +38,9 @@ pub fn router(state: &AppState) -> Router<AppState> {
         return Router::new();
     }
     Router::new()
-        .route(
-            "/admin/documents/{name}",
-            get(get_latest).put(put_revision),
-        )
+        .route("/admin/documents/{name}", get(get_latest).put(put_revision))
         .route("/admin/documents/{name}/revisions", get(list_revisions))
-        .route(
-            "/admin/documents/{name}/revisions/{rev}",
-            get(get_revision),
-        )
+        .route("/admin/documents/{name}/revisions/{rev}", get(get_revision))
 }
 
 #[derive(Debug, Serialize)]
@@ -68,7 +62,9 @@ async fn get_latest(
     authenticate(&state, &headers)?;
     let validated = validate_name(&name)?;
     match state.documents.get_latest(&validated) {
-        Ok(Some(body)) => Ok((StatusCode::OK, [("content-type", "text/markdown")], body).into_response()),
+        Ok(Some(body)) => {
+            Ok((StatusCode::OK, [("content-type", "text/markdown")], body).into_response())
+        }
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(err) => {
             tracing::warn!(?err, "admin get_latest failed");
@@ -85,7 +81,9 @@ async fn get_revision(
     authenticate(&state, &headers)?;
     let validated = validate_name(&name)?;
     match state.documents.get_revision(&validated, rev) {
-        Ok(Some(body)) => Ok((StatusCode::OK, [("content-type", "text/markdown")], body).into_response()),
+        Ok(Some(body)) => {
+            Ok((StatusCode::OK, [("content-type", "text/markdown")], body).into_response())
+        }
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(err) => {
             tracing::warn!(?err, "admin get_revision failed");
@@ -212,7 +210,10 @@ mod tests {
 
     #[test]
     fn validate_name_accepts_safe_input() {
-        assert_eq!(validate_name("live-doc-1-7-design.md").unwrap(), "live-doc-1-7-design.md");
+        assert_eq!(
+            validate_name("live-doc-1-7-design.md").unwrap(),
+            "live-doc-1-7-design.md"
+        );
         assert_eq!(validate_name("notes/plan.md").unwrap(), "notes/plan.md");
     }
 

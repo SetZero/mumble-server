@@ -67,7 +67,10 @@ pub async fn handle_open_request_typed(
     title: &str,
 ) {
     let Some(slug) = sanitize_slug(slug) else {
-        tracing::debug!(slug, "rejecting open request with empty slug after sanitization");
+        tracing::debug!(
+            slug,
+            "rejecting open request with empty slug after sanitization"
+        );
         return;
     };
 
@@ -102,8 +105,15 @@ pub async fn handle_open_request(
             return;
         }
     };
-    handle_open_request_typed(state, server_id, sender, req.channel_id, &req.slug, &req.title)
-        .await;
+    handle_open_request_typed(
+        state,
+        server_id,
+        sender,
+        req.channel_id,
+        &req.slug,
+        &req.title,
+    )
+    .await;
 }
 
 fn send_invite(
@@ -152,7 +162,12 @@ fn send_invite(
     }
 }
 
-fn build_ws_url(state: &AppState, server_id: ServerId, channel_id: ChannelId, slug: &str) -> String {
+fn build_ws_url(
+    state: &AppState,
+    server_id: ServerId,
+    channel_id: ChannelId,
+    slug: &str,
+) -> String {
     let base = state
         .cfg()
         .public_url
@@ -167,8 +182,14 @@ mod tests {
 
     #[test]
     fn slug_strips_unsafe_chars() {
-        assert_eq!(sanitize_slug("Design Notes!").as_deref(), Some("design-notes"));
-        assert_eq!(sanitize_slug("../etc/passwd").as_deref(), Some("etc-passwd"));
+        assert_eq!(
+            sanitize_slug("Design Notes!").as_deref(),
+            Some("design-notes")
+        );
+        assert_eq!(
+            sanitize_slug("../etc/passwd").as_deref(),
+            Some("etc-passwd")
+        );
         assert_eq!(sanitize_slug("___---").as_deref(), Some("___"));
         assert_eq!(sanitize_slug(""), None);
     }

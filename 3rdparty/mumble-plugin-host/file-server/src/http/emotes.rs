@@ -1,4 +1,4 @@
-﻿//! HTTP routes for managing custom server emotes.
+//! HTTP routes for managing custom server emotes.
 //!
 //! Routes:
 //!
@@ -95,9 +95,10 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<String, ApiErr
         .ok_or_else(|| ApiError::unauthorized("Authorization must use Bearer scheme"))?;
     let claims = verify_session_jwt(state.signing_secret.as_ref(), token)
         .map_err(|e| ApiError::unauthorized(format!("invalid session token: {e}")))?;
-    let is_admin = state
-        .plugin_ctx
-        .has_permission(claims.srv, claims.sid, 0, permissions::MANAGE_EMOTES);
+    let is_admin =
+        state
+            .plugin_ctx
+            .has_permission(claims.srv, claims.sid, 0, permissions::MANAGE_EMOTES);
     if !is_admin {
         return Err(ApiError::forbidden(
             "this account is not allowed to manage emotes",
@@ -107,9 +108,7 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<String, ApiErr
 }
 
 /// `GET /emotes` - list all emotes. No auth required.
-pub async fn list(
-    State(state): State<AppState>,
-) -> Result<Json<EmoteListResponse>, ApiError> {
+pub async fn list(State(state): State<AppState>) -> Result<Json<EmoteListResponse>, ApiError> {
     let summaries = emotes::list_all(state.storage.emote_db()).map_err(map_emote_error)?;
     let emotes = summaries.into_iter().map(emote_summary_to_dto).collect();
     Ok(Json(EmoteListResponse { emotes }))
@@ -239,10 +238,9 @@ pub fn broadcast_emotes_to_all(state: &AppState) {
         }
     };
     for session in state.sessions.all_session_ids() {
-        if let Err(e) =
-            state
-                .plugin_ctx
-                .send_plugin_data(0, session, EMOTES_DATA_ID, &bytes)
+        if let Err(e) = state
+            .plugin_ctx
+            .send_plugin_data(0, session, EMOTES_DATA_ID, &bytes)
         {
             tracing::warn!(session, error = %e, "send emotes broadcast failed");
         }

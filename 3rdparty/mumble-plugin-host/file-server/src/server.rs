@@ -82,11 +82,8 @@ pub async fn start(state: AppState) -> Result<ServerHandle, std::io::Error> {
     });
 
     let (cleanup_shutdown_tx, cleanup_shutdown_rx) = oneshot::channel::<()>();
-    let cleanup_task = spawn_cleanup_task(
-        state.storage.clone(),
-        state.config.ttl,
-        cleanup_shutdown_rx,
-    );
+    let cleanup_task =
+        spawn_cleanup_task(state.storage.clone(), state.config.ttl, cleanup_shutdown_rx);
 
     Ok(ServerHandle {
         shutdown_tx: Some(shutdown_tx),
@@ -154,14 +151,30 @@ fn compute_cleanup_interval(ttl: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     #[test]
     fn cleanup_interval_is_clamped() {
-        assert_eq!(compute_cleanup_interval(Duration::from_secs(60)), Duration::from_secs(60));
-        assert_eq!(compute_cleanup_interval(Duration::from_secs(3600)), Duration::from_secs(900));
-        assert_eq!(compute_cleanup_interval(Duration::from_secs(86_400)), Duration::from_secs(3600));
-        assert_eq!(compute_cleanup_interval(Duration::from_secs(10)), Duration::from_secs(60));
+        assert_eq!(
+            compute_cleanup_interval(Duration::from_secs(60)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            compute_cleanup_interval(Duration::from_secs(3600)),
+            Duration::from_secs(900)
+        );
+        assert_eq!(
+            compute_cleanup_interval(Duration::from_secs(86_400)),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            compute_cleanup_interval(Duration::from_secs(10)),
+            Duration::from_secs(60)
+        );
     }
 }

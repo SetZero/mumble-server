@@ -107,5 +107,3 @@ impl HostFacade for SabiHostCtx {
             .map(RString::into_string)
     }
 }
-
-

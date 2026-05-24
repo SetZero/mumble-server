@@ -39,7 +39,10 @@ pub struct DocKey {
 impl DocKey {
     /// File-server-friendly stable filename for this doc.
     pub fn as_filename(&self) -> String {
-        format!("live-doc-{}-{}-{}.md", self.server_id, self.channel_id, self.slug)
+        format!(
+            "live-doc-{}-{}-{}.md",
+            self.server_id, self.channel_id, self.slug
+        )
     }
 }
 

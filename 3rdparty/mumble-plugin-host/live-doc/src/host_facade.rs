@@ -10,9 +10,7 @@
 use std::fmt::Debug;
 
 use abi_stable::std_types::{RArc, RNone, ROption, RSlice, RSome, RStr, RString, RVec};
-use mumble_plugin_api::{
-    PluginContext_TO, PluginError, PluginMessageOut, PluginResult,
-};
+use mumble_plugin_api::{PluginContext_TO, PluginError, PluginMessageOut, PluginResult};
 
 /// Convenience alias used in plugin code.
 pub type FacadeResult<T> = Result<T, PluginError>;

@@ -68,7 +68,8 @@ pub struct LiveDocConfig {
 impl LiveDocConfig {
     /// Parse the configuration from a [`HostFacade`].
     pub fn from_context(ctx: &dyn HostFacade) -> Result<Self, ConfigError> {
-        let port = parse_optional("port", ctx.get_config("port").as_deref())?.unwrap_or(DEFAULT_PORT);
+        let port =
+            parse_optional("port", ctx.get_config("port").as_deref())?.unwrap_or(DEFAULT_PORT);
         let host: IpAddr = match ctx.get_config("host").as_deref() {
             Some(v) => v.parse().map_err(|_| ConfigError::Parse {
                 key: "host",
@@ -82,9 +83,11 @@ impl LiveDocConfig {
             .map(PathBuf::from)
             .ok_or(ConfigError::Missing("state_path"))?;
 
-        let max_update_bytes =
-            parse_optional("max_update_bytes", ctx.get_config("max_update_bytes").as_deref())?
-                .unwrap_or(DEFAULT_MAX_UPDATE_BYTES);
+        let max_update_bytes = parse_optional(
+            "max_update_bytes",
+            ctx.get_config("max_update_bytes").as_deref(),
+        )?
+        .unwrap_or(DEFAULT_MAX_UPDATE_BYTES);
 
         let snapshot_idle_secs = parse_optional(
             "snapshot_idle_secs",
@@ -118,8 +121,11 @@ fn parse_optional<T: std::str::FromStr>(
     value: Option<&str>,
 ) -> Result<Option<T>, ConfigError> {
     let Some(value) = value else { return Ok(None) };
-    value.parse::<T>().map(Some).map_err(|_| ConfigError::Parse {
-        key,
-        value: value.to_string(),
-    })
+    value
+        .parse::<T>()
+        .map(Some)
+        .map_err(|_| ConfigError::Parse {
+            key,
+            value: value.to_string(),
+        })
 }

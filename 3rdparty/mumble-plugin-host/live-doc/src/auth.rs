@@ -5,7 +5,10 @@
 //! another session.  Tokens are short-lived
 //! ([`crate::HANDSHAKE_JWT_TTL_SECS`]) and signed with HMAC-SHA256.
 
-use jsonwebtoken::{decode, encode, errors::Error as JwtError, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{
+    decode, encode, errors::Error as JwtError, Algorithm, DecodingKey, EncodingKey, Header,
+    Validation,
+};
 use mumble_plugin_api::{ChannelId, ServerId, SessionId};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -1,4 +1,4 @@
-﻿//! `mumble-file-server` - HTTP file sharing plugin for Mumble.
+//! `mumble-file-server` - HTTP file sharing plugin for Mumble.
 //!
 //! This crate provides:
 //! * A [`FileServerPlugin`] implementing
@@ -121,9 +121,7 @@ impl MumblePlugin for FileServerPlugin {
 
     fn on_client_connected(&self, info: ClientInfo) -> PluginResult<()> {
         let Ok(guard) = self.inner.lock() else {
-            return PluginResult::RErr(PluginError::Other(
-                "file-server state poisoned".into(),
-            ));
+            return PluginResult::RErr(PluginError::Other("file-server state poisoned".into()));
         };
         let Some(running) = guard.as_ref() else {
             return ROk(());
@@ -145,11 +143,7 @@ impl MumblePlugin for FileServerPlugin {
         ROk(())
     }
 
-    fn on_client_disconnected(
-        &self,
-        _server: ServerId,
-        session: SessionId,
-    ) -> PluginResult<()> {
+    fn on_client_disconnected(&self, _server: ServerId, session: SessionId) -> PluginResult<()> {
         let Ok(guard) = self.inner.lock() else {
             return ROk(());
         };
@@ -216,9 +210,7 @@ impl FileServerPlugin {
     }
 }
 
-fn build_running_state(
-    facade: Arc<dyn HostFacade>,
-) -> Result<RunningState, PluginError> {
+fn build_running_state(facade: Arc<dyn HostFacade>) -> Result<RunningState, PluginError> {
     let cfg = FileServerConfig::from_context(facade.as_ref())
         .map_err(|e| PluginError::Config(e.to_string().into()))?;
     let cfg = Arc::new(cfg);

@@ -69,11 +69,7 @@ impl FileServerConfig {
     /// ignored; missing keys fall back to defaults.
     pub fn from_context(ctx: &dyn HostFacade) -> Result<Self, ConfigError> {
         let port = parse_or(ctx, "port", 64739_u16)?;
-        let bind_address: IpAddr = parse_or(
-            ctx,
-            "bind_address",
-            IpAddr::from([127, 0, 0, 1]),
-        )?;
+        let bind_address: IpAddr = parse_or(ctx, "bind_address", IpAddr::from([127, 0, 0, 1]))?;
         let mut cfg = Self {
             bind_address,
             port,
@@ -182,7 +178,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     #[derive(Debug)]

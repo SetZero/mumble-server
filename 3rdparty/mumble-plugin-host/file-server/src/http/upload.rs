@@ -12,7 +12,7 @@ use tokio::io::AsyncWriteExt;
 use crate::auth::hash_password;
 use crate::host_facade::HostFacade;
 use crate::http::common::ApiError;
-use crate::signing::{self, NO_EXPIRY, NONCE_BYTES};
+use crate::signing::{self, NONCE_BYTES, NO_EXPIRY};
 use crate::state::AppState;
 use crate::storage::{AccessMode, FileRecord};
 
@@ -26,7 +26,11 @@ fn sniff_mime(magic: &[u8], filename: &str) -> String {
         return kind.mime_type().to_owned();
     }
     // Fall back to extension for types infer doesn't cover (e.g. plain text).
-    let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     match ext.as_str() {
         "txt" => "text/plain".to_owned(),
         "md" => "text/markdown".to_owned(),
@@ -80,7 +84,12 @@ pub async fn upload(
     tracing::info!(session = q.session, "upload: auth ok, parsing multipart");
 
     let parsed = parse_multipart(&state, multipart, state.config.max_file_size_bytes).await?;
-    enforce_share_permissions(state.plugin_ctx.as_ref(), q.session, parsed.channel_id, parsed.mode)?;
+    enforce_share_permissions(
+        state.plugin_ctx.as_ref(),
+        q.session,
+        parsed.channel_id,
+        parsed.mode,
+    )?;
     tracing::info!(
         session = q.session,
         bytes = parsed.size_bytes,
@@ -137,12 +146,7 @@ fn enforce_share_permissions(
         // build) - fall through and rely on per-channel ACLs alone.
         _ => {}
     }
-    if !plugin_ctx.has_permission(
-        0,
-        session_id,
-        channel_id,
-        permissions::SHARE_FILES,
-    ) {
+    if !plugin_ctx.has_permission(0, session_id, channel_id, permissions::SHARE_FILES) {
         tracing::warn!(
             session = session_id,
             channel = channel_id,
@@ -153,12 +157,7 @@ fn enforce_share_permissions(
         ));
     }
     if matches!(mode, AccessMode::Public | AccessMode::Password)
-        && !plugin_ctx.has_permission(
-            0,
-            session_id,
-            channel_id,
-            permissions::SHARE_FILES_PUBLIC,
-        )
+        && !plugin_ctx.has_permission(0, session_id, channel_id, permissions::SHARE_FILES_PUBLIC)
     {
         tracing::warn!(
             session = session_id,
@@ -249,9 +248,9 @@ async fn parse_multipart(
                 // Keep the first 16 bytes so we can identify the file type
                 // from its magic bytes without an extra seek.
                 let mut magic_buf: Vec<u8> = Vec::with_capacity(16);
-                let mut sink = tokio::fs::File::create(&blob_path).await.map_err(|e| {
-                    ApiError::internal(format!("create blob: {e}"))
-                })?;
+                let mut sink = tokio::fs::File::create(&blob_path)
+                    .await
+                    .map_err(|e| ApiError::internal(format!("create blob: {e}")))?;
                 while let Some(chunk) = field.chunk().await.map_err(|e| {
                     tracing::error!(error = %e, "upload: chunk error");
                     ApiError::bad_request(format!("failed to read file bytes: {e}"))
@@ -267,13 +266,13 @@ async fn parse_multipart(
                         let needed = 16 - magic_buf.len();
                         magic_buf.extend_from_slice(&chunk[..needed.min(chunk.len())]);
                     }
-                    sink.write_all(&chunk).await.map_err(|e| {
-                        ApiError::internal(format!("write blob: {e}"))
-                    })?;
+                    sink.write_all(&chunk)
+                        .await
+                        .map_err(|e| ApiError::internal(format!("write blob: {e}")))?;
                 }
-                sink.flush().await.map_err(|e| {
-                    ApiError::internal(format!("flush blob: {e}"))
-                })?;
+                sink.flush()
+                    .await
+                    .map_err(|e| ApiError::internal(format!("flush blob: {e}")))?;
                 drop(sink);
                 let mime_type = sniff_mime(&magic_buf, &filename);
                 file_meta = Some((file_id, blob_path, written, filename, mime_type, guard));
@@ -284,9 +283,8 @@ async fn parse_multipart(
             }
             "mode" => {
                 let s = field.text().await.unwrap_or_default();
-                mode = AccessMode::parse(&s).ok_or_else(|| {
-                    ApiError::bad_request(format!("unknown mode: {s}"))
-                })?;
+                mode = AccessMode::parse(&s)
+                    .ok_or_else(|| ApiError::bad_request(format!("unknown mode: {s}")))?;
             }
             "password" => {
                 let s = field.text().await.unwrap_or_default();
@@ -301,7 +299,9 @@ async fn parse_multipart(
     let (file_id, blob_path, size_bytes, filename, mime_type, guard) =
         file_meta.ok_or_else(|| ApiError::bad_request("missing file part"))?;
     if mode == AccessMode::Password && password.is_none() {
-        return Err(ApiError::bad_request("mode=password requires `password` field"));
+        return Err(ApiError::bad_request(
+            "mode=password requires `password` field",
+        ));
     }
     // Hand the guard back to the caller via the parsed struct so the
     // file is removed if `insert_record` fails.
@@ -336,10 +336,9 @@ async fn insert_record(
     let signed = signing::sign(state.signing_secret.as_ref(), &file_id, expiry_s, nonce);
 
     let password_hash = match (parsed.mode, parsed.password.as_deref()) {
-        (AccessMode::Password, Some(pw)) => Some(
-            hash_password(pw)
-                .map_err(|_| ApiError::internal("failed to hash password"))?,
-        ),
+        (AccessMode::Password, Some(pw)) => {
+            Some(hash_password(pw).map_err(|_| ApiError::internal("failed to hash password"))?)
+        }
         _ => None,
     };
 
@@ -356,7 +355,11 @@ async fn insert_record(
         access_mode: parsed.mode,
         password_hash,
         uploaded_at: now_unix_ms(),
-        expires_at: if expiry_s == NO_EXPIRY { None } else { Some(expiry_s) },
+        expires_at: if expiry_s == NO_EXPIRY {
+            None
+        } else {
+            Some(expiry_s)
+        },
         downloaded_at: None,
         uploader_cert_hash: cert_hash,
     };
@@ -378,9 +381,9 @@ async fn insert_record(
 fn map_storage_error(e: crate::storage::StorageError) -> ApiError {
     use crate::storage::StorageError;
     match e {
-        StorageError::CapExceeded { total_after, limit } => ApiError::too_large(format!(
-            "storage cap exceeded ({total_after} > {limit})"
-        )),
+        StorageError::CapExceeded { total_after, limit } => {
+            ApiError::too_large(format!("storage cap exceeded ({total_after} > {limit})"))
+        }
         other => ApiError::internal(format!("storage: {other}")),
     }
 }
@@ -408,7 +411,11 @@ fn build_download_url(base: &str, file_id: &str, p: &signing::SignedParams) -> S
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
     use std::collections::HashSet;
     use std::sync::Mutex;
@@ -431,7 +438,13 @@ mod tests {
     }
 
     impl HostFacade for PermCtx {
-        fn send_plugin_data(&self, _: u32, _: u32, _: &str, _: &[u8]) -> crate::host_facade::FacadeResult<()> {
+        fn send_plugin_data(
+            &self,
+            _: u32,
+            _: u32,
+            _: &str,
+            _: &[u8],
+        ) -> crate::host_facade::FacadeResult<()> {
             Ok(())
         }
         fn is_session_active(&self, _: u32, _: u32) -> bool {
@@ -463,11 +476,12 @@ mod tests {
     #[test]
     fn share_files_denied_blocks_all_modes() {
         let ctx = PermCtx::default();
-        for mode in [AccessMode::Session, AccessMode::Public, AccessMode::Password] {
-            assert_forbidden(
-                enforce_share_permissions(&ctx, 1, 0, mode),
-                "share files",
-            );
+        for mode in [
+            AccessMode::Session,
+            AccessMode::Public,
+            AccessMode::Password,
+        ] {
+            assert_forbidden(enforce_share_permissions(&ctx, 1, 0, mode), "share files");
         }
     }
 

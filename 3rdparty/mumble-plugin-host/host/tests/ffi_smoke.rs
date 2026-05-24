@@ -4,7 +4,11 @@
 //! plugin directory is configured, so this test exercises the create →
 //! dispatch → destroy cycle without any plugins being present.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "tests panic on failure"
+)]
 
 // These crates are dependencies of the cdylib but not used directly here.
 use abi_stable as _;
@@ -55,11 +59,22 @@ unsafe extern "C" fn cb_active(_user: *mut c_void, _server: u32, _session: u32) 
     true
 }
 
-unsafe extern "C" fn cb_access(_user: *mut c_void, _server: u32, _session: u32, _channel: u32) -> bool {
+unsafe extern "C" fn cb_access(
+    _user: *mut c_void,
+    _server: u32,
+    _session: u32,
+    _channel: u32,
+) -> bool {
     true
 }
 
-unsafe extern "C" fn cb_perm(_user: *mut c_void, _server: u32, _session: u32, _channel: u32, _perm: u32) -> bool {
+unsafe extern "C" fn cb_perm(
+    _user: *mut c_void,
+    _server: u32,
+    _session: u32,
+    _channel: u32,
+    _perm: u32,
+) -> bool {
     false
 }
 

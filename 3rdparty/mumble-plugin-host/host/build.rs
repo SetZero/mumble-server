@@ -5,8 +5,7 @@ use std::path::PathBuf;
 
 fn main() {
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let out_dir =
-        env::var("OUT_DIR").unwrap_or_else(|_| format!("{crate_dir}/target/include"));
+    let out_dir = env::var("OUT_DIR").unwrap_or_else(|_| format!("{crate_dir}/target/include"));
     let out_path = PathBuf::from(&out_dir).join("mumble_plugin_host.h");
 
     let config_path = PathBuf::from(&crate_dir).join("cbindgen.toml");
@@ -23,7 +22,9 @@ fn main() {
             println!("cargo:rerun-if-changed=src/ffi.rs");
             println!("cargo:rerun-if-changed=cbindgen.toml");
             // Also publish the header alongside the cdylib for the C++ build.
-            let publish = PathBuf::from(&crate_dir).join("include").join("mumble_plugin_host.h");
+            let publish = PathBuf::from(&crate_dir)
+                .join("include")
+                .join("mumble_plugin_host.h");
             if let Some(parent) = publish.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -44,7 +45,8 @@ fn make_opaque_handle_forward_decl(header: &std::path::Path) {
     let Ok(src) = std::fs::read_to_string(header) else {
         return;
     };
-    const BODY: &str = "typedef struct PluginHostHandle {\n  uint8_t _private[0];\n} PluginHostHandle;";
+    const BODY: &str =
+        "typedef struct PluginHostHandle {\n  uint8_t _private[0];\n} PluginHostHandle;";
     const FORWARD: &str = "typedef struct PluginHostHandle PluginHostHandle;";
     if src.contains(BODY) {
         let _ = std::fs::write(header, src.replace(BODY, FORWARD));

@@ -140,11 +140,13 @@ impl HostContext {
         };
         let id_c = match CString::new(data_id) {
             Ok(c) => c,
-            Err(_) => {
-                return PluginResult::RErr(PluginError::Other("data_id contains NUL".into()))
-            }
+            Err(_) => return PluginResult::RErr(PluginError::Other("data_id contains NUL".into())),
         };
-        let data_ptr = if data.is_empty() { ptr::null() } else { data.as_ptr() };
+        let data_ptr = if data.is_empty() {
+            ptr::null()
+        } else {
+            data.as_ptr()
+        };
         // SAFETY: callback non-null; id_c lives until return; data slice
         // is valid for `data.len()` bytes.
         let rc = unsafe {
@@ -193,8 +195,12 @@ impl PluginContext for ScopedContext {
         data_id: RStr<'_>,
         data: RSlice<'_, u8>,
     ) -> PluginResult<()> {
-        self.inner
-            .send_plugin_data_raw(server_id, target_session, data_id.as_str(), data.as_slice())
+        self.inner.send_plugin_data_raw(
+            server_id,
+            target_session,
+            data_id.as_str(),
+            data.as_slice(),
+        )
     }
 
     fn is_session_active(&self, server_id: ServerId, session: SessionId) -> bool {
@@ -240,11 +246,7 @@ impl PluginContext for ScopedContext {
         }
     }
 
-    fn current_channel(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-    ) -> ROption<ChannelId> {
+    fn current_channel(&self, server_id: ServerId, session: SessionId) -> ROption<ChannelId> {
         let Some(func) = self.inner.callbacks.current_channel else {
             return RNone;
         };
@@ -300,24 +302,27 @@ impl PluginContext for ScopedContext {
         let plugin_name_c = match CString::new(msg.plugin_name.as_str()) {
             Ok(c) => c,
             Err(_) => {
-                return PluginResult::RErr(PluginError::Other(
-                    "plugin_name contains NUL".into(),
-                ))
+                return PluginResult::RErr(PluginError::Other("plugin_name contains NUL".into()))
             }
         };
         let payload_type_c = match CString::new(msg.payload_type.as_str()) {
             Ok(c) => c,
             Err(_) => {
-                return PluginResult::RErr(PluginError::Other(
-                    "payload_type contains NUL".into(),
-                ))
+                return PluginResult::RErr(PluginError::Other("payload_type contains NUL".into()))
             }
         };
         let payload_slice = msg.payload.as_slice();
-        let payload_ptr =
-            if payload_slice.is_empty() { ptr::null() } else { payload_slice.as_ptr() };
+        let payload_ptr = if payload_slice.is_empty() {
+            ptr::null()
+        } else {
+            payload_slice.as_ptr()
+        };
         let targets = msg.target_sessions.as_slice();
-        let targets_ptr = if targets.is_empty() { ptr::null() } else { targets.as_ptr() };
+        let targets_ptr = if targets.is_empty() {
+            ptr::null()
+        } else {
+            targets.as_ptr()
+        };
         let (channel_present, channel_id) = match msg.channel_id {
             RSome(c) => (true, c),
             RNone => (false, 0),

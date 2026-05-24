@@ -54,10 +54,7 @@ pub async fn serve(state: AppState) -> std::io::Result<ServerHandle> {
     let listener = TcpListener::bind(state.cfg().bind).await?;
     let addr = listener.local_addr()?;
     let router = Router::new()
-        .route(
-            "/ws/{server_id}/{channel_id}/{slug}",
-            get(handle_upgrade),
-        )
+        .route("/ws/{server_id}/{channel_id}/{slug}", get(handle_upgrade))
         .with_state(state);
 
     let task = tokio::spawn(async move {
@@ -119,7 +116,11 @@ async fn run_session(state: AppState, key: DocKey, session: u32, socket: WebSock
 
     // Push the initial sync-step-1 so the client knows our state vector.
     let initial = room.initial_sync_frame().await;
-    if sender.send(WsMessage::Binary(initial.into())).await.is_err() {
+    if sender
+        .send(WsMessage::Binary(initial.into()))
+        .await
+        .is_err()
+    {
         state.unregister_session(&key, session).await;
         return;
     }
@@ -134,7 +135,11 @@ async fn run_session(state: AppState, key: DocKey, session: u32, socket: WebSock
                         if matches!(origin, Origin::Client(id) if id == connection_id) {
                             continue;
                         }
-                        if sender.send(WsMessage::Binary(bytes.to_vec().into())).await.is_err() {
+                        if sender
+                            .send(WsMessage::Binary(bytes.to_vec().into()))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -166,15 +171,15 @@ async fn run_session(state: AppState, key: DocKey, session: u32, socket: WebSock
                         }
                         match room.apply_client_message(connection_id, &bytes).await {
                             Ok((_, awareness)) => {
-                                    let mut map = match seen_awareness.lock() {
-                                        Ok(g) => g,
-                                        Err(p) => p.into_inner(),
-                                    };
-                                    for (cid, clock) in awareness {
-                                        let slot = map.entry(cid).or_insert(0);
-                                        *slot = (*slot).max(clock);
-                                    }
+                                let mut map = match seen_awareness.lock() {
+                                    Ok(g) => g,
+                                    Err(p) => p.into_inner(),
+                                };
+                                for (cid, clock) in awareness {
+                                    let slot = map.entry(cid).or_insert(0);
+                                    *slot = (*slot).max(clock);
                                 }
+                            }
                             Err(err) => {
                                 tracing::warn!(?err, "live-doc invalid client message");
                             }
@@ -204,4 +209,3 @@ async fn run_session(state: AppState, key: DocKey, session: u32, socket: WebSock
     state.unregister_session(&key, session).await;
     let _ = room;
 }
-

@@ -61,12 +61,18 @@ impl IntoResponse for ApiError {
 
 /// Strip a `Bearer ` prefix from an `Authorization` header value.
 pub fn parse_bearer(header: &str) -> Option<&str> {
-    header.strip_prefix("Bearer ").or_else(|| header.strip_prefix("bearer "))
+    header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     #[test]
