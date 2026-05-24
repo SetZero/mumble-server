@@ -54,3 +54,4 @@ CMakeSettings.json
 CLAUDE.md
 SECURITY_AUDIT_E2E.md
 tests/integration/test_ghost_kick.py
+3rdparty/mumble-plugin-host/target/.rustc_info.json
