@@ -79,6 +79,18 @@ typedef struct PluginHostCallbacks {
    * Free a string previously returned by [`Self::get_config`].
    */
   void (*free_string)(void *user_data, char *ptr);
+  /**
+   * Deliver a `FancyLiveDocInvite` (wire ID 142) to a single session.
+   * Returns 0 on success, non-zero on error.
+   */
+  int (*send_fancy_live_doc_invite)(void *user_data,
+                                    uint32_t server_id,
+                                    uint32_t target_session,
+                                    uint32_t channel_id,
+                                    const char *slug,
+                                    const char *title,
+                                    const char *ws_url,
+                                    const char *token);
 } PluginHostCallbacks;
 
 #ifdef __cplusplus
@@ -146,6 +158,21 @@ void plugin_host_on_plugin_data(struct PluginHostHandle *handle,
                                 const char *data_id,
                                 const uint8_t *data,
                                 uintptr_t data_len);
+
+/**
+ * Notify the host of an inbound `FancyLiveDocOpen` (wire ID 141).
+ *
+ * # Safety
+ * `handle` must be valid; `slug` and `title` must be NUL-terminated UTF-8
+ * strings (or NULL, which is treated as the empty string).
+ */
+
+void plugin_host_on_fancy_live_doc_open(struct PluginHostHandle *handle,
+                                        uint32_t server_id,
+                                        uint32_t sender_session,
+                                        uint32_t channel_id,
+                                        const char *slug,
+                                        const char *title);
 
 #ifdef __cplusplus
 }  // extern "C"

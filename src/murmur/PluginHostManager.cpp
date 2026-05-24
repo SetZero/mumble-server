@@ -33,17 +33,13 @@ PluginHostManager::PluginHostManager(Server *server, QObject *parent)
 	cb.current_channel         = &PluginHostManager::currentChannelTrampoline;
 	cb.get_config              = &PluginHostManager::getConfigTrampoline;
 	cb.free_string             = &PluginHostManager::freeStringTrampoline;
-
+        cb.send_fancy_live_doc_invite = &PluginHostManager::sendFancyLiveDocInviteTrampoline;
 	m_handle = plugin_host_create(&cb);
-	if (!m_handle) {
-		qWarning() << "PluginHostManager: failed to load Rust plugin host";
-	}
 }
 
 PluginHostManager::~PluginHostManager() {
 	if (m_handle) {
 		plugin_host_destroy(m_handle);
-		m_handle = nullptr;
 	}
 }
 
@@ -76,15 +72,17 @@ void PluginHostManager::onPluginData(uint32_t senderSession, const QString &data
 	                           static_cast< size_t >(data.size()));
 }
 
-// -- Callback trampolines --------------------------------------------------
-//
-// All read-side trampolines acquire a QReadLocker on the server's
-// `qrwlVoiceThread` lock before touching `qhUsers` / `qhChannels`.  These
-// callbacks are dispatched from the Rust runtime's tokio worker threads,
-// not from the main event-loop thread, so we MUST hold the read-write
-// lock that the voice thread also uses to keep the user / channel maps
-// consistent (C-1).
-
+void PluginHostManager::onFancyLiveDocOpen(uint32_t senderSession, uint32_t channelId,
+                                           const QString &slug, const QString &title) {
+        if (!m_handle) {
+                return;
+        }
+        const QByteArray slugUtf8  = slug.toUtf8();
+        const QByteArray titleUtf8 = title.toUtf8();
+        plugin_host_on_fancy_live_doc_open(m_handle, static_cast< uint32_t >(m_server->iServerNum),
+                                           senderSession, channelId,
+                                           slugUtf8.constData(), titleUtf8.constData());
+}
 int PluginHostManager::sendPluginDataTrampoline(void *userData, uint32_t /*serverId*/,
                                                 uint32_t targetSession, const char *dataId,
                                                 const uint8_t *data, size_t dataLen) {
@@ -231,31 +229,60 @@ char *PluginHostManager::getConfigTrampoline(void *userData, const char *key) {
 		return resolveHostKey(key);
 	}
 
-	// Regular config keys live under the "plugin.file-server." prefix in the
-	// server configuration table (managed by DBWrapper). When no DB row is
-	// present we fall back to the server's mumble-server.ini so deployment-
-	// time settings (storage_path, bind_address, ...) can be configured via
-	// the standard config file or MUMBLE_CONFIG_* environment variables in
-	// the docker image, without requiring operators to seed the DB by hand.
-	const std::string fullKey = std::string("plugin.file-server.") + key;
-	QString value;
-	self->m_server->m_dbWrapper.getConfigurationTo(
-		static_cast< unsigned int >(self->m_server->iServerNum), fullKey, value);
-	if (value.isEmpty() && Meta::mp && Meta::mp->qsSettings) {
-		// The .ini uses Mumble's camelCase convention, so translate the
-		// snake_case key before the fallback lookup.
-		const std::string camelFullKey = std::string("plugin.file-server.") + snakeToCamelCase(key);
-		value = Meta::mp->qsSettings->value(QString::fromStdString(camelFullKey)).toString();
-	}
-	if (value.isEmpty()) {
-		return nullptr;
-	}
-	const QByteArray utf8 = value.toUtf8();
-	return dupToMalloc(std::string(utf8.constData(), static_cast< size_t >(utf8.size())));
+        // Plugins provide fully qualified keys (e.g. "plugin.live-doc.enabled")
+        // so we look them up verbatim in the server configuration table.
+        // For the .ini fallback we try the raw key first (snake_case) and
+        // then a camelCase variant (e.g. "plugin.live-doc.state_path" ->
+        // "plugin.live-doc.statePath") to match Mumble's camelCase naming
+        // convention.  Operators may use either form in the .ini file.
+        const std::string fullKey(key);
+        QString value;
+        self->m_server->m_dbWrapper.getConfigurationTo(
+                static_cast< unsigned int >(self->m_server->iServerNum), fullKey, value);
+        if (value.isEmpty() && Meta::mp && Meta::mp->qsSettings) {
+                value = Meta::mp->qsSettings->value(QString::fromStdString(fullKey)).toString();
+                if (value.isEmpty()) {
+                        const std::string camelKey = snakeToCamelCase(fullKey);
+                        if (camelKey != fullKey) {
+                                value = Meta::mp->qsSettings
+                                                ->value(QString::fromStdString(camelKey))
+                                                .toString();
+                        }
+                }
+        }
+        if (value.isEmpty()) {
+                return nullptr;
+        }
+        const QByteArray utf8 = value.toUtf8();
+        return dupToMalloc(std::string(utf8.constData(), static_cast< size_t >(utf8.size())));
 }
 
 void PluginHostManager::freeStringTrampoline(void * /*userData*/, char *ptr) {
-	if (ptr) {
-		std::free(ptr);
-	}
+        if (ptr) {
+                std::free(ptr);
+        }
+}
+
+int PluginHostManager::sendFancyLiveDocInviteTrampoline(void *userData, uint32_t /*serverId*/,
+                                                        uint32_t targetSession, uint32_t channelId,
+                                                        const char *slug, const char *title,
+                                                        const char *wsUrl, const char *token) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server) {
+                return -1;
+        }
+        QReadLocker rl(&self->m_server->qrwlVoiceThread);
+        ServerUser *target = self->m_server->qhUsers.value(targetSession);
+        if (!target) {
+                return -2;
+        }
+        MumbleProto::FancyLiveDocInvite msg;
+        msg.set_server_id(std::to_string(self->m_server->iServerNum));
+        msg.set_channel_id(channelId);
+        if (slug)  { msg.set_slug(slug); }
+        if (title) { msg.set_title(title); }
+        if (wsUrl) { msg.set_ws_url(wsUrl); }
+        if (token) { msg.set_token(token); }
+        self->m_server->sendMessage(target, msg);
+        return 0;
 }

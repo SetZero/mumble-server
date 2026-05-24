@@ -154,6 +154,30 @@ pub unsafe extern "C" fn plugin_host_on_plugin_data(
     })
 }
 
+/// Notify the host of an inbound `FancyLiveDocOpen` (wire ID 141).
+///
+/// # Safety
+/// `handle` must be valid; `slug` and `title` must be NUL-terminated UTF-8
+/// strings (or NULL, which is treated as the empty string).
+#[no_mangle]
+pub unsafe extern "C" fn plugin_host_on_fancy_live_doc_open(
+    handle: *mut PluginHostHandle,
+    server_id: u32,
+    sender_session: u32,
+    channel_id: u32,
+    slug: *const c_char,
+    title: *const c_char,
+) {
+    ffi_guard("plugin_host_on_fancy_live_doc_open", (), || {
+        let Some(host) = (unsafe { handle_ref(handle) }) else { return };
+        // SAFETY: caller promises NUL-terminated UTF-8 or NULL.
+        let slug_s = unsafe { cstr_to_string(slug) };
+        // SAFETY: same contract.
+        let title_s = unsafe { cstr_to_string(title) };
+        host.on_fancy_live_doc_open(server_id, sender_session, channel_id, slug_s, title_s);
+    })
+}
+
 // -- helpers --------------------------------------------------------------
 
 /// SAFETY: Caller must ensure `handle` came from [`plugin_host_create`].

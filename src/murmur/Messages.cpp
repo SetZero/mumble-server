@@ -3619,6 +3619,140 @@ void Server::msgFancyOnboardingResponseDeliver(ServerUser *,
 }
 
 
+// ---------------------------------------------------------------------------
+// Fancy Mumble: live-doc workflow (IDs 141-143) - introduced in 0.3.2
+// ---------------------------------------------------------------------------
+
+void Server::msgFancyLiveDocOpen(ServerUser *uSource, MumbleProto::FancyLiveDocOpen &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (!msg.has_channel_id() || !msg.has_slug()) {
+		return;
+	}
+	if (!m_pluginHost || !m_pluginHost->isLoaded()) {
+		return;
+	}
+	m_pluginHost->onFancyLiveDocOpen(
+		uSource->uiSession,
+		msg.channel_id(),
+		QString::fromStdString(msg.slug()),
+		msg.has_title() ? QString::fromStdString(msg.title()) : QString());
+}
+
+void Server::msgFancyLiveDocInvite(ServerUser *, MumbleProto::FancyLiveDocInvite &) {
+	// Server -> Client only; ignore inbound.
+}
+
+void Server::msgFancyLiveDocAnnounce(ServerUser *uSource, MumbleProto::FancyLiveDocAnnounce &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (!msg.has_channel_id() || !msg.has_slug()) {
+		return;
+	}
+	Channel *c = qhChannels.value(msg.channel_id());
+	if (!c) {
+		return;
+	}
+
+	// Stamp the opener identity from the server to prevent spoofing.
+	msg.set_opener_session(uSource->uiSession);
+	msg.set_opener_name(uSource->qsName.toStdString());
+
+	// Fan-out to every Fancy 0.3.2+ client in the channel except the opener.
+	const auto minVersionAnnounce = Version::fromComponents(0, 3, 2);
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->uiSession == uSource->uiSession) {
+			continue;
+		}
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersionAnnounce) {
+			continue;
+		}
+		sendMessage(su, msg);
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: polls (IDs 144-145) - introduced in 0.3.2
+// ---------------------------------------------------------------------------
+
+void Server::msgFancyPoll(ServerUser *uSource, MumbleProto::FancyPoll &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	// Polls can be sent rapidly; use the higher-rate plugin-data bucket.
+	if (uSource->m_pluginMessageBucket.ratelimit(1)) {
+		qWarning("Dropping FancyPoll from \"%s\" (%d)",
+				 qUtf8Printable(uSource->qsName), uSource->uiSession);
+		return;
+	}
+	if (!msg.has_channel_id()) {
+		return;
+	}
+	Channel *c = qhChannels.value(msg.channel_id());
+	if (!c) {
+		return;
+	}
+
+	// Stamp the creator identity from the server to prevent spoofing.
+	msg.set_creator_session(uSource->uiSession);
+	msg.set_creator_name(uSource->qsName.toStdString());
+
+	// Relay to every Fancy 0.3.2+ client in the channel (including sender
+	// so they receive the server-stamped version).
+	const auto minVersionPoll = Version::fromComponents(0, 3, 2);
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersionPoll) {
+			continue;
+		}
+		sendMessage(su, msg);
+	}
+}
+
+void Server::msgFancyPollVote(ServerUser *uSource, MumbleProto::FancyPollVote &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (uSource->m_pluginMessageBucket.ratelimit(1)) {
+		qWarning("Dropping FancyPollVote from \"%s\" (%d)",
+				 qUtf8Printable(uSource->qsName), uSource->uiSession);
+		return;
+	}
+	if (!msg.has_channel_id()) {
+		return;
+	}
+	Channel *c = qhChannels.value(msg.channel_id());
+	if (!c) {
+		return;
+	}
+
+	// Stamp the voter identity from the server to prevent spoofing.
+	msg.set_voter_session(uSource->uiSession);
+	msg.set_voter_name(uSource->qsName.toStdString());
+
+	// Relay to every Fancy 0.3.2+ client in the channel (including sender).
+	const auto minVersionVote = Version::fromComponents(0, 3, 2);
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersionVote) {
+			continue;
+		}
+		sendMessage(su, msg);
+	}
+}
+
+
 #undef RATELIMIT
 #undef MSG_SETUP
 #undef MSG_SETUP_NO_UNIDLE

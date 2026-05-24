@@ -43,25 +43,33 @@ public:
 	/// Forward an inbound PluginDataTransmission to the plugin host.
 	void onPluginData(uint32_t senderSession, const QString &dataId, const QByteArray &data);
 
-	/// Whether the host loaded successfully.
-	bool isLoaded() const { return m_handle != nullptr; }
+        /// Forward an inbound FancyLiveDocOpen (wire ID 141) to the plugin host.
+        void onFancyLiveDocOpen(uint32_t senderSession, uint32_t channelId,
+                                const QString &slug, const QString &title);
+
+        /// Whether the host loaded successfully.
+        bool isLoaded() const { return m_handle != nullptr; }
 
 private:
-	// -- C callback trampolines (called from the Rust runtime) --
-	static int sendPluginDataTrampoline(void *userData, uint32_t serverId, uint32_t targetSession,
-	                                    const char *dataId, const uint8_t *data, size_t dataLen);
-	static bool isSessionActiveTrampoline(void *userData, uint32_t serverId, uint32_t session);
-	static bool userHasChannelAccessTrampoline(void *userData, uint32_t serverId, uint32_t session,
-	                                           uint32_t channel);
-	static bool hasPermissionTrampoline(void *userData, uint32_t serverId, uint32_t session,
-	                                    uint32_t channel, uint32_t permissionFlags);
-	static bool currentChannelTrampoline(void *userData, uint32_t serverId, uint32_t session,
-	                                     uint32_t *outChannel);
-	static char *getConfigTrampoline(void *userData, const char *key);
-	static void freeStringTrampoline(void *userData, char *ptr);
+        // -- C callback trampolines (called from the Rust runtime) --
+        static int sendPluginDataTrampoline(void *userData, uint32_t serverId, uint32_t targetSession,
+                                            const char *dataId, const uint8_t *data, size_t dataLen);
+        static bool isSessionActiveTrampoline(void *userData, uint32_t serverId, uint32_t session);
+        static bool userHasChannelAccessTrampoline(void *userData, uint32_t serverId, uint32_t session,
+                                                   uint32_t channel);
+        static bool hasPermissionTrampoline(void *userData, uint32_t serverId, uint32_t session,
+                                            uint32_t channel, uint32_t permissionFlags);
+        static bool currentChannelTrampoline(void *userData, uint32_t serverId, uint32_t session,
+                                             uint32_t *outChannel);
+        static char *getConfigTrampoline(void *userData, const char *key);
+        static void freeStringTrampoline(void *userData, char *ptr);
+        static int sendFancyLiveDocInviteTrampoline(void *userData, uint32_t serverId,
+                                                    uint32_t targetSession, uint32_t channelId,
+                                                    const char *slug, const char *title,
+                                                    const char *wsUrl, const char *token);
 
-	Server *m_server;
-	PluginHostHandle *m_handle;
+        Server *m_server;
+        PluginHostHandle *m_handle;
 };
 
 #endif // PLUGIN_HOST_MANAGER_H_

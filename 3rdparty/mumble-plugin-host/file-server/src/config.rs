@@ -60,6 +60,10 @@ pub struct FileServerConfig {
     pub auth_rate_limit_max_failures: u32,
     /// Sliding window for the auth-failure rate limiter.
     pub auth_rate_limit_window: Duration,
+    /// Bearer token required on `/admin/*` endpoints used by sibling
+    /// plugins (live-doc) to persist revisioned documents.  When
+    /// unset the admin endpoints are disabled.
+    pub admin_token: Option<String>,
 }
 
 impl FileServerConfig {
@@ -100,6 +104,7 @@ impl FileServerConfig {
                 "auth_rate_limit_window_seconds",
                 600_u64,
             )?),
+            admin_token: ctx.get_config("admin_token").filter(|s| !s.is_empty()),
         };
 
         cfg.base_url = cfg.base_url.trim_end_matches('/').to_owned();

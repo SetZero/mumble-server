@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 
 pub mod auth;
 pub mod config;
+pub mod documents;
 pub mod emotes;
 pub mod http;
 pub mod rate_limit;
@@ -88,11 +89,16 @@ impl MumblePlugin for FileServerPlugin {
             .map_err(|e| PluginError::Other(format!("storage: {e}")))?;
         let storage = Arc::new(storage);
 
+        let documents = documents::DocumentsStore::open(&cfg.storage_path)
+            .map_err(|e| PluginError::Other(format!("documents: {e}")))?;
+        let documents = Arc::new(documents);
+
         let signing_secret = load_or_create_signing_secret(&cfg.storage_path)
             .map_err(|e| PluginError::Other(format!("signing secret: {e}")))?;
 
         let app_state = AppState {
             storage,
+            documents,
             tickets: Arc::new(TicketStore::new()),
             sessions: Arc::new(SessionMap::new()),
             auth_rate_limiter: Arc::new(RateLimiter::new()),

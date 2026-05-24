@@ -119,10 +119,40 @@ pub trait PluginContext: Send + Sync + Debug {
         None
     }
 
-    /// Look up a configuration value for the calling plugin. Keys are
-    /// scoped to the plugin (the host strips any `plugin.<name>.` prefix
-    /// before storing them).
+    /// Look up a configuration value for the calling plugin. Keys must be
+    /// fully qualified (e.g. `"plugin.live-doc.enabled"`); the host looks them
+    /// up verbatim in the server config table.
     fn get_config(&self, key: &str) -> Option<String>;
+
+    /// Deliver a `FancyLiveDocInvite` (wire ID 142) directly to a single
+    /// connected session. The server serialises the proto and sends it over the
+    /// TCP control channel. Returns an error if the session is unknown or the
+    /// callback is not wired.
+    fn send_fancy_live_doc_invite(
+        &self,
+        server_id: ServerId,
+        target_session: SessionId,
+        channel_id: ChannelId,
+        invite: &LiveDocInviteParams,
+    ) -> Result<()> {
+        let _ = (server_id, target_session, channel_id, invite);
+        Ok(())
+    }
+}
+
+/// Parameters for a `FancyLiveDocInvite` message sent to a client.
+///
+/// Grouped to avoid a `too_many_arguments` violation on the trait method.
+#[derive(Debug, Clone)]
+pub struct LiveDocInviteParams<'a> {
+    /// Document slug (URL-safe identifier within the channel).
+    pub slug: &'a str,
+    /// Human-readable document title shown in the client UI.
+    pub title: &'a str,
+    /// WebSocket URL the client should connect to for Yjs sync.
+    pub ws_url: &'a str,
+    /// Short-lived JWT authorising the WS handshake.
+    pub token: &'a str,
 }
 
 /// Bit values for [`PluginContext::has_permission`].
@@ -236,6 +266,22 @@ pub trait MumblePlugin: Send + Sync + Debug {
         data: &[u8],
     ) -> Result<()> {
         let _ = (server_id, sender, data_id, data);
+        Ok(())
+    }
+
+    /// Called when the server receives a `FancyLiveDocOpen` (wire ID 141) from
+    /// a client requesting to open a collaborative document. The plugin should
+    /// validate the request and respond with a `FancyLiveDocInvite` via
+    /// [`PluginContext::send_fancy_live_doc_invite`].
+    async fn on_fancy_live_doc_open(
+        &self,
+        server_id: ServerId,
+        sender: SessionId,
+        channel_id: ChannelId,
+        slug: &str,
+        title: &str,
+    ) -> Result<()> {
+        let _ = (server_id, sender, channel_id, slug, title);
         Ok(())
     }
 }

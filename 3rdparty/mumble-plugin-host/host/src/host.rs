@@ -3,10 +3,10 @@
 
 use std::sync::Arc;
 
-use mumble_plugin_api::{ClientInfo, MumblePlugin, PluginContext, ServerId, SessionId};
+use mumble_plugin_api::{ChannelId, ClientInfo, MumblePlugin, PluginContext, ServerId, SessionId};
 use tokio::runtime::{Builder, Runtime};
 
-use crate::context::HostContext;
+use crate::context::{HostContext, ScopedContext};
 
 /// Owns the runtime, the plugin set, and the shared context handed to
 /// each plugin on load.
@@ -26,11 +26,15 @@ impl Host {
             .thread_name("mumble-plugin-host")
             .build()?;
 
-        let context: Arc<dyn PluginContext> = Arc::new(context);
-        let plugins = builtin_plugins();
+        let base_context = Arc::new(context);
+        let plugins_with_prefix = builtin_plugins();
 
-        for plugin in &plugins {
-            let ctx = Arc::clone(&context);
+        let plugins: Vec<Arc<dyn MumblePlugin>> =
+            plugins_with_prefix.iter().map(|(p, _)| Arc::clone(p)).collect();
+
+        for (plugin, prefix) in &plugins_with_prefix {
+            let ctx: Arc<dyn PluginContext> =
+                Arc::new(ScopedContext::new(Arc::clone(&base_context), *prefix));
             let p = Arc::clone(plugin);
             if let Err(e) = runtime.block_on(async move { p.on_load(ctx).await }) {
                 tracing::error!(plugin = %plugin.name(), error = %e, "plugin on_load failed");
@@ -86,6 +90,27 @@ impl Host {
             }
         }
     }
+
+    /// Dispatch a `FancyLiveDocOpen` event to every loaded plugin.
+    pub(crate) fn on_fancy_live_doc_open(
+        &self,
+        server_id: ServerId,
+        sender: SessionId,
+        channel_id: ChannelId,
+        slug: String,
+        title: String,
+    ) {
+        for plugin in &self.plugins {
+            let p = Arc::clone(plugin);
+            let slug = slug.clone();
+            let title = title.clone();
+            if let Err(e) = self.runtime.block_on(async move {
+                p.on_fancy_live_doc_open(server_id, sender, channel_id, &slug, &title).await
+            }) {
+                tracing::warn!(plugin = %plugin.name(), error = %e, "on_fancy_live_doc_open failed");
+            }
+        }
+    }
 }
 
 impl Drop for Host {
@@ -99,6 +124,15 @@ impl Drop for Host {
     }
 }
 
-fn builtin_plugins() -> Vec<Arc<dyn MumblePlugin>> {
-    vec![Arc::new(mumble_file_server::FileServerPlugin::new())]
+fn builtin_plugins() -> Vec<(Arc<dyn MumblePlugin>, &'static str)> {
+    vec![
+        (
+            Arc::new(mumble_file_server::FileServerPlugin::new()),
+            "plugin.file-server",
+        ),
+        (
+            Arc::new(mumble_live_doc::LiveDocPlugin::new()),
+            "plugin.live-doc",
+        ),
+    ]
 }

@@ -10,6 +10,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::state::AppState;
 
+pub mod admin;
 pub mod auth;
 pub mod capabilities;
 pub mod common;
@@ -80,6 +81,8 @@ pub fn build_router(state: AppState) -> Router {
 
     let cors = build_cors_layer(&state.config.allowed_origins);
 
+    let admin_router = admin::router(&state);
+
     Router::new()
         .route(
             "/files",
@@ -90,6 +93,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/emotes", get(emotes::list).post(emotes::upload))
         .route("/emotes/{shortcode}", axum::routing::delete(emotes::delete))
         .route("/capabilities", get(capabilities::get))
+        .merge(admin_router)
         .layer(middleware::from_fn(request_log))
         .layer(middleware::from_fn(cross_origin_resource_policy))
         .layer(cors)

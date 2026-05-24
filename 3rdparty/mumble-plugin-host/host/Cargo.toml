@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 mumble-plugin-api = { path = "../api" }
 mumble-file-server = { path = "../file-server" }
+mumble-live-doc = { path = "../live-doc" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
 tracing = "0.1"
