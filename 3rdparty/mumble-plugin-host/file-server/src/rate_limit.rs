@@ -49,7 +49,9 @@ impl RateLimiter {
 
     /// Record a single failure for `peer`. Old entries are pruned.
     pub fn record_failure(&self, peer: &str, window: Duration) {
-        let Ok(mut map) = self.inner.lock() else { return };
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
         let now = Instant::now();
         let entries = map.entry(peer.to_owned()).or_default();
         entries.retain(|t| now.duration_since(*t) < window);
@@ -59,14 +61,20 @@ impl RateLimiter {
     /// Clear failures for `peer` after a successful credential check.
     /// Prevents legitimate users from being locked out by a few typos.
     pub fn clear(&self, peer: &str) {
-        let Ok(mut map) = self.inner.lock() else { return };
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
         let _ = map.remove(peer);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     const W: Duration = Duration::from_secs(60);

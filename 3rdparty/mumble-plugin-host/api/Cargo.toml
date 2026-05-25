@@ -1,13 +1,46 @@
 [package]
 name = "mumble-plugin-api"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Public trait definitions for Mumble server plugins"
+description = "Public, ABI-stable trait definitions for dynamically loadable Mumble server plugins"
 license = "MIT"
 
 [dependencies]
+abi_stable = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
-async-trait = "0.1"
 
-[lints]
-workspace = true
+# `abi_stable`'s `#[sabi_trait]` proc-macro generates unsafe trait
+# implementations that cannot be expressed safely.  This crate is the
+# only place in the workspace where unsafe is needed, so we relax the
+# workspace-level `unsafe_code = "deny"` here.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "deny"
+unused_crate_dependencies = "warn"
+unused_results = "deny"
+missing_debug_implementations = "deny"
+# `#[sabi_trait]` expands to qualified paths in supertrait bounds whose
+# spans point back to the user-written `Send + Sync + 'static` clause,
+# producing false-positive `unused_qualifications` warnings.  Disable
+# the lint here rather than papering over the macro emissions.
+unused_qualifications = "allow"
+# Same root cause for non-local impls: the macro generates trait impls
+# inside an anonymous const item.  This is a known upstream pattern.
+non_local_definitions = "allow"
+unreachable_pub = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+excessive_nesting = "deny"
+too_many_lines = "deny"
+allow_attributes_without_reason = "deny"
+expect_used = "warn"

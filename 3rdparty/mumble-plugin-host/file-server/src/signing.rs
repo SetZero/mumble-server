@@ -57,7 +57,12 @@ pub struct SignedParams {
 /// Compute the signed URL parameters for `file_id` with the given expiry.
 ///
 /// Pass `NO_EXPIRY` for `expiry_unix_seconds` to disable TTL.
-pub fn sign(secret: &[u8], file_id: &str, expiry_unix_seconds: u64, nonce: [u8; NONCE_BYTES]) -> SignedParams {
+pub fn sign(
+    secret: &[u8],
+    file_id: &str,
+    expiry_unix_seconds: u64,
+    nonce: [u8; NONCE_BYTES],
+) -> SignedParams {
     let ex = format!("{expiry_unix_seconds:x}");
     let is = hex::encode(nonce);
     let hm = compute_hmac(secret, file_id, &ex, &is);
@@ -124,7 +129,11 @@ fn compute_hmac(secret: &[u8], file_id: &str, ex: &str, is: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     const SECRET: &[u8] = b"test-secret-32-bytes-for-hmac--";
@@ -158,8 +167,7 @@ mod tests {
     fn rejects_expired_link() {
         let nonce = [0u8; 8];
         let params = sign(SECRET, "abc", 1_000, nonce);
-        let err =
-            verify(SECRET, "abc", &params.ex, &params.is, &params.hm, 9_999_999).unwrap_err();
+        let err = verify(SECRET, "abc", &params.ex, &params.is, &params.hm, 9_999_999).unwrap_err();
         assert_eq!(err, SignatureError::Expired);
     }
 

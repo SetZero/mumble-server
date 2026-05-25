@@ -13,6 +13,10 @@
 #include "Mumble.pb.h"
 
 #include <QtCore/QDebug>
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
+#include <QtCore/QJsonValue>
 #include <QtCore/QReadLocker>
 #include <QtCore/QSettings>
 
@@ -33,17 +37,15 @@ PluginHostManager::PluginHostManager(Server *server, QObject *parent)
 	cb.current_channel         = &PluginHostManager::currentChannelTrampoline;
 	cb.get_config              = &PluginHostManager::getConfigTrampoline;
 	cb.free_string             = &PluginHostManager::freeStringTrampoline;
-
+        cb.send_plugin_message    = &PluginHostManager::sendPluginMessageTrampoline;
+        cb.set_config             = &PluginHostManager::setConfigTrampoline;
+        cb.delete_config_prefix   = &PluginHostManager::deleteConfigPrefixTrampoline;
 	m_handle = plugin_host_create(&cb);
-	if (!m_handle) {
-		qWarning() << "PluginHostManager: failed to load Rust plugin host";
-	}
 }
 
 PluginHostManager::~PluginHostManager() {
 	if (m_handle) {
 		plugin_host_destroy(m_handle);
-		m_handle = nullptr;
 	}
 }
 
@@ -76,15 +78,60 @@ void PluginHostManager::onPluginData(uint32_t senderSession, const QString &data
 	                           static_cast< size_t >(data.size()));
 }
 
-// -- Callback trampolines --------------------------------------------------
-//
-// All read-side trampolines acquire a QReadLocker on the server's
-// `qrwlVoiceThread` lock before touching `qhUsers` / `qhChannels`.  These
-// callbacks are dispatched from the Rust runtime's tokio worker threads,
-// not from the main event-loop thread, so we MUST hold the read-write
-// lock that the voice thread also uses to keep the user / channel maps
-// consistent (C-1).
+void PluginHostManager::onPluginMessage(uint32_t senderSession, const QString &senderName,
+                                        const ::MumbleProto::PluginMessage &msg) {
+        if (!m_handle) {
+                return;
+        }
+        const QByteArray senderNameUtf8  = senderName.toUtf8();
+        const QByteArray pluginNameUtf8  = QByteArray::fromStdString(msg.plugin_name());
+        const QByteArray payloadTypeUtf8 = QByteArray::fromStdString(msg.payload_type());
+        const std::string &payload       = msg.payload();
+        QVector< uint32_t > targets;
+        targets.reserve(msg.target_sessions_size());
+        for (int i = 0; i < msg.target_sessions_size(); ++i) {
+                targets.append(msg.target_sessions(i));
+        }
+        const bool channelPresent = msg.has_channel_id();
+        const uint32_t channelId  = channelPresent ? msg.channel_id() : 0u;
+        plugin_host_on_plugin_message(
+                m_handle, static_cast< uint32_t >(m_server->iServerNum), senderSession,
+                senderNameUtf8.constData(), pluginNameUtf8.constData(), payloadTypeUtf8.constData(),
+                payload.empty() ? nullptr : reinterpret_cast< const uint8_t * >(payload.data()),
+                payload.size(), targets.isEmpty() ? nullptr : targets.constData(),
+                static_cast< size_t >(targets.size()), channelPresent, channelId);
+}
 
+void PluginHostManager::fillRegistry(::MumbleProto::PluginRegistry &out) const {
+        out.Clear();
+        if (!m_handle) {
+                return;
+        }
+        char *json = plugin_host_get_registry_json(m_handle);
+        if (!json) {
+                return;
+        }
+        const QByteArray raw(json);
+        plugin_host_free_string(json);
+        // The Rust host gives us a JSON document {"plugins":[{...},...]}.
+        // We deliberately avoid pulling in a JSON dependency here and
+        // instead parse with QJsonDocument which is already available.
+        QJsonParseError err{};
+        QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
+        if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+                return;
+        }
+        const QJsonArray plugins = doc.object().value(QStringLiteral("plugins")).toArray();
+        for (const QJsonValue &v : plugins) {
+                const QJsonObject obj = v.toObject();
+                auto *entry = out.add_plugins();
+                entry->set_plugin_name(obj.value(QStringLiteral("plugin_name")).toString().toStdString());
+                entry->set_version(obj.value(QStringLiteral("version")).toString().toStdString());
+                entry->set_plugin_slot(static_cast< uint32_t >(
+                        obj.value(QStringLiteral("plugin_slot")).toInt(0)));
+                entry->set_info_json(obj.value(QStringLiteral("info_json")).toString().toStdString());
+        }
+}
 int PluginHostManager::sendPluginDataTrampoline(void *userData, uint32_t /*serverId*/,
                                                 uint32_t targetSession, const char *dataId,
                                                 const uint8_t *data, size_t dataLen) {
@@ -231,31 +278,178 @@ char *PluginHostManager::getConfigTrampoline(void *userData, const char *key) {
 		return resolveHostKey(key);
 	}
 
-	// Regular config keys live under the "plugin.file-server." prefix in the
-	// server configuration table (managed by DBWrapper). When no DB row is
-	// present we fall back to the server's mumble-server.ini so deployment-
-	// time settings (storage_path, bind_address, ...) can be configured via
-	// the standard config file or MUMBLE_CONFIG_* environment variables in
-	// the docker image, without requiring operators to seed the DB by hand.
-	const std::string fullKey = std::string("plugin.file-server.") + key;
-	QString value;
-	self->m_server->m_dbWrapper.getConfigurationTo(
-		static_cast< unsigned int >(self->m_server->iServerNum), fullKey, value);
-	if (value.isEmpty() && Meta::mp && Meta::mp->qsSettings) {
-		// The .ini uses Mumble's camelCase convention, so translate the
-		// snake_case key before the fallback lookup.
-		const std::string camelFullKey = std::string("plugin.file-server.") + snakeToCamelCase(key);
-		value = Meta::mp->qsSettings->value(QString::fromStdString(camelFullKey)).toString();
-	}
-	if (value.isEmpty()) {
-		return nullptr;
-	}
-	const QByteArray utf8 = value.toUtf8();
-	return dupToMalloc(std::string(utf8.constData(), static_cast< size_t >(utf8.size())));
+        // Plugins provide fully qualified keys (e.g. "plugin.fancy-live-doc.enabled")
+        // so we look them up verbatim in the server configuration table.
+        // For the .ini fallback we try the raw key first (snake_case) and
+        // then a camelCase variant to also match Mumble's traditional
+        // camelCase naming convention.  Operators may use either form.
+        const std::string fullKey(key);
+        QString value;
+        self->m_server->m_dbWrapper.getConfigurationTo(
+                static_cast< unsigned int >(self->m_server->iServerNum), fullKey, value);
+        if (value.isEmpty() && Meta::mp && Meta::mp->qsSettings) {
+                value = Meta::mp->qsSettings->value(QString::fromStdString(fullKey)).toString();
+                if (value.isEmpty()) {
+                        const std::string camelKey = snakeToCamelCase(fullKey);
+                        if (camelKey != fullKey) {
+                                value = Meta::mp->qsSettings
+                                                ->value(QString::fromStdString(camelKey))
+                                                .toString();
+                        }
+                }
+        }
+        if (value.isEmpty()) {
+                return nullptr;
+        }
+        const QByteArray utf8 = value.toUtf8();
+        return dupToMalloc(std::string(utf8.constData(), static_cast< size_t >(utf8.size())));
 }
 
 void PluginHostManager::freeStringTrampoline(void * /*userData*/, char *ptr) {
-	if (ptr) {
-		std::free(ptr);
-	}
+        if (ptr) {
+                std::free(ptr);
+        }
+}
+
+int PluginHostManager::sendPluginMessageTrampoline(void *userData, uint32_t /*serverId*/,
+                                                   const char *pluginName, const char *payloadType,
+                                                   const uint8_t *payload, size_t payloadLen,
+                                                   const uint32_t *targetSessions, size_t targetLen,
+                                                   bool channelIdPresent, uint32_t channelId) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server) {
+                return -1;
+        }
+        QReadLocker rl(&self->m_server->qrwlVoiceThread);
+
+        MumbleProto::PluginMessage msg;
+        msg.set_plugin_name(pluginName ? pluginName : "");
+        msg.set_payload_type(payloadType ? payloadType : "");
+        msg.set_sender_session(0); // server-originated
+        if (payload && payloadLen > 0) {
+                msg.set_payload(payload, payloadLen);
+        }
+        if (channelIdPresent) {
+                msg.set_channel_id(channelId);
+        }
+
+        QVector< uint32_t > recipients;
+        if (targetSessions && targetLen > 0) {
+                recipients.reserve(static_cast< int >(targetLen));
+                for (size_t i = 0; i < targetLen; ++i) {
+                        recipients.append(targetSessions[i]);
+                        msg.add_target_sessions(targetSessions[i]);
+                }
+        } else if (channelIdPresent) {
+                ::Channel *chan = self->m_server->qhChannels.value(channelId);
+                if (chan) {
+                        for (::User *u : chan->qlUsers) {
+                                recipients.append(static_cast< uint32_t >(u->uiSession));
+                        }
+                }
+        }
+        if (recipients.isEmpty()) {
+                return 0; // nothing to deliver, treat as success
+        }
+        for (uint32_t session : recipients) {
+                ServerUser *target = self->m_server->qhUsers.value(session);
+                if (!target) {
+                        continue;
+                }
+                self->m_server->sendMessage(target, msg);
+        }
+        return 0;
+}
+
+// ---------------------------------------------------------------
+// Plugin admin
+// ---------------------------------------------------------------
+
+namespace {
+// Adopt a NUL-terminated string returned by the Rust FFI into a
+// QByteArray and free the original allocation.  Returns an empty
+// QByteArray for NULL.
+QByteArray adoptFfiString(char *ptr) {
+        if (!ptr) {
+                return {};
+        }
+        QByteArray out(ptr);
+        plugin_host_free_string(ptr);
+        return out;
+}
+} // namespace
+
+QByteArray PluginHostManager::listPluginsJson() const {
+        if (!m_handle) {
+                return QByteArray("{\"plugins\":[]}");
+        }
+        return adoptFfiString(plugin_host_list_plugins(m_handle));
+}
+
+QByteArray PluginHostManager::setPluginEnabled(const QString &pluginName, bool enabled) {
+        if (!m_handle) {
+                return QByteArray("{\"ok\":false,\"error\":\"plugin host not loaded\"}");
+        }
+        const QByteArray nameUtf8 = pluginName.toUtf8();
+        return adoptFfiString(
+                plugin_host_set_plugin_enabled(m_handle, nameUtf8.constData(), enabled));
+}
+
+QByteArray PluginHostManager::installPlugin(const QString &marketplaceId, const QString &version,
+                                            const QString &manifestUrl,
+                                            const QString &expectedSha256) {
+        if (!m_handle) {
+                return QByteArray("{\"ok\":false,\"error\":\"plugin host not loaded\"}");
+        }
+        const QByteArray idUtf8       = marketplaceId.toUtf8();
+        const QByteArray verUtf8      = version.toUtf8();
+        const QByteArray urlUtf8      = manifestUrl.toUtf8();
+        const QByteArray shaUtf8      = expectedSha256.toUtf8();
+        const char *shaPtr            = expectedSha256.isEmpty() ? nullptr : shaUtf8.constData();
+        const char *verPtr            = version.isEmpty() ? nullptr : verUtf8.constData();
+        return adoptFfiString(plugin_host_install_plugin(m_handle, idUtf8.constData(), verPtr,
+                                                         urlUtf8.constData(), shaPtr));
+}
+
+QByteArray PluginHostManager::uninstallPlugin(const QString &pluginName) {
+        if (!m_handle) {
+                return QByteArray("{\"ok\":false,\"error\":\"plugin host not loaded\"}");
+        }
+        const QByteArray nameUtf8 = pluginName.toUtf8();
+        return adoptFfiString(plugin_host_uninstall_plugin(m_handle, nameUtf8.constData()));
+}
+
+int PluginHostManager::setConfigTrampoline(void *userData, const char *key, const char *value) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server || !key) {
+                return -1;
+        }
+        const std::string keyStr(key);
+        const std::string valueStr(value ? value : "");
+        self->m_server->m_dbWrapper.setConfiguration(
+                static_cast< unsigned int >(self->m_server->iServerNum), keyStr, valueStr);
+        if (Meta::mp && Meta::mp->qsSettings) {
+                Meta::mp->qsSettings->setValue(QString::fromStdString(keyStr),
+                                               QString::fromStdString(valueStr));
+        }
+        return 0;
+}
+
+int PluginHostManager::deleteConfigPrefixTrampoline(void *userData, const char *prefix) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server || !prefix) {
+                return -1;
+        }
+        const std::string prefixStr(prefix);
+        const auto serverId = static_cast< unsigned int >(self->m_server->iServerNum);
+        const auto all      = self->m_server->m_dbWrapper.getAllConfigurations(serverId);
+        for (const auto &entry : all) {
+                if (entry.first.rfind(prefixStr, 0) == 0) {
+                        self->m_server->m_dbWrapper.clearConfiguration(serverId, entry.first);
+                        if (Meta::mp && Meta::mp->qsSettings) {
+                                Meta::mp->qsSettings->remove(QString::fromStdString(entry.first));
+                        }
+                }
+        }
+        return 0;
 }

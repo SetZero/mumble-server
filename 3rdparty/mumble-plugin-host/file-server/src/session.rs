@@ -41,12 +41,18 @@ impl SessionMap {
 
     /// Look up session info, cloning the small struct out under the lock.
     pub fn get(&self, session_id: u32) -> Option<SessionInfo> {
-        self.inner.read().ok().and_then(|g| g.get(&session_id).cloned())
+        self.inner
+            .read()
+            .ok()
+            .and_then(|g| g.get(&session_id).cloned())
     }
 
     /// Remove and return session info on disconnect.
     pub fn remove(&self, session_id: u32) -> Option<SessionInfo> {
-        self.inner.write().ok().and_then(|mut g| g.remove(&session_id))
+        self.inner
+            .write()
+            .ok()
+            .and_then(|mut g| g.remove(&session_id))
     }
 
     /// Return a snapshot of every active session id. Used to broadcast
@@ -65,13 +71,21 @@ impl SessionMap {
         let Some(info) = self.get(session_id) else {
             return false;
         };
-        info.upload_token.as_bytes().ct_eq(candidate.as_bytes()).unwrap_u8() == 1
+        info.upload_token
+            .as_bytes()
+            .ct_eq(candidate.as_bytes())
+            .unwrap_u8()
+            == 1
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     fn info(token: &str) -> SessionInfo {

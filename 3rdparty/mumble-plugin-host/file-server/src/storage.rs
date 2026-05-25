@@ -281,10 +281,11 @@ impl Storage {
     /// Return ids of records whose `expires_at < now`.
     pub fn list_expired(&self, now_unix_seconds: u64) -> Result<Vec<String>, StorageError> {
         let conn = self.db.lock().map_err(|_| poisoned_db())?;
-        let mut stmt = conn.prepare(
-            "SELECT id FROM files WHERE expires_at IS NOT NULL AND expires_at < ?1",
-        )?;
-        let rows = stmt.query_map(params![now_unix_seconds as i64], |row| row.get::<_, String>(0))?;
+        let mut stmt =
+            conn.prepare("SELECT id FROM files WHERE expires_at IS NOT NULL AND expires_at < ?1")?;
+        let rows = stmt.query_map(params![now_unix_seconds as i64], |row| {
+            row.get::<_, String>(0)
+        })?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -360,7 +361,9 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> Result<FileRecord, rusqlite::Error>
         rusqlite::Error::FromSqlConversionFailure(
             9,
             rusqlite::types::Type::Text,
-            Box::new(io::Error::other(format!("unknown access mode: {access_str}"))),
+            Box::new(io::Error::other(format!(
+                "unknown access mode: {access_str}"
+            ))),
         )
     })?;
     Ok(FileRecord {
@@ -384,7 +387,11 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> Result<FileRecord, rusqlite::Error>
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     fn sample_record(id: &str, size: u64) -> FileRecord {

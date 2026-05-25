@@ -46,7 +46,9 @@ impl VersionInfo {
     /// Parse a "MAJOR.MINOR.PATCH" string. Missing/garbage values
     /// produce `unknown`.
     fn parse(raw: Option<String>) -> Self {
-        let Some(raw) = raw else { return Self::unknown() };
+        let Some(raw) = raw else {
+            return Self::unknown();
+        };
         let parts: Vec<&str> = raw.trim().split('.').collect();
         if parts.len() != 3 {
             return Self::unknown_with(raw);
@@ -151,7 +153,9 @@ impl CapabilitiesResponse {
                 name: PLUGIN_NAME,
                 version: PLUGIN_VERSION,
             },
-            mumble_version: VersionInfo::parse(state.plugin_ctx.get_config("__host_mumble_version")),
+            mumble_version: VersionInfo::parse(
+                state.plugin_ctx.get_config("__host_mumble_version"),
+            ),
             fancy_version: VersionInfo::parse(state.plugin_ctx.get_config("__host_fancy_version")),
             features: Features {
                 file_uploads: true,
@@ -182,7 +186,11 @@ pub async fn get(State(state): State<AppState>) -> Json<CapabilitiesResponse> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     #[test]

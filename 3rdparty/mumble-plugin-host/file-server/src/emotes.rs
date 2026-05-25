@@ -92,9 +92,7 @@ pub struct EmoteSummary {
 /// Allowed: ASCII letters, digits, underscore, dash. 1..=`MAX_SHORTCODE_LEN`.
 pub fn validate_shortcode(s: &str) -> Result<(), EmoteError> {
     if s.is_empty() || s.len() > MAX_SHORTCODE_LEN {
-        return Err(EmoteError::Invalid(
-            "shortcode must be 1-64 characters",
-        ));
+        return Err(EmoteError::Invalid("shortcode must be 1-64 characters"));
     }
     let valid = s
         .chars()
@@ -135,14 +133,11 @@ pub fn validate_description(s: &str) -> Result<(), EmoteError> {
 /// `<object>`/`<iframe>`, which would let any client (including
 /// non-Fancy-Mumble UIs) be `XSS`ed by an admin-uploaded emote.
 pub fn validate_mime_type(s: &str) -> Result<(), EmoteError> {
-    matches!(
-        s,
-        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-    )
-    .then_some(())
-    .ok_or(EmoteError::Invalid(
-        "mime_type must be image/png, image/jpeg, image/gif or image/webp",
-    ))
+    matches!(s, "image/png" | "image/jpeg" | "image/gif" | "image/webp")
+        .then_some(())
+        .ok_or(EmoteError::Invalid(
+            "mime_type must be image/png, image/jpeg, image/gif or image/webp",
+        ))
 }
 
 /// Run the schema migration for the emotes table. Idempotent.
@@ -207,7 +202,10 @@ pub fn insert(db: &Mutex<Connection>, record: &EmoteRecord) -> Result<(), EmoteE
 /// [`EmoteError::NotFound`] if no row matched.
 pub fn delete(db: &Mutex<Connection>, shortcode: &str) -> Result<(), EmoteError> {
     let conn = db.lock().map_err(|_| EmoteError::Invalid("db poisoned"))?;
-    let affected = conn.execute("DELETE FROM emotes WHERE shortcode = ?1", params![shortcode])?;
+    let affected = conn.execute(
+        "DELETE FROM emotes WHERE shortcode = ?1",
+        params![shortcode],
+    )?;
     if affected == 0 {
         Err(EmoteError::NotFound)
     } else {

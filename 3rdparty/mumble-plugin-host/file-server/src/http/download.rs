@@ -87,10 +87,9 @@ pub async fn download(
     }
 
     if record.access_mode != AccessMode::Public {
-        let ticket = q
-            .ticket
-            .as_deref()
-            .ok_or_else(|| ApiError::unauthorized("missing ticket; call POST /files/{id}/auth first"))?;
+        let ticket = q.ticket.as_deref().ok_or_else(|| {
+            ApiError::unauthorized("missing ticket; call POST /files/{id}/auth first")
+        })?;
         match state.tickets.consume(ticket, &file_id) {
             ConsumeResult::Ok => {}
             ConsumeResult::WrongFile | ConsumeResult::NotFound => {
@@ -102,7 +101,10 @@ pub async fn download(
     stream_blob(state, record).await
 }
 
-async fn stream_blob(state: AppState, record: crate::storage::FileRecord) -> Result<Response<Body>, ApiError> {
+async fn stream_blob(
+    state: AppState,
+    record: crate::storage::FileRecord,
+) -> Result<Response<Body>, ApiError> {
     let blob_path = state.storage.blob_path(&record.id);
     let file = tokio::fs::File::open(&blob_path)
         .await
@@ -202,10 +204,12 @@ fn sanitize_filename(filename: &str) -> String {
 fn ascii_fallback(filename: &str) -> String {
     let mut out: String = filename
         .chars()
-        .map(|c| if c.is_ascii_graphic() && !matches!(c, '"' | '\\' | ';') {
-            c
-        } else {
-            '_'
+        .map(|c| {
+            if c.is_ascii_graphic() && !matches!(c, '"' | '\\' | ';') {
+                c
+            } else {
+                '_'
+            }
         })
         .collect();
     if out.is_empty() {
@@ -230,8 +234,7 @@ fn build_content_disposition(filename: &str, mime_type: &str) -> String {
 fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.bytes() {
-        let unreserved = byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'.' | b'_' | b'~');
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
         if unreserved {
             out.push(byte as char);
         } else {
@@ -260,7 +263,10 @@ struct GuardedStream<S> {
 
 impl<S> GuardedStream<S> {
     fn new(inner: S, guard: Option<DeleteOnDrop>) -> Self {
-        Self { inner, _guard: guard }
+        Self {
+            inner,
+            _guard: guard,
+        }
     }
 }
 
@@ -306,7 +312,11 @@ impl Drop for DeleteOnDrop {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     #[test]

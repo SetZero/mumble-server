@@ -10,6 +10,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::state::AppState;
 
+pub mod admin;
 pub mod auth;
 pub mod capabilities;
 pub mod common;
@@ -75,10 +76,11 @@ pub fn build_router(state: AppState) -> Router {
     // than that before the handler even runs.  Override only the upload route
     // to allow up to the configured file-size cap (plus a small overhead for
     // the multipart envelope).
-    let upload_body_limit =
-        (state.config.max_file_size_bytes + FORM_OVERHEAD_BYTES) as usize;
+    let upload_body_limit = (state.config.max_file_size_bytes + FORM_OVERHEAD_BYTES) as usize;
 
     let cors = build_cors_layer(&state.config.allowed_origins);
+
+    let admin_router = admin::router(&state);
 
     Router::new()
         .route(
@@ -90,6 +92,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/emotes", get(emotes::list).post(emotes::upload))
         .route("/emotes/{shortcode}", axum::routing::delete(emotes::delete))
         .route("/capabilities", get(capabilities::get))
+        .merge(admin_router)
         .layer(middleware::from_fn(request_log))
         .layer(middleware::from_fn(cross_origin_resource_policy))
         .layer(cors)
@@ -127,7 +130,11 @@ fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     #[test]

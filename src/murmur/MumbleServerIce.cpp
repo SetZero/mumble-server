@@ -40,7 +40,7 @@
 using namespace std;
 using namespace MumbleServer;
 
-static MumbleServerIce *mi = nullptr;
+[[maybe_unused]] static MumbleServerIce *mi = nullptr;
 static Ice::ObjectPtr iopServer;
 static Ice::PropertiesPtr ippProperties;
 

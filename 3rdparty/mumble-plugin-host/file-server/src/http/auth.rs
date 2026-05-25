@@ -41,7 +41,9 @@ pub async fn pre_auth(
     let max_failures = state.config.auth_rate_limit_max_failures;
 
     if matches!(
-        state.auth_rate_limiter.check(&peer_key, window, max_failures),
+        state
+            .auth_rate_limiter
+            .check(&peer_key, window, max_failures),
         LimitDecision::Block
     ) {
         return Err(ApiError::too_many_requests(
@@ -105,8 +107,8 @@ fn verify_password_credential(
     headers: &HeaderMap,
     stored_hash: Option<&str>,
 ) -> Result<(), ApiError> {
-    let stored = stored_hash
-        .ok_or_else(|| ApiError::internal("password file missing stored hash"))?;
+    let stored =
+        stored_hash.ok_or_else(|| ApiError::internal("password file missing stored hash"))?;
     let raw = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -143,9 +145,11 @@ fn ensure_channel_access(
     if !state.plugin_ctx.is_session_active(server_id, claims.sid) {
         return Err(ApiError::forbidden("session no longer active"));
     }
-    if !state.plugin_ctx.user_has_channel_access(server_id, claims.sid, channel_id) {
+    if !state
+        .plugin_ctx
+        .user_has_channel_access(server_id, claims.sid, channel_id)
+    {
         return Err(ApiError::forbidden("no access to source channel"));
     }
     Ok(())
 }
-

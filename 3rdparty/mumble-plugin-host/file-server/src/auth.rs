@@ -91,13 +91,21 @@ pub fn issue_session_jwt(
         iat: now,
         exp: now.saturating_add(ttl_seconds),
     };
-    encode(&Header::default(), &claims, &EncodingKey::from_secret(secret))
-        .map_err(|e| AuthError::InvalidJwt(e.to_string()))
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret),
+    )
+    .map_err(|e| AuthError::InvalidJwt(e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     #[test]

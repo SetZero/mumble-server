@@ -104,7 +104,7 @@ void LimitTest::testLimits(QCoreApplication &a) {
 	qFatal("Managed to spawn %d threads", count);
 }
 
-extern QFile *qfLog;
+[[maybe_unused]] extern QFile *qfLog;
 
 int UnixMurmur::iHupFd[2];
 int UnixMurmur::iTermFd[2];

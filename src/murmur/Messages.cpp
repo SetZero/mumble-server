@@ -583,6 +583,18 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 	sendMessage(uSource, mpss);
 
+	// Tell new Fancy 0.3.0+ clients which plugins the server has
+	// loaded.  Older clients ignore the unknown message ID.
+	if (m_pluginHost && m_pluginHost->isLoaded()
+		&& uSource->m_FancyVersion.has_value()
+		&& uSource->m_FancyVersion.value() >= Version::fromComponents(0, 3, 0)) {
+		MumbleProto::PluginRegistry mpreg;
+		m_pluginHost->fillRegistry(mpreg);
+		if (mpreg.plugins_size() > 0) {
+			sendMessage(uSource, mpreg);
+		}
+	}
+
 	// Transmit user's listeners - this has to be done AFTER the server-sync message has been sent to uSource as the
 	// client may require its own session ID for processing the listeners properly.
 	mpus.Clear();
@@ -3616,6 +3628,383 @@ void Server::msgFancyOnboardingResponseQuery(ServerUser *uSource,
 void Server::msgFancyOnboardingResponseDeliver(ServerUser *,
 											   MumbleProto::FancyOnboardingResponseDeliver &) {
 	// Server -> Client only; ignore inbound.
+}
+
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: plugin admin (IDs 146-151) - introduced in 0.4.0
+// ---------------------------------------------------------------------------
+
+namespace {
+// Fill `out` from the host's `listPluginsJson()` snapshot.
+void buildPluginAdminListMessage(const QByteArray &json, MumbleProto::FancyPluginAdminList &out) {
+	QJsonParseError err{};
+	const QJsonDocument doc = QJsonDocument::fromJson(json, &err);
+	if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+		return;
+	}
+	const QJsonObject root = doc.object();
+	if (root.contains(QStringLiteral("plugins_dir"))) {
+		out.set_plugins_dir(root.value(QStringLiteral("plugins_dir")).toString().toStdString());
+	}
+	const QJsonArray plugins = root.value(QStringLiteral("plugins")).toArray();
+	for (const QJsonValue &v : plugins) {
+		const QJsonObject obj = v.toObject();
+		auto *entry           = out.add_plugins();
+		entry->set_plugin_name(obj.value(QStringLiteral("plugin_name")).toString().toStdString());
+		entry->set_version(obj.value(QStringLiteral("version")).toString().toStdString());
+		entry->set_enabled(obj.value(QStringLiteral("enabled")).toBool(false));
+		if (obj.contains(QStringLiteral("loaded"))) {
+			entry->set_loaded(obj.value(QStringLiteral("loaded")).toBool(false));
+		}
+		if (obj.contains(QStringLiteral("path"))) {
+			entry->set_path(obj.value(QStringLiteral("path")).toString().toStdString());
+		}
+		if (obj.contains(QStringLiteral("info_json"))) {
+			entry->set_info_json(obj.value(QStringLiteral("info_json")).toString().toStdString());
+		}
+		if (obj.contains(QStringLiteral("marketplace_id"))) {
+			entry->set_marketplace_id(
+				obj.value(QStringLiteral("marketplace_id")).toString().toStdString());
+		}
+		if (obj.contains(QStringLiteral("installed_at"))) {
+			entry->set_installed_at(
+				static_cast< uint64_t >(obj.value(QStringLiteral("installed_at")).toDouble(0)));
+		}
+		if (obj.contains(QStringLiteral("builtin"))) {
+			entry->set_builtin(obj.value(QStringLiteral("builtin")).toBool(false));
+		}
+	}
+}
+
+// Decode a `{"ok":..,"error":".."[,"plugin_name":".."]}` envelope.
+struct PluginAdminResult {
+	bool ok;
+	QString error;
+	QString pluginName;
+};
+
+PluginAdminResult parsePluginAdminResult(const QByteArray &json) {
+	PluginAdminResult result{ false, {}, {} };
+	QJsonParseError err{};
+	const QJsonDocument doc = QJsonDocument::fromJson(json, &err);
+	if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+		result.error = QStringLiteral("invalid response from plugin host");
+		return result;
+	}
+	const QJsonObject obj = doc.object();
+	result.ok             = obj.value(QStringLiteral("ok")).toBool(false);
+	result.error          = obj.value(QStringLiteral("error")).toString();
+	result.pluginName     = obj.value(QStringLiteral("plugin_name")).toString();
+	return result;
+}
+
+void sendPluginAdminAck(Server *server, ServerUser *uSource,
+						MumbleProto::FancyPluginAdminAck_Verb verb,
+						const PluginAdminResult &result) {
+	MumbleProto::FancyPluginAdminAck ack;
+	ack.set_verb(verb);
+	ack.set_ok(result.ok);
+	if (!result.error.isEmpty()) {
+		ack.set_error(result.error.toStdString());
+	}
+	if (!result.pluginName.isEmpty()) {
+		ack.set_plugin_name(result.pluginName.toStdString());
+	}
+	server->sendMessage(uSource, ack);
+}
+
+void broadcastPluginAdminList(Server *server) {
+	if (!server->m_pluginHost) {
+		return;
+	}
+	MumbleProto::FancyPluginAdminList reply;
+	buildPluginAdminListMessage(server->m_pluginHost->listPluginsJson(), reply);
+
+	Channel *root = server->qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	for (ServerUser *u : server->qhUsers) {
+		if (u->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!server->hasPermission(u, root, ChanACL::Write)) {
+			continue;
+		}
+		server->sendMessage(u, reply);
+	}
+}
+} // namespace
+
+void Server::msgFancyPluginAdminListRequest(ServerUser *uSource,
+											MumbleProto::FancyPluginAdminListRequest &) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (!m_pluginHost) {
+		return;
+	}
+
+	MumbleProto::FancyPluginAdminList reply;
+	buildPluginAdminListMessage(m_pluginHost->listPluginsJson(), reply);
+	sendMessage(uSource, reply);
+}
+
+void Server::msgFancyPluginAdminList(ServerUser *, MumbleProto::FancyPluginAdminList &) {
+	// Server -> Client only; ignore inbound.
+}
+
+void Server::msgFancyPluginAdminAck(ServerUser *, MumbleProto::FancyPluginAdminAck &) {
+	// Server -> Client only; ignore inbound.
+}
+
+void Server::msgFancyPluginAdminSetEnabled(ServerUser *uSource,
+										   MumbleProto::FancyPluginAdminSetEnabled &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (!m_pluginHost) {
+		PluginAdminResult result{ false, QStringLiteral("plugin host not loaded"), {} };
+		sendPluginAdminAck(this, uSource,
+						   MumbleProto::FancyPluginAdminAck_Verb_SET_ENABLED, result);
+		return;
+	}
+
+	const QString name = QString::fromStdString(msg.plugin_name());
+	const bool enabled = msg.enabled();
+	const QByteArray raw = m_pluginHost->setPluginEnabled(name, enabled);
+	const PluginAdminResult result = parsePluginAdminResult(raw);
+
+	sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_SET_ENABLED, result);
+	if (result.ok) {
+		log(uSource, QString("plugin %1 %2")
+						 .arg(name, QLatin1String(enabled ? "enabled" : "disabled")));
+		broadcastPluginAdminList(this);
+	}
+}
+
+void Server::msgFancyPluginAdminInstall(ServerUser *uSource,
+										MumbleProto::FancyPluginAdminInstall &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (!m_pluginHost) {
+		PluginAdminResult result{ false, QStringLiteral("plugin host not loaded"), {} };
+		sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_INSTALL, result);
+		return;
+	}
+
+	const QString marketplaceId = QString::fromStdString(msg.marketplace_id());
+	const QString version       = msg.has_version() ? QString::fromStdString(msg.version()) : QString();
+	const QString manifestUrl   = QString::fromStdString(msg.manifest_url());
+	const QString expectedSha   = msg.has_expected_sha256()
+									  ? QString::fromStdString(msg.expected_sha256())
+									  : QString();
+
+	const QByteArray raw =
+		m_pluginHost->installPlugin(marketplaceId, version, manifestUrl, expectedSha);
+	const PluginAdminResult result = parsePluginAdminResult(raw);
+
+	sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_INSTALL, result);
+	if (result.ok) {
+		log(uSource,
+			QString("plugin %1 installed (%2)").arg(result.pluginName, marketplaceId));
+		broadcastPluginAdminList(this);
+	} else {
+		log(uSource,
+			QString("plugin install failed (%1): %2").arg(marketplaceId, result.error));
+	}
+}
+
+void Server::msgFancyPluginAdminUninstall(ServerUser *uSource,
+										  MumbleProto::FancyPluginAdminUninstall &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (!m_pluginHost) {
+		PluginAdminResult result{ false, QStringLiteral("plugin host not loaded"), {} };
+		sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_UNINSTALL, result);
+		return;
+	}
+
+	const QString name = QString::fromStdString(msg.plugin_name());
+	const QByteArray raw = m_pluginHost->uninstallPlugin(name);
+	const PluginAdminResult result = parsePluginAdminResult(raw);
+
+	sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_UNINSTALL, result);
+	if (result.ok) {
+		log(uSource, QString("plugin %1 uninstalled").arg(name));
+		broadcastPluginAdminList(this);
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: generic plugin envelope (IDs 200-201) - introduced in 0.4.0
+// ---------------------------------------------------------------------------
+
+void Server::msgPluginMessage(ServerUser *uSource, MumbleProto::PluginMessage &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (msg.plugin_name().empty()) {
+		return;
+	}
+
+	// Stamp authoritative sender identity to prevent client spoofing.
+	msg.set_sender_session(uSource->uiSession);
+	msg.set_sender_name(uSource->qsName.toStdString());
+
+	if (m_pluginHost && m_pluginHost->isLoaded()) {
+		m_pluginHost->onPluginMessage(uSource->uiSession, uSource->qsName, msg);
+	}
+
+	// Optional client-side relay: deliver to explicit target_sessions
+	// and/or every member of channel_id when set.  Clients use this
+	// to broadcast (e.g. live-doc Announce) without going through a
+	// server-side plugin.
+	const auto minVersion = Version::fromComponents(0, 4, 0);
+	QSet< uint32_t > delivered;
+	auto deliverTo = [&](ServerUser *su) {
+		if (!su || su->uiSession == uSource->uiSession) {
+			return;
+		}
+		if (su->sState != ServerUser::Authenticated) {
+			return;
+		}
+		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersion) {
+			return;
+		}
+		if (delivered.contains(su->uiSession)) {
+			return;
+		}
+		delivered.insert(su->uiSession);
+		sendMessage(su, msg);
+	};
+
+	for (int i = 0; i < msg.target_sessions_size(); ++i) {
+		deliverTo(qhUsers.value(msg.target_sessions(i)));
+	}
+	if (msg.has_channel_id()) {
+		Channel *c = qhChannels.value(msg.channel_id());
+		if (c) {
+			for (User *p : c->qlUsers) {
+				deliverTo(static_cast< ServerUser * >(p));
+			}
+		}
+	}
+}
+
+void Server::msgPluginRegistry(ServerUser *, MumbleProto::PluginRegistry &) {
+	// Server -> Client only; ignore inbound.
+}
+
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: polls (IDs 144-145) - introduced in 0.3.2
+// ---------------------------------------------------------------------------
+
+void Server::msgFancyPoll(ServerUser *uSource, MumbleProto::FancyPoll &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	// Polls can be sent rapidly; use the higher-rate plugin-data bucket.
+	if (uSource->m_pluginMessageBucket.ratelimit(1)) {
+		qWarning("Dropping FancyPoll from \"%s\" (%d)",
+				 qUtf8Printable(uSource->qsName), uSource->uiSession);
+		return;
+	}
+	if (!msg.has_channel_id()) {
+		return;
+	}
+	Channel *c = qhChannels.value(msg.channel_id());
+	if (!c) {
+		return;
+	}
+
+	// Stamp the creator identity from the server to prevent spoofing.
+	msg.set_creator_session(uSource->uiSession);
+	msg.set_creator_name(uSource->qsName.toStdString());
+
+	// Relay to every Fancy 0.3.2+ client in the channel (including sender
+	// so they receive the server-stamped version).
+	const auto minVersionPoll = Version::fromComponents(0, 3, 2);
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersionPoll) {
+			continue;
+		}
+		sendMessage(su, msg);
+	}
+}
+
+void Server::msgFancyPollVote(ServerUser *uSource, MumbleProto::FancyPollVote &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+
+	if (uSource->m_pluginMessageBucket.ratelimit(1)) {
+		qWarning("Dropping FancyPollVote from \"%s\" (%d)",
+				 qUtf8Printable(uSource->qsName), uSource->uiSession);
+		return;
+	}
+	if (!msg.has_channel_id()) {
+		return;
+	}
+	Channel *c = qhChannels.value(msg.channel_id());
+	if (!c) {
+		return;
+	}
+
+	// Stamp the voter identity from the server to prevent spoofing.
+	msg.set_voter_session(uSource->uiSession);
+	msg.set_voter_name(uSource->qsName.toStdString());
+
+	// Relay to every Fancy 0.3.2+ client in the channel (including sender).
+	const auto minVersionVote = Version::fromComponents(0, 3, 2);
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersionVote) {
+			continue;
+		}
+		sendMessage(su, msg);
+	}
 }
 
 
