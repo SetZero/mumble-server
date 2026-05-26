@@ -16,15 +16,22 @@
 //! plugin ecosystem and so manifest contents remain human-inspectable
 //! in `info_json` dumps.
 //!
-//! # Trust gating
-//!
-//! [`ClientManifest::capabilities`] lets a plugin declare the broad
-//! categories of UI it wants to surface.  The client uses this list at
-//! install time to ask the user "Server X wants to enable plugin Y
-//! with the following capabilities: ...".  See the design doc for the
-//! intended UX; this crate only defines the data shape.
+//! The per-component types (button, selects, file uploads, layout
+//! primitives, etc.) live in [`crate::components`]; this module
+//! re-exports the ones used in the wire types below for convenience.
 
 use serde::{Deserialize, Serialize};
+
+// Re-export every wire-relevant component type so existing imports
+// from `crate::client_manifest::*` keep working post-refactor.
+pub use crate::components::{
+    ActionRow, Button, ButtonStyle, ChannelSelect, Checkbox, CheckboxGroup, CheckboxOption,
+    Component, Container, FileComponent, FileUpload, Label, MediaGallery, MediaGalleryItem,
+    MentionableSelect, ModalFieldValue, RadioGroup, RadioOption, RoleSelect, Section,
+    SectionAccessory, SelectMenu, SelectOption, Separator, SeparatorSpacing, StringSelect,
+    TextDisplay, TextInput, TextInputBuilder, TextInputStyle, Thumbnail, UnfurledMediaItem,
+    UserSelect,
+};
 
 /// Reserved `payload_type` for inbound client-originated interactions.
 ///
@@ -36,10 +43,14 @@ pub const INTERACTION_PAYLOAD_TYPE: &str = "Interaction";
 /// Carries a serialised [`InteractionResponse`].
 pub const INTERACTION_RESPONSE_PAYLOAD_TYPE: &str = "InteractionResponse";
 
-/// Schema version stamped on every [`ClientManifest`].  Bumped whenever
-/// a non-additive change is made; clients refuse to render manifests
-/// declaring a version above the one they were built against.
-pub const CLIENT_MANIFEST_SCHEMA_VERSION: u32 = 1;
+/// Schema version stamped on every [`ClientManifest`].
+///
+/// Bumped to **2** when the Discord-aligned component vocabulary
+/// landed (typed selects, layout primitives, modal radio/checkbox/file
+/// upload).  Schema-1 manifests still deserialise verbatim: every new
+/// component variant is additive and every new field on existing
+/// variants has a `#[serde(default)]`.
+pub const CLIENT_MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 /// Top-level descriptor of every UI affordance a plugin contributes to
 /// the client.  Serialised into [`crate::PluginInfo::client_manifest`]
@@ -95,6 +106,11 @@ pub enum Capability {
     Notifications,
     /// Plugin can render a settings panel under Settings > Plugins.
     SettingsPanel,
+    /// Plugin uses rich-layout primitives (containers, sections,
+    /// thumbnails, media galleries, file references).  Always allowed
+    /// at runtime; declared purely so the trust prompt can surface it
+    /// alongside the other capabilities for transparency.
+    RichLayout,
 }
 
 /// A slash command surfaced in the chat composer.
@@ -185,6 +201,17 @@ pub struct PanelRow {
     pub value: String,
 }
 
+impl PanelRow {
+    /// Build a label/value row for a [`SettingsPanel`].
+    #[must_use]
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Interactions (inbound: client -> plugin)
 // ---------------------------------------------------------------------------
@@ -241,8 +268,18 @@ pub enum InteractionKind {
         /// [`ResponseKind::ShowModal`].
         custom_id: String,
         /// Submitted field values keyed by [`TextInput::custom_id`].
+        ///
+        /// Carries the legacy string-only encoding; new code should
+        /// prefer [`Self::ModalSubmit::fields`].
         #[serde(default)]
         values: std::collections::BTreeMap<String, String>,
+        /// Typed field values keyed by component `custom_id`.
+        ///
+        /// Populated alongside [`Self::ModalSubmit::values`] for modal
+        /// components whose natural representation is not a single
+        /// string (checkboxes, multi-selects, file uploads).
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        fields: std::collections::BTreeMap<String, ModalFieldValue>,
     },
 }
 
@@ -293,7 +330,10 @@ pub enum ResponseKind {
         /// Markdown body shown above the components.  May be empty.
         #[serde(default)]
         content: String,
-        /// Up to five rows of components.  Empty for plain text.
+        /// Top-level rows / layout components.  Up to five
+        /// [`ActionRow`]s, optionally interleaved with rich-layout
+        /// primitives (containers, sections, separators, text
+        /// displays, ...).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         components: Vec<ActionRow>,
         /// When `true`, only the originating user sees the message.
@@ -310,7 +350,9 @@ pub enum ResponseKind {
         custom_id: String,
         /// Window title.
         title: String,
-        /// Form rows.  Modals support [`Component::TextInput`] only.
+        /// Form rows.  Modals accept any modal-eligible component
+        /// (text input, [`Label`]-wrapped child, file upload,
+        /// radio/checkbox group, single checkbox, any select).
         components: Vec<ActionRow>,
     },
     /// Patch an existing message previously sent via [`Self::Message`].
@@ -355,139 +397,6 @@ pub enum ToastLevel {
     Warning,
     /// Hard error.
     Error,
-}
-
-// ---------------------------------------------------------------------------
-// Components
-// ---------------------------------------------------------------------------
-
-/// Horizontal row of interactive components.  Mirrors Discord: max five
-/// rows per message; max five buttons per row; select menus and text
-/// inputs occupy a whole row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionRow {
-    /// Components rendered left-to-right inside this row.
-    pub components: Vec<Component>,
-}
-
-/// A single interactive component.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum Component {
-    /// Button.  Click delivers an [`InteractionKind::Component`].
-    Button(Button),
-    /// Dropdown/multi-select picker.
-    SelectMenu(SelectMenu),
-    /// Single-line or multi-line text input.  Only valid inside a
-    /// [`ResponseKind::ShowModal`].
-    TextInput(TextInput),
-}
-
-/// Click target.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Button {
-    /// Echoed verbatim back in
-    /// [`InteractionKind::Component::custom_id`].
-    pub custom_id: String,
-    /// Button label.
-    pub label: String,
-    /// Visual style.
-    #[serde(default)]
-    pub style: ButtonStyle,
-    /// When `true`, the button renders but cannot be clicked.
-    #[serde(default)]
-    pub disabled: bool,
-}
-
-/// Visual style for a [`Button`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum ButtonStyle {
-    /// Filled accent colour.  Use for the safe / primary action.
-    #[default]
-    Primary,
-    /// Subtle outlined button.
-    Secondary,
-    /// Green; use for confirmations.
-    Success,
-    /// Red; use for destructive actions.
-    Danger,
-}
-
-/// Dropdown picker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SelectMenu {
-    /// Echoed verbatim back in
-    /// [`InteractionKind::Component::custom_id`].
-    pub custom_id: String,
-    /// Placeholder when no value is selected.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub placeholder: Option<String>,
-    /// Picker entries.
-    pub options: Vec<SelectOption>,
-    /// Minimum number of values the user must pick (default 1).
-    #[serde(default = "default_min_values")]
-    pub min_values: u32,
-    /// Maximum number of values the user may pick (default 1).
-    #[serde(default = "default_max_values")]
-    pub max_values: u32,
-}
-
-fn default_min_values() -> u32 {
-    1
-}
-
-fn default_max_values() -> u32 {
-    1
-}
-
-/// Entry in a [`SelectMenu`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SelectOption {
-    /// Label shown to the user.
-    pub label: String,
-    /// Value returned in [`InteractionKind::Component::values`] when
-    /// chosen.
-    pub value: String,
-    /// Optional sub-label.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-/// Modal form field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TextInput {
-    /// Used as the key in
-    /// [`InteractionKind::ModalSubmit::values`].
-    pub custom_id: String,
-    /// Label rendered above the field.
-    pub label: String,
-    /// Pre-filled value.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
-    /// Placeholder shown while the field is empty.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub placeholder: Option<String>,
-    /// Single-line vs multi-line.
-    #[serde(default)]
-    pub style: TextInputStyle,
-    /// Field is mandatory at submit time.
-    #[serde(default = "default_true")]
-    pub required: bool,
-    /// Maximum character length (0 = unlimited).
-    #[serde(default)]
-    pub max_length: u32,
-}
-
-/// Layout style for a [`TextInput`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum TextInputStyle {
-    /// Single-line input.
-    #[default]
-    Short,
-    /// Multi-line text area.
-    Paragraph,
 }
 
 #[cfg(test)]
@@ -561,22 +470,9 @@ mod tests {
             kind: ResponseKind::Message {
                 message_id: "m1".into(),
                 content: "Choose one".into(),
-                components: vec![ActionRow {
-                    components: vec![
-                        Component::Button(Button {
-                            custom_id: "yes".into(),
-                            label: "Yes".into(),
-                            style: ButtonStyle::Success,
-                            disabled: false,
-                        }),
-                        Component::Button(Button {
-                            custom_id: "no".into(),
-                            label: "No".into(),
-                            style: ButtonStyle::Danger,
-                            disabled: false,
-                        }),
-                    ],
-                }],
+                components: vec![ActionRow::new()
+                    .push(Button::new("yes", "Yes").style(ButtonStyle::Success))
+                    .push(Button::new("no", "No").style(ButtonStyle::Danger))],
                 ephemeral: false,
             },
         };
@@ -603,22 +499,59 @@ mod tests {
                 values: [("text".to_owned(), "hello".to_owned())]
                     .into_iter()
                     .collect(),
+                fields: std::collections::BTreeMap::new(),
             },
         };
         let json = serde_json::to_string(&interaction).expect("encode");
         let back: Interaction = serde_json::from_str(&json).expect("decode");
         match back.kind {
-            InteractionKind::ModalSubmit { custom_id, values } => {
+            InteractionKind::ModalSubmit {
+                custom_id,
+                values,
+                fields,
+            } => {
                 assert_eq!(custom_id, "greet-form");
                 assert_eq!(values.get("text").map(String::as_str), Some("hello"));
+                assert!(fields.is_empty());
             }
             _ => panic!("expected ModalSubmit"),
         }
     }
 
     #[test]
-    fn default_schema_version_is_one() {
-        assert_eq!(CLIENT_MANIFEST_SCHEMA_VERSION, 1);
-        assert_eq!(ClientManifest::default().schema_version, 1);
+    fn modal_submit_legacy_payload_deserialises() {
+        // Schema-1 payload: no `fields` key, only string `values`.
+        let legacy = r#"{
+            "kind":"modal-submit",
+            "correlation_id":"c",
+            "custom_id":"f",
+            "values":{"name":"alice"}
+        }"#;
+        let parsed: Interaction = serde_json::from_str(legacy).expect("decode");
+        match parsed.kind {
+            InteractionKind::ModalSubmit { values, fields, .. } => {
+                assert_eq!(values["name"], "alice");
+                assert!(fields.is_empty());
+            }
+            _ => panic!("expected ModalSubmit"),
+        }
+    }
+
+    #[test]
+    fn schema_version_is_two() {
+        assert_eq!(CLIENT_MANIFEST_SCHEMA_VERSION, 2);
+        assert_eq!(ClientManifest::default().schema_version, 2);
+    }
+
+    #[test]
+    fn rich_layout_capability_round_trips() {
+        let manifest = ClientManifest {
+            capabilities: vec![Capability::RichLayout],
+            ..ClientManifest::default()
+        };
+        let json = serde_json::to_string(&manifest).expect("encode");
+        assert!(json.contains("\"rich-layout\""));
+        let back: ClientManifest = serde_json::from_str(&json).expect("decode");
+        assert!(back.capabilities.contains(&Capability::RichLayout));
     }
 }

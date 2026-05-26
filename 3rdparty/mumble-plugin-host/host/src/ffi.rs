@@ -275,9 +275,7 @@ pub unsafe extern "C" fn plugin_host_free_string(ptr: *mut c_char) {
 /// # Safety
 /// `handle` must come from [`plugin_host_create`].
 #[no_mangle]
-pub unsafe extern "C" fn plugin_host_list_plugins(
-    handle: *mut PluginHostHandle,
-) -> *mut c_char {
+pub unsafe extern "C" fn plugin_host_list_plugins(handle: *mut PluginHostHandle) -> *mut c_char {
     ffi_guard("plugin_host_list_plugins", std::ptr::null_mut(), || {
         let Some(host) = (unsafe { handle_lock(handle) }) else {
             return std::ptr::null_mut();
@@ -302,21 +300,25 @@ pub unsafe extern "C" fn plugin_host_set_plugin_enabled(
     plugin_name: *const c_char,
     enabled: bool,
 ) -> *mut c_char {
-    ffi_guard("plugin_host_set_plugin_enabled", std::ptr::null_mut(), || {
-        let Some(mut host) = (unsafe { handle_lock(handle) }) else {
-            return result_to_cstring(&FfiResult::err("invalid handle"));
-        };
-        // SAFETY: caller contract above.
-        let name = unsafe { cstr_to_string(plugin_name) };
-        if name.is_empty() {
-            return result_to_cstring(&FfiResult::err("plugin_name must not be empty"));
-        }
-        let result = match host.set_enabled(&name, enabled) {
-            Ok(()) => FfiResult::ok(),
-            Err(e) => FfiResult::err(e),
-        };
-        result_to_cstring(&result)
-    })
+    ffi_guard(
+        "plugin_host_set_plugin_enabled",
+        std::ptr::null_mut(),
+        || {
+            let Some(mut host) = (unsafe { handle_lock(handle) }) else {
+                return result_to_cstring(&FfiResult::err("invalid handle"));
+            };
+            // SAFETY: caller contract above.
+            let name = unsafe { cstr_to_string(plugin_name) };
+            if name.is_empty() {
+                return result_to_cstring(&FfiResult::err("plugin_name must not be empty"));
+            }
+            let result = match host.set_enabled(&name, enabled) {
+                Ok(()) => FfiResult::ok(),
+                Err(e) => FfiResult::err(e),
+            };
+            result_to_cstring(&result)
+        },
+    )
 }
 
 /// Plugin-admin: download a plugin from the marketplace and register

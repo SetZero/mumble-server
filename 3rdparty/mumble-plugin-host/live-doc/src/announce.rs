@@ -172,12 +172,38 @@ fn build_ws_url(
         .cfg()
         .public_url
         .clone()
-        .unwrap_or_else(|| format!("ws://{}", state.cfg().bind));
+        .unwrap_or_else(|| default_ws_base(state.cfg().bind));
     format!("{base}/ws/{server_id}/{channel_id}/{slug}")
+}
+
+/// Build a WS base URL from the configured bind address.
+///
+/// When the operator did not set `plugin.fancy-live-doc.public_url` and
+/// the bind host is an unspecified address (`0.0.0.0`, `::`), we cannot
+/// advertise it verbatim - browsers reject those as a destination with
+/// `ERR_ADDRESS_INVALID`. Substitute the loopback address so a local
+/// dev client can at least connect, and emit a warning so the admin
+/// knows to set `public_url` for remote clients.
+fn default_ws_base(bind: std::net::SocketAddr) -> String {
+    if bind.ip().is_unspecified() {
+        let host = if bind.is_ipv6() { "[::1]" } else { "127.0.0.1" };
+        tracing::warn!(
+            bind = %bind,
+            "plugin.fancy-live-doc.public_url is not set and bind address is unspecified; \
+             advertising {host}:{port} - remote clients will not be able to connect, \
+             set plugin.fancy-live-doc.public_url to a routable URL",
+            host = host,
+            port = bind.port(),
+        );
+        format!("ws://{host}:{port}", host = host, port = bind.port())
+    } else {
+        format!("ws://{bind}")
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, reason = "tests panic on failure")]
     use super::*;
 
     #[test]
@@ -192,5 +218,23 @@ mod tests {
         );
         assert_eq!(sanitize_slug("___---").as_deref(), Some("___"));
         assert_eq!(sanitize_slug(""), None);
+    }
+
+    #[test]
+    fn default_ws_base_substitutes_loopback_for_unspecified_ipv4() {
+        let bind: std::net::SocketAddr = "0.0.0.0:64740".parse().unwrap();
+        assert_eq!(default_ws_base(bind), "ws://127.0.0.1:64740");
+    }
+
+    #[test]
+    fn default_ws_base_substitutes_loopback_for_unspecified_ipv6() {
+        let bind: std::net::SocketAddr = "[::]:64740".parse().unwrap();
+        assert_eq!(default_ws_base(bind), "ws://[::1]:64740");
+    }
+
+    #[test]
+    fn default_ws_base_passes_through_routable_address() {
+        let bind: std::net::SocketAddr = "10.0.0.5:64740".parse().unwrap();
+        assert_eq!(default_ws_base(bind), "ws://10.0.0.5:64740");
     }
 }

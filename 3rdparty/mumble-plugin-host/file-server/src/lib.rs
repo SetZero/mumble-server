@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use abi_stable::std_types::{RArc, ROk, RSlice, RStr, RString};
 use mumble_plugin_api::{
-    permissions, ClientInfo, DebugRow, MumblePlugin, PluginContext_TO, PluginError, PluginInfo,
+    plugin_info, ClientInfo, DebugRow, MumblePlugin, Permissions, PluginContext_TO, PluginError,
     PluginResult, ServerId, SessionId,
 };
 use rand::RngCore;
@@ -88,11 +88,13 @@ impl MumblePlugin for FileServerPlugin {
     }
 
     fn info_json(&self) -> RString {
-        let info = self.build_plugin_info();
-        match info.to_validated_json() {
-            Ok(bytes) => RString::from(String::from_utf8_lossy(&bytes).into_owned()),
-            Err(_) => RString::from("{}"),
+        plugin_info! {
+            description: "HTTP file sharing with signed URLs and per-channel ACLs.",
+            author: "Fancy Mumble",
+            tags: ["http", "files", "emotes"],
+            debug_info: self.runtime_debug_rows(),
         }
+        .to_rstring()
     }
 
     fn on_load(&self, ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {
@@ -175,39 +177,32 @@ impl MumblePlugin for FileServerPlugin {
 }
 
 impl FileServerPlugin {
-    fn build_plugin_info(&self) -> PluginInfo {
-        let mut debug_rows: Vec<DebugRow> = Vec::new();
+    /// Snapshot debug rows reflecting current runtime state.  Empty
+    /// before [`Self::on_load`] populates `inner`.
+    fn runtime_debug_rows(&self) -> Vec<DebugRow> {
+        let mut rows = Vec::new();
         if let Ok(guard) = self.inner.lock() {
             if let Some(running) = guard.as_ref() {
-                debug_rows.push(DebugRow {
+                let c = &running.state.config;
+                rows.push(DebugRow {
                     label: "base_url".into(),
-                    value: running.state.config.base_url.clone(),
+                    value: c.base_url.clone(),
                 });
-                debug_rows.push(DebugRow {
+                rows.push(DebugRow {
                     label: "bind".into(),
-                    value: format!(
-                        "{}:{}",
-                        running.state.config.bind_address, running.state.config.port
-                    ),
+                    value: format!("{}:{}", c.bind_address, c.port),
                 });
-                debug_rows.push(DebugRow {
+                rows.push(DebugRow {
                     label: "max_file_size_bytes".into(),
-                    value: running.state.config.max_file_size_bytes.to_string(),
+                    value: c.max_file_size_bytes.to_string(),
                 });
-                debug_rows.push(DebugRow {
+                rows.push(DebugRow {
                     label: "delete_on_ttl".into(),
-                    value: running.state.config.delete_on_ttl.to_string(),
+                    value: c.delete_on_ttl.to_string(),
                 });
             }
         }
-        PluginInfo {
-            description: "HTTP file sharing with signed URLs and per-channel ACLs.".into(),
-            author: Some("Fancy Mumble".into()),
-            homepage: None,
-            capabilities: vec!["http".into(), "files".into(), "emotes".into()],
-            debug_rows,
-            client_manifest: None,
-        }
+        rows
     }
 }
 
@@ -292,13 +287,13 @@ fn announce_to_client(
         "delete_on_download": running.state.config.delete_on_download,
         "delete_on_disconnect": running.state.config.delete_on_disconnect,
         "can_manage_emotes": running.state.plugin_ctx.has_permission(
-            server_id, session_id, 0, permissions::MANAGE_EMOTES,
+            server_id, session_id, 0, Permissions::MANAGE_EMOTES,
         ),
         "can_share_files": running.state.plugin_ctx.has_permission(
-            server_id, session_id, 0, permissions::SHARE_FILES,
+            server_id, session_id, 0, Permissions::SHARE_FILES,
         ),
         "can_share_files_public": running.state.plugin_ctx.has_permission(
-            server_id, session_id, 0, permissions::SHARE_FILES_PUBLIC,
+            server_id, session_id, 0, Permissions::SHARE_FILES_PUBLIC,
         ),
     });
     let bytes = serde_json::to_vec(&payload).map_err(|e| format!("serialize: {e}"))?;

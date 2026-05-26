@@ -10,7 +10,7 @@
 use std::fmt::Debug;
 
 use abi_stable::std_types::{RArc, RSlice, RStr, RString};
-use mumble_plugin_api::{PluginContext_TO, PluginError, PluginResult};
+use mumble_plugin_api::{Permissions, PluginContext_TO, PluginError, PluginResult};
 
 /// Convenience alias used in plugin code.
 pub type FacadeResult<T> = Result<T, PluginError>;
@@ -32,8 +32,9 @@ pub trait HostFacade: Debug + Send + Sync + 'static {
     /// `true` if the session may enter the channel under server ACLs.
     fn user_has_channel_access(&self, server_id: u32, session: u32, channel: u32) -> bool;
 
-    /// `true` if the session holds the given permission flags in the channel.
-    fn has_permission(&self, server_id: u32, session: u32, channel: u32, perm: u32) -> bool;
+    /// `true` if the session holds every flag in `perm` on `channel`.
+    fn has_permission(&self, server_id: u32, session: u32, channel: u32, perm: Permissions)
+        -> bool;
 
     /// Channel the session is currently in, if known to the host.
     fn current_channel(&self, _server_id: u32, _session: u32) -> Option<u32> {
@@ -92,8 +93,15 @@ impl HostFacade for SabiHostCtx {
             .user_has_channel_access(server_id, session, channel)
     }
 
-    fn has_permission(&self, server_id: u32, session: u32, channel: u32, perm: u32) -> bool {
-        self.inner.has_permission(server_id, session, channel, perm)
+    fn has_permission(
+        &self,
+        server_id: u32,
+        session: u32,
+        channel: u32,
+        perm: Permissions,
+    ) -> bool {
+        self.inner
+            .has_permission(server_id, session, channel, perm.bits())
     }
 
     fn current_channel(&self, server_id: u32, session: u32) -> Option<u32> {

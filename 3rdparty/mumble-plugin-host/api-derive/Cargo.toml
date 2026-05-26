@@ -1,0 +1,38 @@
+[package]
+name = "mumble-plugin-api-derive"
+version = "0.2.0"
+edition = "2021"
+description = "Proc-macros for ergonomic plugin authoring against mumble-plugin-api"
+license = "MIT"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
+
+# Lints relaxed vs the workspace baseline: proc-macro crates use #[allow]
+# in generated code that the workspace's allow_attributes_without_reason
+# lint would otherwise flag inside this crate.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "deny"
+unused_crate_dependencies = "warn"
+unused_results = "deny"
+missing_debug_implementations = "deny"
+unused_qualifications = "warn"
+unreachable_pub = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+allow_attributes_without_reason = "deny"

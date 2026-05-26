@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use abi_stable::std_types::{RArc, ROk, RSlice, RStr, RString};
 use mumble_plugin_api::{
-    ChannelId, ClientInfo, DebugRow, MumblePlugin, PluginContext_TO, PluginError, PluginInfo,
+    plugin_info, ChannelId, ClientInfo, DebugRow, MumblePlugin, PluginContext_TO, PluginError,
     PluginMessageIn, PluginResult, ServerId, SessionId,
 };
 
@@ -60,38 +60,34 @@ impl LiveDocPlugin {
         Self::default()
     }
 
-    fn build_plugin_info(&self) -> PluginInfo {
-        let mut debug_rows: Vec<DebugRow> = Vec::new();
+    /// Snapshot debug rows reflecting current runtime state.  Empty
+    /// before [`Self::on_load`] populates `inner`.
+    fn debug_info(&self) -> Vec<DebugRow> {
+        let mut rows = Vec::new();
         if let Ok(guard) = self.inner.lock() {
             if let Some(running) = guard.as_ref() {
-                debug_rows.push(DebugRow {
+                let c = running.state.cfg();
+                rows.push(DebugRow {
                     label: "bind".into(),
-                    value: running.state.cfg().bind.to_string(),
+                    value: c.bind.to_string(),
                 });
-                if let Some(url) = &running.state.cfg().public_url {
-                    debug_rows.push(DebugRow {
+                if let Some(url) = &c.public_url {
+                    rows.push(DebugRow {
                         label: "public_url".into(),
                         value: url.clone(),
                     });
                 }
-                debug_rows.push(DebugRow {
+                rows.push(DebugRow {
                     label: "max_update_bytes".into(),
-                    value: running.state.cfg().max_update_bytes.to_string(),
+                    value: c.max_update_bytes.to_string(),
                 });
-                debug_rows.push(DebugRow {
+                rows.push(DebugRow {
                     label: "snapshot_idle_secs".into(),
-                    value: running.state.cfg().snapshot_idle_secs.to_string(),
+                    value: c.snapshot_idle_secs.to_string(),
                 });
             }
         }
-        PluginInfo {
-            description: "Real-time collaborative documents over WebSocket (Yjs CRDT).".into(),
-            author: Some("Fancy Mumble".into()),
-            homepage: None,
-            capabilities: vec!["http".into(), "websocket".into(), "live-doc".into()],
-            debug_rows,
-            client_manifest: None,
-        }
+        rows
     }
 }
 
@@ -111,10 +107,13 @@ impl MumblePlugin for LiveDocPlugin {
     }
 
     fn info_json(&self) -> RString {
-        match self.build_plugin_info().to_validated_json() {
-            Ok(bytes) => RString::from(String::from_utf8_lossy(&bytes).into_owned()),
-            Err(_) => RString::from("{}"),
+        plugin_info! {
+            description: "Real-time collaborative documents over WebSocket (Yjs CRDT).",
+            author: "Fancy Mumble",
+            tags: ["http", "websocket", "live-doc"],
+            debug_info: self.debug_info(),
         }
+        .to_rstring()
     }
 
     fn on_load(&self, ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {

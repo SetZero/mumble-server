@@ -236,7 +236,7 @@ void plugin_host_on_plugin_message(struct PluginHostHandle *handle,
  * Plugin-admin: return a JSON snapshot of every known plugin.
  *
  * Body shape: `{"plugins":[{plugin_name,version,enabled,loaded,path,
- * info_json,marketplace_id,installed_at}, ...],"plugins_dir":".."}`.
+ * info_json,marketplace_id,installed_at,builtin}, ...],"plugins_dir":".."}`.
  * Returns NULL on allocation failure; otherwise free with
  * [`plugin_host_free_string`].
  *

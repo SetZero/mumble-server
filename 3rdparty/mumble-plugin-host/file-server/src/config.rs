@@ -13,6 +13,34 @@ use crate::host_facade::HostFacade;
 /// start with a configured value above this.
 pub const MAX_TOTAL_STORAGE_LIMIT: u64 = 10 * 1024 * 1024 * 1024;
 
+/// Stable plugin identifier; used to derive the default storage path
+/// (`<system data dir>/mumble/fancy-file-server`).
+const PLUGIN_NAME: &str = "fancy-file-server";
+
+/// Build a platform-appropriate absolute path under the system data
+/// directory:
+///
+/// * Windows: `%PROGRAMDATA%\mumble\<plugin_name>` (fallback
+///   `C:\ProgramData\mumble\<plugin_name>` if the env var is unset).
+/// * Unix (Linux, macOS, BSD): `/var/lib/mumble/<plugin_name>`.
+///
+/// The returned path is always absolute, so the validator accepts it.
+/// Operators who want a different location override
+/// `plugin.fancy-file-server.storage_path` in the server INI.
+pub(crate) fn default_data_dir(plugin_name: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        base.join("mumble").join(plugin_name)
+    }
+    #[cfg(unix)]
+    {
+        PathBuf::from(format!("/var/lib/mumble/{plugin_name}"))
+    }
+}
+
 /// Configuration for the file-server plugin.
 #[derive(Debug, Clone)]
 pub struct FileServerConfig {
@@ -86,7 +114,7 @@ impl FileServerConfig {
             )?,
             storage_path: ctx
                 .get_config("storage_path")
-                .map_or_else(|| PathBuf::from("./murmur-files"), PathBuf::from),
+                .map_or_else(|| default_data_dir(PLUGIN_NAME), PathBuf::from),
             delete_on_ttl: parse_or(ctx, "delete_on_ttl", true)?,
             ttl: Duration::from_secs(parse_or(ctx, "ttl_seconds", 86_400_u64)?),
             delete_on_download: parse_or(ctx, "delete_on_download", false)?,
@@ -109,17 +137,21 @@ impl FileServerConfig {
             });
         }
         if cfg.max_file_size_bytes == 0 {
-            return Err(ConfigError::Invalid("max_file_size_bytes must be > 0"));
+            return Err(ConfigError::Invalid(
+                "plugin.fancy-file-server.max_file_size_bytes must be > 0",
+            ));
         }
         if !cfg.storage_path.is_absolute() {
             return Err(ConfigError::Invalid(
-                "storage_path must be an absolute path",
+                "plugin.fancy-file-server.storage_path must be an absolute path \
+                 (leave unset to use the system default)",
             ));
         }
         if !cfg.bind_address.is_loopback() && !cfg.tls_terminated_by_proxy {
             return Err(ConfigError::Invalid(
-                "bind_address is non-loopback but tlsTerminatedByProxy is not set; \
-                 the plugin only speaks plain HTTP and must be terminated by a TLS proxy",
+                "plugin.fancy-file-server.bind_address is non-loopback but \
+                 plugin.fancy-file-server.tls_terminated_by_proxy is not set; \
+                 the plugin only speaks plain HTTP and must be fronted by a TLS proxy",
             ));
         }
 
@@ -204,7 +236,13 @@ mod tests {
         fn user_has_channel_access(&self, _: u32, _: u32, _: u32) -> bool {
             false
         }
-        fn has_permission(&self, _: u32, _: u32, _: u32, _: u32) -> bool {
+        fn has_permission(
+            &self,
+            _: u32,
+            _: u32,
+            _: u32,
+            _: mumble_plugin_api::Permissions,
+        ) -> bool {
             false
         }
         fn get_config(&self, key: &str) -> Option<String> {
@@ -252,22 +290,45 @@ mod tests {
         let mut map = std::collections::HashMap::new();
         let _ = map.insert("storage_path", "./relative".to_owned());
         let ctx = StubCtx(map);
-        assert!(matches!(
-            FileServerConfig::from_context(&ctx),
-            Err(ConfigError::Invalid(_))
-        ));
+        let err = FileServerConfig::from_context(&ctx).expect_err("must reject");
+        // Error message points the operator at the qualified key path.
+        assert!(err
+            .to_string()
+            .contains("plugin.fancy-file-server.storage_path"));
     }
 
     #[test]
-    fn no_config_at_all_is_rejected_due_to_relative_default() {
-        // The absent-storage_path default is `./murmur-files` which the
-        // validator rejects as relative.  This keeps operators from
-        // accidentally splitting their storage across cwds.
+    fn no_config_at_all_uses_platform_default() {
+        // Absent `storage_path` falls back to a platform-appropriate
+        // absolute directory under the system data dir, so the validator
+        // accepts it and the plugin starts on first run.
         let ctx = StubCtx(std::collections::HashMap::new());
-        assert!(matches!(
-            FileServerConfig::from_context(&ctx),
-            Err(ConfigError::Invalid(_))
-        ));
+        let cfg = FileServerConfig::from_context(&ctx).expect("loads with default storage_path");
+        assert!(
+            cfg.storage_path.is_absolute(),
+            "default storage_path must be absolute, got {}",
+            cfg.storage_path.display()
+        );
+        assert!(
+            cfg.storage_path.ends_with("fancy-file-server"),
+            "default storage_path should end with the plugin name, got {}",
+            cfg.storage_path.display()
+        );
+    }
+
+    #[test]
+    fn default_data_dir_is_platform_appropriate() {
+        let p = default_data_dir("fancy-file-server");
+        assert!(p.is_absolute());
+        let s = p.to_string_lossy();
+        if cfg!(windows) {
+            assert!(
+                s.contains("mumble") && s.ends_with("fancy-file-server"),
+                "windows default should live under ProgramData\\mumble, got {s}"
+            );
+        } else {
+            assert_eq!(s, "/var/lib/mumble/fancy-file-server");
+        }
     }
 
     #[test]

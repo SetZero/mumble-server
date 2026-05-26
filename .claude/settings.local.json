@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(git fetch *)",
+      "Bash(git ls-tree *)",
+      "Bash(gh run *)",
+      "Bash(gh api *)",
+      "Bash(git stash *)",
+      "Bash(git rev-list *)",
+      "Bash(git remote *)",
+      "Bash(git merge *)",
+      "Bash(cargo test *)",
+      "Bash(cargo clippy *)",
+      "Bash(if [ -d \"F:/Dokumente/projekte/fancy\" ]; then echo \"fancy exists\"; ls F:/Dokumente/projekte/fancy/ | head -5; fi)",
+      "Read(//f/Dokumente/projekte/fancy/**)"
+    ]
+  }
+}

@@ -30,19 +30,41 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod client_manifest;
+pub mod commands;
+pub mod component_macros;
+pub mod components;
+pub mod info_macros;
 pub mod permissions;
 pub mod plugin;
 
 pub use crate::client_manifest::{
-    ActionRow, Button, ButtonStyle, Capability, ClientManifest, Component, Interaction,
-    InteractionKind, InteractionResponse, OptionChoice, OptionType, OptionValue, PanelRow,
-    ResponseKind, SelectMenu, SelectOption, SettingsPanel, SlashCommand, SlashCommandOption,
-    TextInput, TextInputStyle, ToastLevel, CLIENT_MANIFEST_SCHEMA_VERSION,
-    INTERACTION_PAYLOAD_TYPE, INTERACTION_RESPONSE_PAYLOAD_TYPE,
+    ActionRow, Button, ButtonStyle, Capability, ChannelSelect, Checkbox, CheckboxGroup,
+    CheckboxOption, ClientManifest, Component, Container, FileComponent, FileUpload, Interaction,
+    InteractionKind, InteractionResponse, Label, MediaGallery, MediaGalleryItem, MentionableSelect,
+    ModalFieldValue, OptionChoice, OptionType, OptionValue, PanelRow, RadioGroup, RadioOption,
+    ResponseKind, RoleSelect, Section, SectionAccessory, SelectMenu, SelectOption, Separator,
+    SeparatorSpacing, SettingsPanel, SlashCommand, SlashCommandOption, StringSelect, TextDisplay,
+    TextInput, TextInputBuilder, TextInputStyle, Thumbnail, ToastLevel, UnfurledMediaItem,
+    UserSelect, CLIENT_MANIFEST_SCHEMA_VERSION, INTERACTION_PAYLOAD_TYPE,
+    INTERACTION_RESPONSE_PAYLOAD_TYPE,
 };
+pub use crate::commands::{
+    extract_field, extract_option, parse_interaction, send_interaction_response, FieldExtractError,
+    FromField, FromOption, OptionExtractError,
+};
+#[doc(hidden)]
+pub use crate::component_macros::__text_input_with_id;
+pub use crate::permissions::Permissions;
 pub use crate::plugin::{
     MumblePlugin, MumblePlugin_TO, PluginContext, PluginContext_TO, PluginMessageIn,
     PluginMessageOut,
+};
+
+// Re-export the proc-macros so plugin authors only need a single
+// `mumble-plugin-api` dependency.  See the `info_macros` module for
+// the declarative `plugin_info!` companion.
+pub use mumble_plugin_api_derive::{
+    command, component, fancy_plugin, field, handler_id, modal, show_modal,
 };
 
 /// Magic constant identifying the on-wire shape of [`MumblePlugin`] and
@@ -140,8 +162,8 @@ pub struct PluginInfo {
     pub author: Option<String>,
     /// Optional homepage / source-repository URL.
     pub homepage: Option<String>,
-    /// Short capability tags ("http", "websocket", "persistence", ...).
-    pub capabilities: Vec<String>,
+    /// Short feature tags ("http", "websocket", "persistence", ...).
+    pub tags: Vec<String>,
     /// Free-form runtime stats (listening ports, active session counts,
     /// feature flags) for the developer panel.
     pub debug_rows: Vec<DebugRow>,
@@ -165,6 +187,19 @@ impl PluginInfo {
             });
         }
         Ok(bytes)
+    }
+
+    /// Encode as JSON and wrap in an [`RString`] suitable for direct
+    /// return from [`MumblePlugin::info_json`].  Falls back to `"{}"` on
+    /// validation failure (oversize or non-encodable struct) so a
+    /// misbehaving plugin still loads instead of returning garbage.
+    /// Use [`Self::to_validated_json`] directly if you want to inspect
+    /// the error.
+    pub fn to_rstring(&self) -> RString {
+        match self.to_validated_json() {
+            Ok(bytes) => RString::from(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(_) => RString::from("{}"),
+        }
     }
 }
 
@@ -286,7 +321,7 @@ mod tests {
             description: "test".into(),
             author: Some("nobody".into()),
             homepage: None,
-            capabilities: vec!["http".into(), "ws".into()],
+            tags: vec!["http".into(), "ws".into()],
             debug_rows: vec![DebugRow {
                 label: "port".into(),
                 value: "8080".into(),
@@ -296,7 +331,7 @@ mod tests {
         let bytes = info.to_validated_json().expect("encode");
         let back: PluginInfo = serde_json::from_slice(&bytes).expect("decode");
         assert_eq!(back.description, info.description);
-        assert_eq!(back.capabilities, info.capabilities);
+        assert_eq!(back.tags, info.tags);
         assert_eq!(back.debug_rows.len(), 1);
         assert!(back.client_manifest.is_none());
     }
@@ -308,7 +343,7 @@ mod tests {
             description: huge,
             author: None,
             homepage: None,
-            capabilities: vec![],
+            tags: vec![],
             debug_rows: vec![],
             client_manifest: None,
         };
@@ -332,7 +367,7 @@ mod tests {
             description: "with manifest".into(),
             author: None,
             homepage: None,
-            capabilities: vec![],
+            tags: vec![],
             debug_rows: vec![],
             client_manifest: Some(manifest),
         };
@@ -349,7 +384,7 @@ mod tests {
             description: "legacy".into(),
             author: None,
             homepage: None,
-            capabilities: vec![],
+            tags: vec![],
             debug_rows: vec![],
             client_manifest: None,
         };
@@ -361,5 +396,150 @@ mod tests {
     #[test]
     fn abi_version_is_two() {
         assert_eq!(PLUGIN_ABI_VERSION, 2);
+    }
+
+    #[test]
+    fn plugin_info_macro_minimal() {
+        // description-only invocation; everything else should default.
+        let info = plugin_info! {
+            description: "minimal",
+        };
+        assert_eq!(info.description, "minimal");
+        assert!(info.author.is_none());
+        assert!(info.homepage.is_none());
+        assert!(info.tags.is_empty());
+        assert!(info.debug_rows.is_empty());
+        assert!(info.client_manifest.is_none());
+    }
+
+    #[test]
+    fn plugin_info_macro_with_simple_fields() {
+        let sessions: usize = 7;
+        let port: u16 = 8080;
+        let info = plugin_info! {
+            description: "x",
+            author: "nobody",
+            homepage: "https://example.invalid",
+            tags: ["a", "b", "c"],
+            debug_info: {
+                "active_sessions" => sessions,
+                "http_port" => port,
+            },
+        };
+        assert_eq!(info.description, "x");
+        assert_eq!(info.author.as_deref(), Some("nobody"));
+        assert_eq!(info.homepage.as_deref(), Some("https://example.invalid"));
+        assert_eq!(info.tags, vec!["a", "b", "c"]);
+        assert_eq!(info.debug_rows.len(), 2);
+        assert_eq!(info.debug_rows[0].label, "active_sessions");
+        assert_eq!(info.debug_rows[0].value, "7");
+        assert_eq!(info.debug_rows[1].value, "8080");
+        assert!(info.client_manifest.is_none());
+    }
+
+    #[test]
+    fn plugin_info_macro_with_inline_manifest() {
+        let info = plugin_info! {
+            description: "demo",
+            manifest: {
+                capabilities: [SlashCommands, Components, Modals],
+                slash_commands: [
+                    {
+                        name: "greet",
+                        description: "Send a friendly greeting",
+                        options: [
+                            { name: "who",  description: "target",    type: String,  required: true },
+                            { name: "loud", description: "uppercase", type: Boolean, required: false },
+                        ],
+                    },
+                ],
+                settings_panels: [
+                    {
+                        id: "status",
+                        title: "Greeter status",
+                        rows: [
+                            "template" => "Welcome, {username}!",
+                            "demo"     => "Try /greet",
+                        ],
+                    },
+                ],
+            },
+        };
+        let m = info.client_manifest.expect("manifest present");
+        assert_eq!(m.schema_version, CLIENT_MANIFEST_SCHEMA_VERSION);
+        assert_eq!(m.capabilities.len(), 3);
+        assert!(m.capabilities.contains(&Capability::SlashCommands));
+        assert_eq!(m.slash_commands.len(), 1);
+        assert_eq!(m.slash_commands[0].name, "greet");
+        assert_eq!(m.slash_commands[0].options.len(), 2);
+        assert_eq!(
+            m.slash_commands[0].options[0].option_type,
+            OptionType::String
+        );
+        assert_eq!(
+            m.slash_commands[0].options[1].option_type,
+            OptionType::Boolean
+        );
+        assert!(m.slash_commands[0].options[0].required);
+        assert!(!m.slash_commands[0].options[1].required);
+        assert_eq!(m.settings_panels.len(), 1);
+        assert_eq!(m.settings_panels[0].rows.len(), 2);
+        assert_eq!(m.settings_panels[0].rows[0].label, "template");
+    }
+
+    #[test]
+    fn plugin_info_macro_accepts_external_manifest_value() {
+        let prebuilt = ClientManifest {
+            schema_version: CLIENT_MANIFEST_SCHEMA_VERSION,
+            slash_commands: vec![],
+            capabilities: vec![Capability::Notifications],
+            settings_panels: vec![],
+        };
+        let info = plugin_info! {
+            description: "demo",
+            client_manifest: prebuilt,
+        };
+        let m = info.client_manifest.expect("manifest present");
+        assert!(m.capabilities.contains(&Capability::Notifications));
+    }
+
+    #[test]
+    fn plugin_info_to_rstring_roundtrips() {
+        let info = plugin_info! {
+            description: "rstring",
+            author: "nobody",
+        };
+        let s = info.to_rstring();
+        let back: PluginInfo = serde_json::from_str(s.as_str()).expect("decode");
+        assert_eq!(back.description, "rstring");
+        assert_eq!(back.author.as_deref(), Some("nobody"));
+    }
+
+    #[test]
+    fn plugin_info_macro_accepts_dynamic_debug_rows() {
+        // Build the rows imperatively (e.g. conditional on runtime state)
+        // and hand the Vec to the macro via `debug_info:`.
+        let mut rows = Vec::new();
+        for (label, n) in [("a", 1usize), ("b", 2)] {
+            rows.push(DebugRow {
+                label: label.into(),
+                value: n.to_string(),
+            });
+        }
+        let info = plugin_info! {
+            description: "dyn",
+            debug_info: rows,
+        };
+        assert_eq!(info.debug_rows.len(), 2);
+        assert_eq!(info.debug_rows[0].label, "a");
+        assert_eq!(info.debug_rows[1].value, "2");
+    }
+
+    #[test]
+    fn plugin_info_to_rstring_falls_back_on_oversize() {
+        let info = plugin_info! {
+            description: "x".repeat(PLUGIN_INFO_MAX_BYTES + 1),
+        };
+        assert_eq!(info.to_rstring().as_str(), "{}");
     }
 }

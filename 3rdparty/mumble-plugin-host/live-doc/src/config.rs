@@ -10,6 +10,10 @@ use thiserror::Error;
 
 use crate::host_facade::HostFacade;
 
+/// Stable plugin identifier; used to derive the default `state_path`
+/// (`<system data dir>/mumble/fancy-live-doc`).
+const PLUGIN_NAME: &str = "fancy-live-doc";
+
 /// Default WS port if `port` is not set in config.
 pub const DEFAULT_PORT: u16 = 64740;
 /// Default per-doc CRDT update cap (4 MiB).  Updates above this size
@@ -33,6 +37,14 @@ pub enum ConfigError {
         key: &'static str,
         /// Raw value as supplied.
         value: String,
+    },
+    /// Value was parsed but failed a semantic validation rule.
+    #[error("invalid config value for plugin.fancy-live-doc.{key}: {reason}")]
+    Invalid {
+        /// Offending key name.
+        key: &'static str,
+        /// Why the value was rejected.
+        reason: &'static str,
     },
 }
 
@@ -80,8 +92,13 @@ impl LiveDocConfig {
 
         let state_path = ctx
             .get_config("state_path")
-            .map(PathBuf::from)
-            .ok_or(ConfigError::Missing("state_path"))?;
+            .map_or_else(|| default_data_dir(PLUGIN_NAME), PathBuf::from);
+        if !state_path.is_absolute() {
+            return Err(ConfigError::Invalid {
+                key: "state_path",
+                reason: "must be an absolute path (leave unset to use the system default)",
+            });
+        }
 
         let max_update_bytes = parse_optional(
             "max_update_bytes",
@@ -128,4 +145,124 @@ fn parse_optional<T: std::str::FromStr>(
             key,
             value: value.to_string(),
         })
+}
+
+/// Build a platform-appropriate absolute path under the system data
+/// directory:
+///
+/// * Windows: `%PROGRAMDATA%\mumble\<plugin_name>` (fallback
+///   `C:\ProgramData\mumble\<plugin_name>` if the env var is unset).
+/// * Unix (Linux, macOS, BSD): `/var/lib/mumble/<plugin_name>`.
+///
+/// Operators who want a different location override
+/// `plugin.fancy-live-doc.state_path` in the server INI.
+pub(crate) fn default_data_dir(plugin_name: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        base.join("mumble").join(plugin_name)
+    }
+    #[cfg(unix)]
+    {
+        PathBuf::from(format!("/var/lib/mumble/{plugin_name}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
+
+    use super::*;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Default)]
+    struct StubCtx(HashMap<&'static str, String>);
+
+    impl HostFacade for StubCtx {
+        fn send_plugin_data(
+            &self,
+            _: u32,
+            _: u32,
+            _: &str,
+            _: &[u8],
+        ) -> crate::host_facade::FacadeResult<()> {
+            Ok(())
+        }
+        fn is_session_active(&self, _: u32, _: u32) -> bool {
+            true
+        }
+        fn user_has_channel_access(&self, _: u32, _: u32, _: u32) -> bool {
+            true
+        }
+        fn has_permission(
+            &self,
+            _: u32,
+            _: u32,
+            _: u32,
+            _: mumble_plugin_api::Permissions,
+        ) -> bool {
+            true
+        }
+        fn get_config(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn send_plugin_message(
+            &self,
+            _: crate::host_facade::PluginMessageArgs<'_>,
+        ) -> crate::host_facade::FacadeResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn default_state_path_is_absolute() {
+        let cfg = LiveDocConfig::from_context(&StubCtx::default()).expect("loads defaults");
+        assert!(
+            cfg.state_path.is_absolute(),
+            "default state_path must be absolute, got {}",
+            cfg.state_path.display()
+        );
+        assert!(cfg.state_path.ends_with("fancy-live-doc"));
+        assert_eq!(cfg.port, DEFAULT_PORT);
+    }
+
+    #[test]
+    fn explicit_relative_state_path_is_rejected() {
+        let mut map = HashMap::new();
+        let _ = map.insert("state_path", "./relative".to_owned());
+        let err = LiveDocConfig::from_context(&StubCtx(map)).expect_err("must reject");
+        assert!(err.to_string().contains("plugin.fancy-live-doc.state_path"));
+    }
+
+    #[test]
+    fn explicit_state_path_wins() {
+        let mut map = HashMap::new();
+        #[cfg(windows)]
+        let _ = map.insert("state_path", r"C:\custom\live-doc".to_owned());
+        #[cfg(unix)]
+        let _ = map.insert("state_path", "/srv/live-doc".to_owned());
+        let cfg = LiveDocConfig::from_context(&StubCtx(map)).expect("loads");
+        #[cfg(windows)]
+        assert_eq!(cfg.state_path.to_string_lossy(), r"C:\custom\live-doc");
+        #[cfg(unix)]
+        assert_eq!(cfg.state_path.to_string_lossy(), "/srv/live-doc");
+    }
+
+    #[test]
+    fn default_data_dir_is_platform_appropriate() {
+        let p = default_data_dir("fancy-live-doc");
+        assert!(p.is_absolute());
+        let s = p.to_string_lossy();
+        if cfg!(windows) {
+            assert!(s.contains("mumble") && s.ends_with("fancy-live-doc"));
+        } else {
+            assert_eq!(s, "/var/lib/mumble/fancy-live-doc");
+        }
+    }
 }

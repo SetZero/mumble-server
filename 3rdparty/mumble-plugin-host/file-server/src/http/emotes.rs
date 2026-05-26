@@ -21,7 +21,7 @@ use axum::http::HeaderMap;
 use axum::Json;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use mumble_plugin_api::permissions;
+use mumble_plugin_api::Permissions;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::verify_session_jwt;
@@ -98,7 +98,7 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<String, ApiErr
     let is_admin =
         state
             .plugin_ctx
-            .has_permission(claims.srv, claims.sid, 0, permissions::MANAGE_EMOTES);
+            .has_permission(claims.srv, claims.sid, 0, Permissions::MANAGE_EMOTES);
     if !is_admin {
         return Err(ApiError::forbidden(
             "this account is not allowed to manage emotes",

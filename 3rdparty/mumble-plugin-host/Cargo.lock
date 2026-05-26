@@ -1307,9 +1307,20 @@ name = "mumble-plugin-api"
 version = "0.2.0"
 dependencies = [
  "abi_stable",
+ "bitflags",
+ "mumble-plugin-api-derive",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "mumble-plugin-api-derive"
+version = "0.2.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

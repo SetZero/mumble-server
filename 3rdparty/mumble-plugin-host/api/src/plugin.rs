@@ -83,7 +83,12 @@ pub trait PluginContext: Send + Sync + 'static {
     ) -> bool;
 
     /// Returns `true` if the session has every permission in
-    /// `permission_flags` on `channel` (see [`crate::permissions`]).
+    /// `permission_flags` on `channel`.
+    ///
+    /// The parameter is a raw `u32` because the `#[sabi_trait]` ABI
+    /// surface must stay primitive; build the bitmask with
+    /// [`crate::Permissions`] and pass `.bits()` (or use a higher-level
+    /// facade such as `HostFacade` that accepts `Permissions` directly).
     fn has_permission(
         &self,
         server_id: ServerId,

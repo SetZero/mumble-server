@@ -116,11 +116,17 @@ pub(crate) struct FfiResult {
 
 impl FfiResult {
     pub(crate) fn ok() -> Self {
-        Self { ok: true, error: None }
+        Self {
+            ok: true,
+            error: None,
+        }
     }
 
     pub(crate) fn err(msg: impl Into<String>) -> Self {
-        Self { ok: false, error: Some(msg.into()) }
+        Self {
+            ok: false,
+            error: Some(msg.into()),
+        }
     }
 }
 
@@ -514,8 +520,10 @@ fn build_entry(
     let version = loaded.plugin.version().as_str().to_owned();
     let prefix = format!("plugin.{name}");
     let info_envelope = build_info_envelope(&name, &version, &loaded);
-    let marketplace_id =
-        read_config_plain(base_context, &format!("{prefix}.{CONFIG_KEY_MARKETPLACE_ID}"));
+    let marketplace_id = read_config_plain(
+        base_context,
+        &format!("{prefix}.{CONFIG_KEY_MARKETPLACE_ID}"),
+    );
     let installed_at =
         read_config_u64(base_context, &format!("{prefix}.{CONFIG_KEY_INSTALLED_AT}"));
     let enabled = plugin_is_enabled(base_context, &prefix);

@@ -162,8 +162,7 @@ pub(crate) fn fetch_manifest(
             });
         }
     }
-    serde_json::from_slice::<Manifest>(&body)
-        .map_err(|e| InstallError::Manifest(e.to_string()))
+    serde_json::from_slice::<Manifest>(&body).map_err(|e| InstallError::Manifest(e.to_string()))
 }
 
 /// Pick the artifact in `manifest` matching the current `(os, arch)`.

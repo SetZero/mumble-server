@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use axum::extract::{Multipart, Query, State};
 use axum::Json;
-use mumble_plugin_api::permissions;
+use mumble_plugin_api::Permissions;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -106,10 +106,10 @@ pub async fn upload(
 ///
 /// Two ACL flags gate file uploads:
 ///
-/// * [`permissions::SHARE_FILES`] - master switch.  Required for any
+/// * [`Permissions::SHARE_FILES`] - master switch.  Required for any
 ///   upload regardless of access mode.  When denied, the user cannot
 ///   upload files at all.
-/// * [`permissions::SHARE_FILES_PUBLIC`] - additionally required for
+/// * [`Permissions::SHARE_FILES_PUBLIC`] - additionally required for
 ///   `public` and `password` modes ("link-shareable").  When denied,
 ///   the user can still upload `session`-scoped files (downloadable
 ///   only by currently-connected users) but cannot create links that
@@ -146,7 +146,7 @@ fn enforce_share_permissions(
         // build) - fall through and rely on per-channel ACLs alone.
         _ => {}
     }
-    if !plugin_ctx.has_permission(0, session_id, channel_id, permissions::SHARE_FILES) {
+    if !plugin_ctx.has_permission(0, session_id, channel_id, Permissions::SHARE_FILES) {
         tracing::warn!(
             session = session_id,
             channel = channel_id,
@@ -157,7 +157,7 @@ fn enforce_share_permissions(
         ));
     }
     if matches!(mode, AccessMode::Public | AccessMode::Password)
-        && !plugin_ctx.has_permission(0, session_id, channel_id, permissions::SHARE_FILES_PUBLIC)
+        && !plugin_ctx.has_permission(0, session_id, channel_id, Permissions::SHARE_FILES_PUBLIC)
     {
         tracing::warn!(
             session = session_id,
@@ -420,16 +420,16 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Mutex;
 
-    /// Test plugin context that returns true only for the
-    /// `(channel_id, permission_flag)` pairs in `granted`.
+    /// Test plugin context that returns true only when every flag in
+    /// the requested mask is in `granted` for the requested channel.
     #[derive(Debug, Default)]
     struct PermCtx {
-        granted: Mutex<HashSet<(u32, u32)>>,
+        granted: Mutex<HashSet<(u32, Permissions)>>,
         current_channel: Mutex<Option<u32>>,
     }
 
     impl PermCtx {
-        fn grant(&self, channel: u32, perm: u32) {
+        fn grant(&self, channel: u32, perm: Permissions) {
             let _ = self.granted.lock().unwrap().insert((channel, perm));
         }
         fn set_current_channel(&self, c: Option<u32>) {
@@ -453,8 +453,15 @@ mod tests {
         fn user_has_channel_access(&self, _: u32, _: u32, _: u32) -> bool {
             true
         }
-        fn has_permission(&self, _server: u32, _session: u32, channel: u32, perm: u32) -> bool {
-            self.granted.lock().unwrap().contains(&(channel, perm))
+        fn has_permission(
+            &self,
+            _server: u32,
+            _session: u32,
+            channel: u32,
+            perm: Permissions,
+        ) -> bool {
+            let granted = self.granted.lock().unwrap();
+            perm.iter().all(|flag| granted.contains(&(channel, flag)))
         }
         fn current_channel(&self, _server: u32, _session: u32) -> Option<u32> {
             *self.current_channel.lock().unwrap()
@@ -488,7 +495,7 @@ mod tests {
     #[test]
     fn session_mode_only_requires_share_files() {
         let ctx = PermCtx::default();
-        ctx.grant(0, permissions::SHARE_FILES);
+        ctx.grant(0, Permissions::SHARE_FILES);
         // ShareFilesPublic is intentionally NOT granted.
         enforce_share_permissions(&ctx, 1, 0, AccessMode::Session)
             .expect("session-mode upload should be permitted with ShareFiles only");
@@ -497,13 +504,13 @@ mod tests {
     #[test]
     fn public_mode_requires_both_permissions() {
         let ctx = PermCtx::default();
-        ctx.grant(0, permissions::SHARE_FILES);
+        ctx.grant(0, Permissions::SHARE_FILES);
         // Missing SHARE_FILES_PUBLIC -> public denied.
         assert_forbidden(
             enforce_share_permissions(&ctx, 1, 0, AccessMode::Public),
             "public",
         );
-        ctx.grant(0, permissions::SHARE_FILES_PUBLIC);
+        ctx.grant(0, Permissions::SHARE_FILES_PUBLIC);
         enforce_share_permissions(&ctx, 1, 0, AccessMode::Public)
             .expect("public upload should be permitted once both flags are granted");
     }
@@ -511,12 +518,12 @@ mod tests {
     #[test]
     fn password_mode_requires_share_files_public() {
         let ctx = PermCtx::default();
-        ctx.grant(0, permissions::SHARE_FILES);
+        ctx.grant(0, Permissions::SHARE_FILES);
         assert_forbidden(
             enforce_share_permissions(&ctx, 1, 0, AccessMode::Password),
             "public",
         );
-        ctx.grant(0, permissions::SHARE_FILES_PUBLIC);
+        ctx.grant(0, Permissions::SHARE_FILES_PUBLIC);
         enforce_share_permissions(&ctx, 1, 0, AccessMode::Password)
             .expect("password upload should be permitted once both flags are granted");
     }
@@ -525,8 +532,8 @@ mod tests {
     fn permissions_are_per_channel() {
         let ctx = PermCtx::default();
         // Granted only on channel 5.
-        ctx.grant(5, permissions::SHARE_FILES);
-        ctx.grant(5, permissions::SHARE_FILES_PUBLIC);
+        ctx.grant(5, Permissions::SHARE_FILES);
+        ctx.grant(5, Permissions::SHARE_FILES_PUBLIC);
         enforce_share_permissions(&ctx, 1, 5, AccessMode::Public)
             .expect("upload to channel 5 should succeed");
         assert_forbidden(
@@ -538,8 +545,8 @@ mod tests {
     #[test]
     fn channel_id_mismatch_is_rejected() {
         let ctx = PermCtx::default();
-        ctx.grant(5, permissions::SHARE_FILES);
-        ctx.grant(5, permissions::SHARE_FILES_PUBLIC);
+        ctx.grant(5, Permissions::SHARE_FILES);
+        ctx.grant(5, Permissions::SHARE_FILES_PUBLIC);
         // Session is actually in channel 7 but is claiming channel 5.
         ctx.set_current_channel(Some(7));
         assert_forbidden(
@@ -551,8 +558,8 @@ mod tests {
     #[test]
     fn channel_id_match_is_allowed() {
         let ctx = PermCtx::default();
-        ctx.grant(5, permissions::SHARE_FILES);
-        ctx.grant(5, permissions::SHARE_FILES_PUBLIC);
+        ctx.grant(5, Permissions::SHARE_FILES);
+        ctx.grant(5, Permissions::SHARE_FILES_PUBLIC);
         ctx.set_current_channel(Some(5));
         enforce_share_permissions(&ctx, 1, 5, AccessMode::Public)
             .expect("matching channel should be allowed");

@@ -185,10 +185,15 @@ impl AppState {
         session: SessionId,
         channel_id: ChannelId,
     ) -> bool {
-        use mumble_plugin_api::permissions::{ENTER, TEXT_MESSAGE};
+        use mumble_plugin_api::Permissions;
         let ctx = &self.inner.ctx;
         ctx.is_session_active(server_id, session)
-            && ctx.has_permission(server_id, session, channel_id, ENTER | TEXT_MESSAGE)
+            && ctx.has_permission(
+                server_id,
+                session,
+                channel_id,
+                Permissions::ENTER | Permissions::TEXT_MESSAGE,
+            )
     }
 
     /// Persist every active room and forget them.  Called on plugin
