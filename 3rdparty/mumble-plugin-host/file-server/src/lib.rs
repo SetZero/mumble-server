@@ -111,7 +111,7 @@ impl MumblePlugin for FileServerPlugin {
         }
     }
 
-    fn on_unload(&self) -> PluginResult<()> {
+    fn on_unload(&self, _ctx: &PluginContext_TO<RArc<()>>) -> PluginResult<()> {
         let Some(mut running) = self.inner.lock().ok().and_then(|mut g| g.take()) else {
             return ROk(());
         };
@@ -121,7 +121,7 @@ impl MumblePlugin for FileServerPlugin {
         ROk(())
     }
 
-    fn on_client_connected(&self, info: ClientInfo) -> PluginResult<()> {
+    fn on_client_connected(&self, _ctx: &PluginContext_TO<RArc<()>>, info: ClientInfo) -> PluginResult<()> {
         let Ok(guard) = self.inner.lock() else {
             return PluginResult::RErr(PluginError::Other("file-server state poisoned".into()));
         };
@@ -145,7 +145,7 @@ impl MumblePlugin for FileServerPlugin {
         ROk(())
     }
 
-    fn on_client_disconnected(&self, _server: ServerId, session: SessionId) -> PluginResult<()> {
+    fn on_client_disconnected(&self, _ctx: &PluginContext_TO<RArc<()>>, _server: ServerId, session: SessionId) -> PluginResult<()> {
         let Ok(guard) = self.inner.lock() else {
             return ROk(());
         };
@@ -167,6 +167,7 @@ impl MumblePlugin for FileServerPlugin {
 
     fn on_plugin_data(
         &self,
+        _ctx: &PluginContext_TO<RArc<()>>,
         _server: ServerId,
         _sender: SessionId,
         _data_id: RStr<'_>,

@@ -107,6 +107,13 @@ private:
                                                bool channelIdPresent, uint32_t channelId);
         static int setConfigTrampoline(void *userData, const char *key, const char *value);
         static int deleteConfigPrefixTrampoline(void *userData, const char *prefix);
+        static uint32_t *sessionsInChannelTrampoline(void *userData, uint32_t serverId,
+                                                     uint32_t channelId, size_t *outCount);
+        static uint32_t *allSessionsTrampoline(void *userData, uint32_t serverId,
+                                               size_t *outCount);
+        static bool findSessionByNameTrampoline(void *userData, uint32_t serverId,
+                                                const char *name, uint32_t *outSession);
+        static void freeSessionsTrampoline(void *userData, uint32_t *ptr, size_t count);
 
         Server *m_server;
         PluginHostHandle *m_handle;

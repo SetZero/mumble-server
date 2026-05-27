@@ -320,20 +320,78 @@ pub struct InteractionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ResponseKind {
-    /// Render a (chat-style) message with optional interactive
-    /// components attached.
-    Message {
-        /// Stable identifier so later [`Self::UpdateMessage`] responses
-        /// can target this exact card.  Use a UUID; the client treats
-        /// the value as opaque.
-        message_id: String,
-        /// Markdown body shown above the components.  May be empty.
+    /// Open a modal form or floating card.
+    ///
+    /// A unified "overlay" response: the client renders a transient,
+    /// non-persistent surface on top of the chat.  When `components`
+    /// contains only modal-eligible inputs (text inputs, file uploads,
+    /// selects, ...), the client treats it as a *modal dialog* and the
+    /// user's submission is delivered back as an
+    /// [`InteractionKind::ModalSubmit`] keyed by `custom_id`.  When
+    /// `components` includes display-only or button-style content, the
+    /// client renders the same payload as a floating *card* and clicks
+    /// arrive as [`InteractionKind::Component`] events.
+    ///
+    /// This variant subsumes the legacy `Message` kind: pass an empty
+    /// `title` to drop the title bar, leave `components` empty for a
+    /// content-only banner, or skip both for a plain text overlay.
+    ShowModal {
+        /// Echoed verbatim back in the matching
+        /// [`InteractionKind::ModalSubmit::custom_id`] (modal flow)
+        /// or accepted by [`Self::UpdateMessage::message_id`] (card
+        /// patch flow).  Use a UUID; the client treats it as opaque.
+        custom_id: String,
+        /// Window / card title.  May be empty for a chrome-less card.
+        #[serde(default)]
+        title: String,
+        /// Markdown body shown above the components.  May be empty
+        /// when the payload is component-only or title-only.
         #[serde(default)]
         content: String,
-        /// Top-level rows / layout components.  Up to five
-        /// [`ActionRow`]s, optionally interleaved with rich-layout
-        /// primitives (containers, sections, separators, text
-        /// displays, ...).
+        /// Form rows or layout components.  Modals accept any
+        /// modal-eligible component (text input, [`Label`]-wrapped
+        /// child, file upload, radio/checkbox group, single
+        /// checkbox, any select); cards accept the full layout
+        /// vocabulary (containers, sections, separators, text
+        /// displays, buttons, ...).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        components: Vec<ActionRow>,
+        /// When `true`, only the originating user sees the overlay.
+        /// Always treated as `true` when
+        /// [`InteractionResponse::correlation_id`] is `None`, since
+        /// there is no other recipient to fan out to.
+        #[serde(default)]
+        ephemeral: bool,
+    },
+    /// Inject a *literal* chat message into the client's chat
+    /// history, exactly like a [`mumble_protocol::proto::mumble_tcp::TextMessage`]
+    /// authored by the plugin.
+    ///
+    /// Unlike [`Self::ShowModal`] (which renders as a transient
+    /// floating overlay / modal), `ChatMessage` is persisted in the
+    /// channel/DM message list and participates in scroll, quoting,
+    /// pinning, and history just like a user-sent message.  Optional
+    /// [`ActionRow`] components are rendered inside the chat bubble
+    /// below the markdown body.
+    ChatMessage {
+        /// Stable identifier so later [`Self::UpdateMessage`] responses
+        /// can target this exact message.  Use a UUID; the client
+        /// treats the value as opaque.
+        message_id: String,
+        /// Target channel ids.  When empty, the client routes the
+        /// message to the chat tab the originating interaction came
+        /// from (i.e. the currently-viewed channel or DM).  Supply
+        /// more than one entry to fan the same bubble out to several
+        /// channels at once.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        channel_ids: Vec<u32>,
+        /// Markdown body shown inside the chat bubble.  May be empty
+        /// when the payload is component-only.
+        #[serde(default)]
+        content: String,
+        /// Top-level rows / layout components rendered below the body
+        /// inside the same chat bubble.  Same vocabulary as
+        /// [`Self::ShowModal::components`].
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         components: Vec<ActionRow>,
         /// When `true`, only the originating user sees the message.
@@ -342,22 +400,12 @@ pub enum ResponseKind {
         #[serde(default)]
         ephemeral: bool,
     },
-    /// Open a modal form.  The client returns the submitted values as
-    /// an [`InteractionKind::ModalSubmit`].
-    ShowModal {
-        /// Echoed verbatim back in the matching
-        /// [`InteractionKind::ModalSubmit::custom_id`].
-        custom_id: String,
-        /// Window title.
-        title: String,
-        /// Form rows.  Modals accept any modal-eligible component
-        /// (text input, [`Label`]-wrapped child, file upload,
-        /// radio/checkbox group, single checkbox, any select).
-        components: Vec<ActionRow>,
-    },
-    /// Patch an existing message previously sent via [`Self::Message`].
+    /// Patch an existing message previously sent via
+    /// [`Self::ShowModal`] (card patch) or [`Self::ChatMessage`]
+    /// (chat bubble patch).
     UpdateMessage {
-        /// `message_id` from the original [`Self::Message`].
+        /// `custom_id` from the original [`Self::ShowModal`] or
+        /// `message_id` from the original [`Self::ChatMessage`].
         message_id: String,
         /// New content; `None` keeps the existing body.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -467,8 +515,9 @@ mod tests {
     fn response_message_with_buttons() {
         let resp = InteractionResponse {
             correlation_id: Some("abc-123".into()),
-            kind: ResponseKind::Message {
-                message_id: "m1".into(),
+            kind: ResponseKind::ShowModal {
+                custom_id: "m1".into(),
+                title: String::new(),
                 content: "Choose one".into(),
                 components: vec![ActionRow::new()
                     .push(Button::new("yes", "Yes").style(ButtonStyle::Success))
@@ -477,16 +526,68 @@ mod tests {
             },
         };
         let json = serde_json::to_string(&resp).expect("encode");
-        assert!(json.contains("\"kind\":\"message\""));
+        assert!(json.contains("\"kind\":\"show-modal\""));
         assert!(json.contains("\"type\":\"button\""));
         let back: InteractionResponse = serde_json::from_str(&json).expect("decode");
         match back.kind {
-            ResponseKind::Message { components, .. } => {
+            ResponseKind::ShowModal { components, .. } => {
                 assert_eq!(components.len(), 1);
                 assert_eq!(components[0].components.len(), 2);
             }
-            _ => panic!("expected Message"),
+            _ => panic!("expected ShowModal"),
         }
+    }
+
+    #[test]
+    fn chat_message_response_round_trip() {
+        let resp = InteractionResponse {
+            correlation_id: Some("cid".into()),
+            kind: ResponseKind::ChatMessage {
+                message_id: "mid".into(),
+                channel_ids: vec![7, 11],
+                content: "hello chat".into(),
+                components: vec![ActionRow::new()
+                    .push(Button::new("ok", "OK").style(ButtonStyle::Primary))],
+                ephemeral: false,
+            },
+        };
+        let json = serde_json::to_string(&resp).expect("encode");
+        assert!(json.contains("\"kind\":\"chat-message\""));
+        assert!(json.contains("\"channel_ids\":[7,11]"));
+        let back: InteractionResponse = serde_json::from_str(&json).expect("decode");
+        match back.kind {
+            ResponseKind::ChatMessage {
+                message_id,
+                channel_ids,
+                content,
+                components,
+                ephemeral,
+            } => {
+                assert_eq!(message_id, "mid");
+                assert_eq!(channel_ids, vec![7, 11]);
+                assert_eq!(content, "hello chat");
+                assert_eq!(components.len(), 1);
+                assert!(!ephemeral);
+            }
+            _ => panic!("expected ChatMessage"),
+        }
+    }
+
+    #[test]
+    fn chat_message_response_omits_empty_channels() {
+        let resp = InteractionResponse {
+            correlation_id: None,
+            kind: ResponseKind::ChatMessage {
+                message_id: "mid".into(),
+                channel_ids: vec![],
+                content: "body".into(),
+                components: vec![],
+                ephemeral: false,
+            },
+        };
+        let json = serde_json::to_string(&resp).expect("encode");
+        assert!(!json.contains("channel_ids"));
+        assert!(!json.contains("components"));
     }
 
     #[test]

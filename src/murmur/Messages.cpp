@@ -3735,6 +3735,24 @@ void broadcastPluginAdminList(Server *server) {
 		server->sendMessage(u, reply);
 	}
 }
+
+void broadcastPluginRegistry(Server *server) {
+	if (!server->m_pluginHost || !server->m_pluginHost->isLoaded()) {
+		return;
+	}
+	MumbleProto::PluginRegistry registry;
+	server->m_pluginHost->fillRegistry(registry);
+	const auto minVersion = Version::fromComponents(0, 3, 0);
+	for (ServerUser *u : server->qhUsers) {
+		if (u->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!u->m_FancyVersion.has_value() || u->m_FancyVersion.value() < minVersion) {
+			continue;
+		}
+		server->sendMessage(u, registry);
+	}
+}
 } // namespace
 
 void Server::msgFancyPluginAdminListRequest(ServerUser *uSource,
@@ -3797,6 +3815,7 @@ void Server::msgFancyPluginAdminSetEnabled(ServerUser *uSource,
 		log(uSource, QString("plugin %1 %2")
 						 .arg(name, QLatin1String(enabled ? "enabled" : "disabled")));
 		broadcastPluginAdminList(this);
+		broadcastPluginRegistry(this);
 	}
 }
 
@@ -3835,6 +3854,7 @@ void Server::msgFancyPluginAdminInstall(ServerUser *uSource,
 		log(uSource,
 			QString("plugin %1 installed (%2)").arg(result.pluginName, marketplaceId));
 		broadcastPluginAdminList(this);
+		broadcastPluginRegistry(this);
 	} else {
 		log(uSource,
 			QString("plugin install failed (%1): %2").arg(marketplaceId, result.error));
@@ -3868,6 +3888,7 @@ void Server::msgFancyPluginAdminUninstall(ServerUser *uSource,
 	if (result.ok) {
 		log(uSource, QString("plugin %1 uninstalled").arg(name));
 		broadcastPluginAdminList(this);
+		broadcastPluginRegistry(this);
 	}
 }
 

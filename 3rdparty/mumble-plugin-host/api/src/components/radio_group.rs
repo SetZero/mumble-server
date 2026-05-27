@@ -1,11 +1,13 @@
-//! [`RadioGroup`] — modal-only single-choice option set.  Discord
-//! component type `21`.
+//! [`RadioGroup`] — single-choice option set.  Discord component
+//! type `21`.  Available in modal forms and in chat-bubble /
+//! overlay component trees: the client renders it as a vertical
+//! stack of native radio inputs in both contexts.
 
 use serde::{Deserialize, Serialize};
 
 use super::Component;
 
-/// Single-choice modal option set.
+/// Single-choice option set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadioGroup {
     /// Echoed in the modal-submit payload.

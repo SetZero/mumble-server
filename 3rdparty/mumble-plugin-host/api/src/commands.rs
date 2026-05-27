@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use abi_stable::std_types::{RArc, RNone, RString, RVec};
+use abi_stable::std_types::{RArc, RNone, RSome, RString, RVec};
 
 use crate::client_manifest::{Interaction, InteractionResponse, OptionValue};
 use crate::plugin::{PluginContext_TO, PluginMessageIn, PluginMessageOut};
@@ -290,6 +290,89 @@ pub fn send_interaction_response(
     }
 }
 
+/// Wrap an [`InteractionResponse`] into a `PluginMessage` envelope and
+/// fan it out to an explicit set of recipient sessions.
+///
+/// Use this when a plugin needs to deliver the same response (typically
+/// a [`ResponseKind::ChatMessage`] or [`ResponseKind::UpdateMessage`])
+/// to more than just the originator — for example to every voter in a
+/// channel-scoped poll.
+///
+/// The `plugin_name` should match the plugin's own
+/// [`MumblePlugin::name`](crate::MumblePlugin::name); the host uses it
+/// to stamp the outbound envelope and route component callbacks back
+/// to the right plugin.
+///
+/// [`ResponseKind::ChatMessage`]: crate::ResponseKind::ChatMessage
+/// [`ResponseKind::UpdateMessage`]: crate::ResponseKind::UpdateMessage
+pub fn send_interaction_response_to_sessions(
+    ctx: &PluginContext_TO<RArc<()>>,
+    server_id: crate::ServerId,
+    plugin_name: &str,
+    sessions: &[crate::SessionId],
+    response: InteractionResponse,
+) {
+    if sessions.is_empty() {
+        log_warn("send_interaction_response_to_sessions: empty session list, dropping");
+        return;
+    }
+    let bytes = match serde_json::to_vec(&response) {
+        Ok(b) => b,
+        Err(e) => {
+            log_warn(&format!(
+                "dropping InteractionResponse: serialize failed: {e}"
+            ));
+            return;
+        }
+    };
+    let mut targets: RVec<crate::SessionId> = RVec::new();
+    targets.extend(sessions.iter().copied());
+    let out = PluginMessageOut {
+        server_id,
+        plugin_name: RString::from(plugin_name),
+        payload_type: RString::from(INTERACTION_RESPONSE_PAYLOAD_TYPE),
+        payload: RVec::from(bytes),
+        target_sessions: targets,
+        channel_id: RNone,
+    };
+    if let abi_stable::std_types::RResult::RErr(e) = ctx.send_plugin_message(out) {
+        log_warn(&format!("send_plugin_message failed: {e:?}"));
+    }
+}
+
+/// Wrap an [`InteractionResponse`] into a `PluginMessage` envelope and
+/// fan it out to every current member of `channel_id`.  Membership is
+/// resolved by the host at delivery time, so users who join the
+/// channel after this call do **not** receive a copy.
+pub fn send_interaction_response_to_channel(
+    ctx: &PluginContext_TO<RArc<()>>,
+    server_id: crate::ServerId,
+    plugin_name: &str,
+    channel_id: crate::ChannelId,
+    response: InteractionResponse,
+) {
+    let bytes = match serde_json::to_vec(&response) {
+        Ok(b) => b,
+        Err(e) => {
+            log_warn(&format!(
+                "dropping InteractionResponse: serialize failed: {e}"
+            ));
+            return;
+        }
+    };
+    let out = PluginMessageOut {
+        server_id,
+        plugin_name: RString::from(plugin_name),
+        payload_type: RString::from(INTERACTION_RESPONSE_PAYLOAD_TYPE),
+        payload: RVec::from(bytes),
+        target_sessions: RVec::new(),
+        channel_id: RSome(channel_id),
+    };
+    if let abi_stable::std_types::RResult::RErr(e) = ctx.send_plugin_message(out) {
+        log_warn(&format!("send_plugin_message failed: {e:?}"));
+    }
+}
+
 fn log_warn(msg: &str) {
     // The api crate has no logging dep; print to stderr so misbehaving
     // commands still leave a trace.  Real plugins typically embed a
@@ -303,29 +386,89 @@ fn log_warn(msg: &str) {
 // ---------------------------------------------------------------------------
 
 impl InteractionResponse {
-    /// Build a plain chat-style message response with no components.
-    /// Generates a random `message_id`; use [`Self::message_with_id`]
-    /// if you need to update the same card later via
-    /// [`crate::ResponseKind::UpdateMessage`].
+    /// Build a plain overlay response (no title, no components) with
+    /// a random `custom_id`.  The body renders as a transient floating
+    /// card; pass it to [`Self::row`] to attach interactive components
+    /// or to [`Self::ephemeral`] to scope it to the originating user.
+    ///
+    /// Use [`Self::message_with_id`] if you intend to update the same
+    /// card later via [`crate::ResponseKind::UpdateMessage`].
     #[must_use]
     pub fn message(body: impl Into<String>) -> Self {
         Self::message_with_id(random_message_id(), body)
     }
 
-    /// Build a chat-style message with a caller-chosen `message_id`.
-    /// Required if you intend to update this message via a later
-    /// [`crate::ResponseKind::UpdateMessage`].
+    /// Build a plain overlay response with a caller-chosen
+    /// `custom_id`.  Required if you intend to update the same card
+    /// later via [`crate::ResponseKind::UpdateMessage`] (whose
+    /// `message_id` field is matched against this `custom_id`).
     #[must_use]
     pub fn message_with_id(message_id: impl Into<String>, body: impl Into<String>) -> Self {
         Self {
             correlation_id: None,
-            kind: crate::ResponseKind::Message {
-                message_id: message_id.into(),
+            kind: crate::ResponseKind::ShowModal {
+                custom_id: message_id.into(),
+                title: String::new(),
                 content: body.into(),
                 components: Vec::new(),
                 ephemeral: false,
             },
         }
+    }
+
+    /// Build a literal chat message (inserted into the client's
+    /// channel/DM history) with a random `message_id`.  Chain
+    /// [`Self::channel`] to target a specific channel and
+    /// [`Self::row`] to attach components.
+    ///
+    /// Unlike [`Self::message`] (which renders as a transient floating
+    /// overlay), responses built here appear inline in the chat
+    /// scroll, authored by the plugin as if it were a user.
+    #[must_use]
+    pub fn chat_message(body: impl Into<String>) -> Self {
+        Self::chat_message_with_id(random_message_id(), body)
+    }
+
+    /// Build a literal chat message with a caller-chosen `message_id`.
+    /// Required if you intend to update it via a later
+    /// [`crate::ResponseKind::UpdateMessage`].
+    #[must_use]
+    pub fn chat_message_with_id(message_id: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            correlation_id: None,
+            kind: crate::ResponseKind::ChatMessage {
+                message_id: message_id.into(),
+                channel_ids: Vec::new(),
+                content: body.into(),
+                components: Vec::new(),
+                ephemeral: false,
+            },
+        }
+    }
+
+    /// Append a target channel id to a `ChatMessage` response.
+    /// When no channels are added, the client routes the message to
+    /// the chat tab the originating interaction came from.  Call
+    /// repeatedly (or use [`Self::channels`]) to fan the same bubble
+    /// out to multiple channels at once.  No-op on other kinds.
+    #[must_use]
+    pub fn channel(mut self, id: u32) -> Self {
+        if let crate::ResponseKind::ChatMessage { channel_ids, .. } = &mut self.kind {
+            channel_ids.push(id);
+        }
+        self
+    }
+
+    /// Replace the target channel id list on a `ChatMessage`
+    /// response.  Pass an empty iterator to clear the list (which
+    /// reverts the routing to "originating chat tab").  No-op on
+    /// other kinds.
+    #[must_use]
+    pub fn channels(mut self, ids: impl IntoIterator<Item = u32>) -> Self {
+        if let crate::ResponseKind::ChatMessage { channel_ids, .. } = &mut self.kind {
+            *channel_ids = ids.into_iter().collect();
+        }
+        self
     }
 
     /// Build a transient toast response with severity
@@ -352,12 +495,16 @@ impl InteractionResponse {
         self
     }
 
-    /// Mark a chat message as ephemeral (only visible to the
-    /// originating user).  No-op on non-Message responses.
+    /// Mark an overlay or chat message as ephemeral (only visible to
+    /// the originating user).  Applies to
+    /// [`crate::ResponseKind::ShowModal`] and
+    /// [`crate::ResponseKind::ChatMessage`].  No-op on other kinds.
     #[must_use]
     pub fn ephemeral(mut self) -> Self {
-        if let crate::ResponseKind::Message { ephemeral, .. } = &mut self.kind {
-            *ephemeral = true;
+        match &mut self.kind {
+            crate::ResponseKind::ShowModal { ephemeral, .. }
+            | crate::ResponseKind::ChatMessage { ephemeral, .. } => *ephemeral = true,
+            _ => {}
         }
         self
     }
@@ -372,27 +519,31 @@ impl InteractionResponse {
         self
     }
 
-    /// Append an [`ActionRow`] of components to a `Message` response.
-    /// No-op (with a `debug_assert`) on other response kinds.
+    /// Append an [`ActionRow`] of components to an overlay or
+    /// chat-message response.  No-op (with a `debug_assert`) on
+    /// other response kinds.
     #[must_use]
     pub fn row(mut self, row: crate::ActionRow) -> Self {
         match &mut self.kind {
-            crate::ResponseKind::Message { components, .. } => components.push(row),
+            crate::ResponseKind::ShowModal { components, .. }
+            | crate::ResponseKind::ChatMessage { components, .. } => components.push(row),
             crate::ResponseKind::UpdateMessage { components, .. } => {
                 components.get_or_insert_with(Vec::new).push(row);
             }
             other => {
                 debug_assert!(
                     false,
-                    "InteractionResponse::row called on non-Message kind: {other:?}"
+                    "InteractionResponse::row called on unsupported kind: {other:?}"
                 );
             }
         }
         self
     }
 
-    /// Build a `ShowModal` response with no fields.  Chain
-    /// [`Self::field`] to populate the form.
+    /// Build a `ShowModal` response with no content and no fields.
+    /// Chain [`Self::field`] to populate the form, [`Self::row`] to
+    /// add display components, or [`Self::ephemeral`] to scope it to
+    /// the originating user.
     #[must_use]
     pub fn show_modal(custom_id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
@@ -400,7 +551,9 @@ impl InteractionResponse {
             kind: crate::ResponseKind::ShowModal {
                 custom_id: custom_id.into(),
                 title: title.into(),
+                content: String::new(),
                 components: Vec::new(),
+                ephemeral: false,
             },
         }
     }

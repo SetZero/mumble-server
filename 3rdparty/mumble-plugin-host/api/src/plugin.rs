@@ -2,7 +2,7 @@
 
 use abi_stable::{
     sabi_trait,
-    std_types::{RArc, ROk, ROption, RSlice, RStr, RString},
+    std_types::{RArc, ROk, ROption, RSlice, RStr, RString, RVec},
     StableAbi,
 };
 
@@ -108,6 +108,38 @@ pub trait PluginContext: Send + Sync + 'static {
     /// host forwards to every recipient listed in `msg.target_sessions`
     /// or, when empty, every member of `msg.channel_id`.
     fn send_plugin_message(&self, msg: PluginMessageOut) -> PluginResult<()>;
+
+    /// Returns the session IDs of every user currently joined to
+    /// `channel`.  Returns an empty vector if the channel is unknown
+    /// or the host does not implement enumeration.
+    fn sessions_in_channel(
+        &self,
+        server_id: ServerId,
+        channel: ChannelId,
+    ) -> RVec<SessionId> {
+        let _ = (server_id, channel);
+        RVec::new()
+    }
+
+    /// Returns the session IDs of every connected user on `server_id`.
+    /// Returns an empty vector if the host does not implement
+    /// enumeration.
+    fn all_sessions(&self, server_id: ServerId) -> RVec<SessionId> {
+        let _ = server_id;
+        RVec::new()
+    }
+
+    /// Resolve a username (exact match) to its current session ID.
+    /// Returns `RNone` when no connected user carries that name or
+    /// when the host does not implement name lookup.
+    fn find_session_by_name(
+        &self,
+        server_id: ServerId,
+        name: RStr<'_>,
+    ) -> ROption<SessionId> {
+        let _ = (server_id, name);
+        abi_stable::std_types::RNone
+    }
 }
 
 /// FFI-safe shape of every loadable plugin.
@@ -133,46 +165,68 @@ pub trait MumblePlugin: Send + Sync + 'static {
     }
 
     /// Called once when the plugin is loaded.
+    ///
+    /// `ctx` is given to the plugin by value so it may be retained
+    /// (e.g. cloned via `RArc` into background tasks).  The host
+    /// keeps its own independent handle to the same underlying
+    /// context, so every later callback receives an equivalent
+    /// reference - plugins that don't need long-lived access can
+    /// simply drop the owned handle at the end of `on_load`.
     fn on_load(&self, ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {
         let _ = ctx;
         ROk(())
     }
 
     /// Called once when the plugin is unloaded (server shutdown).
-    fn on_unload(&self) -> PluginResult<()> {
+    fn on_unload(&self, ctx: &PluginContext_TO<RArc<()>>) -> PluginResult<()> {
+        let _ = ctx;
         ROk(())
     }
 
     /// Fires when a client successfully authenticates and joins the
     /// server's user table.
-    fn on_client_connected(&self, info: ClientInfo) -> PluginResult<()> {
-        let _ = info;
+    fn on_client_connected(
+        &self,
+        ctx: &PluginContext_TO<RArc<()>>,
+        info: ClientInfo,
+    ) -> PluginResult<()> {
+        let _ = (ctx, info);
         ROk(())
     }
 
     /// Fires when a client disconnects.
-    fn on_client_disconnected(&self, server_id: ServerId, session: SessionId) -> PluginResult<()> {
-        let _ = (server_id, session);
+    fn on_client_disconnected(
+        &self,
+        ctx: &PluginContext_TO<RArc<()>>,
+        server_id: ServerId,
+        session: SessionId,
+    ) -> PluginResult<()> {
+        let _ = (ctx, server_id, session);
         ROk(())
     }
 
     /// Fires for every `PluginDataTransmission` the server receives.
     fn on_plugin_data(
         &self,
+        ctx: &PluginContext_TO<RArc<()>>,
         server_id: ServerId,
         sender: SessionId,
         data_id: RStr<'_>,
         data: RSlice<'_, u8>,
     ) -> PluginResult<()> {
-        let _ = (server_id, sender, data_id, data);
+        let _ = (ctx, server_id, sender, data_id, data);
         ROk(())
     }
 
     /// Receives a generic `PluginMessage` envelope (wire ID 200) whose
     /// `plugin_name` matches this plugin.  Only one plugin handles
     /// each inbound envelope; there is no fan-out.
-    fn on_plugin_message(&self, msg: PluginMessageIn) -> PluginResult<()> {
-        let _ = msg;
+    fn on_plugin_message(
+        &self,
+        ctx: &PluginContext_TO<RArc<()>>,
+        msg: PluginMessageIn,
+    ) -> PluginResult<()> {
+        let _ = (ctx, msg);
         ROk(())
     }
 }

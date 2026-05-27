@@ -40,6 +40,10 @@ PluginHostManager::PluginHostManager(Server *server, QObject *parent)
         cb.send_plugin_message    = &PluginHostManager::sendPluginMessageTrampoline;
         cb.set_config             = &PluginHostManager::setConfigTrampoline;
         cb.delete_config_prefix   = &PluginHostManager::deleteConfigPrefixTrampoline;
+        cb.sessions_in_channel    = &PluginHostManager::sessionsInChannelTrampoline;
+        cb.all_sessions           = &PluginHostManager::allSessionsTrampoline;
+        cb.find_session_by_name   = &PluginHostManager::findSessionByNameTrampoline;
+        cb.free_sessions          = &PluginHostManager::freeSessionsTrampoline;
 	m_handle = plugin_host_create(&cb);
 }
 
@@ -452,4 +456,101 @@ int PluginHostManager::deleteConfigPrefixTrampoline(void *userData, const char *
                 }
         }
         return 0;
+}
+
+namespace {
+// Allocate a u32 array of length `n` via malloc so the Rust host's
+// free_sessions trampoline (which calls std::free) can release it.
+// Returns nullptr on allocation failure or when n == 0.
+uint32_t *allocSessionArray(size_t n) {
+        if (n == 0) {
+                return nullptr;
+        }
+        return static_cast< uint32_t * >(std::malloc(sizeof(uint32_t) * n));
+}
+} // namespace
+
+uint32_t *PluginHostManager::sessionsInChannelTrampoline(void *userData, uint32_t /*serverId*/,
+                                                          uint32_t channelId, size_t *outCount) {
+        if (outCount) {
+                *outCount = 0;
+        }
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server || !outCount) {
+                return nullptr;
+        }
+        QReadLocker rl(&self->m_server->qrwlVoiceThread);
+        ::Channel *chan = self->m_server->qhChannels.value(channelId);
+        if (!chan) {
+                return nullptr;
+        }
+        const auto &members = chan->qlUsers;
+        const size_t n      = static_cast< size_t >(members.size());
+        if (n == 0) {
+                return nullptr;
+        }
+        uint32_t *buf = allocSessionArray(n);
+        if (!buf) {
+                return nullptr;
+        }
+        size_t i = 0;
+        for (const ::User *u : members) {
+                if (u) {
+                        buf[i++] = u->uiSession;
+                }
+        }
+        *outCount = i;
+        return buf;
+}
+
+uint32_t *PluginHostManager::allSessionsTrampoline(void *userData, uint32_t /*serverId*/,
+                                                    size_t *outCount) {
+        if (outCount) {
+                *outCount = 0;
+        }
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server || !outCount) {
+                return nullptr;
+        }
+        QReadLocker rl(&self->m_server->qrwlVoiceThread);
+        const auto sessions = self->m_server->qhUsers.keys();
+        const size_t n      = static_cast< size_t >(sessions.size());
+        if (n == 0) {
+                return nullptr;
+        }
+        uint32_t *buf = allocSessionArray(n);
+        if (!buf) {
+                return nullptr;
+        }
+        for (size_t i = 0; i < n; ++i) {
+                buf[i] = sessions[static_cast< int >(i)];
+        }
+        *outCount = n;
+        return buf;
+}
+
+bool PluginHostManager::findSessionByNameTrampoline(void *userData, uint32_t /*serverId*/,
+                                                     const char *name, uint32_t *outSession) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server || !name || !outSession) {
+                return false;
+        }
+        const QString target = QString::fromUtf8(name);
+        QReadLocker rl(&self->m_server->qrwlVoiceThread);
+        for (auto it = self->m_server->qhUsers.constBegin();
+             it != self->m_server->qhUsers.constEnd(); ++it) {
+                ServerUser *u = it.value();
+                if (u && u->qsName == target) {
+                        *outSession = u->uiSession;
+                        return true;
+                }
+        }
+        return false;
+}
+
+void PluginHostManager::freeSessionsTrampoline(void * /*userData*/, uint32_t *ptr,
+                                                size_t /*count*/) {
+        if (ptr) {
+                std::free(ptr);
+        }
 }

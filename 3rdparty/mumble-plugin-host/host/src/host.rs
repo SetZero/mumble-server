@@ -49,6 +49,12 @@ struct Entry {
     /// plugin failed to advertise valid JSON (logged once at load).
     info_envelope: Option<Vec<u8>>,
     plugin: LoadedPlugin,
+    /// Per-plugin `PluginContext_TO` owned by the host.  Populated
+    /// alongside [`Entry::loaded`] flipping to `true`; cleared on
+    /// unload.  Every callback dispatched into the plugin passes a
+    /// reference into this slot so the plugin never has to store the
+    /// context itself.
+    ctx: Option<PluginContext_TO<RArc<()>>>,
     /// `true` once `on_load` has been invoked; flipped back to `false`
     /// by [`Drop`] or [`Host::set_enabled`].  Dispatch skips entries
     /// with `loaded == false`.
@@ -82,10 +88,14 @@ impl Drop for Entry {
         // here, so plugins always see exactly one on_unload matching
         // their on_load.
         if self.loaded {
-            if let abi_stable::std_types::RResult::RErr(e) = self.plugin.plugin.on_unload() {
-                tracing::warn!(plugin = %self.name, error = %e, "on_unload failed");
+            if let Some(ctx) = self.ctx.as_ref() {
+                if let abi_stable::std_types::RResult::RErr(e) = self.plugin.plugin.on_unload(ctx)
+                {
+                    tracing::warn!(plugin = %self.name, error = %e, "on_unload failed");
+                }
             }
             self.loaded = false;
+            self.ctx = None;
         }
     }
 }
@@ -218,8 +228,11 @@ impl Host {
     /// ship each plugin's `fancy-plugin-info` envelope to the session.
     pub(crate) fn on_client_connected(&self, info: ClientInfo) {
         for entry in self.plugins.iter().filter(|e| e.loaded) {
+            let Some(ctx) = entry.ctx.as_ref() else {
+                continue;
+            };
             if let abi_stable::std_types::RResult::RErr(e) =
-                entry.plugin.plugin.on_client_connected(info.clone())
+                entry.plugin.plugin.on_client_connected(ctx, info.clone())
             {
                 tracing::warn!(plugin = %entry.name, error = %e, "on_client_connected failed");
             }
@@ -241,10 +254,13 @@ impl Host {
     /// Dispatch a client-disconnected event.
     pub(crate) fn on_client_disconnected(&self, server_id: ServerId, session: SessionId) {
         for entry in self.plugins.iter().filter(|e| e.loaded) {
+            let Some(ctx) = entry.ctx.as_ref() else {
+                continue;
+            };
             if let abi_stable::std_types::RResult::RErr(e) = entry
                 .plugin
                 .plugin
-                .on_client_disconnected(server_id, session)
+                .on_client_disconnected(ctx, server_id, session)
             {
                 tracing::warn!(plugin = %entry.name, error = %e, "on_client_disconnected failed");
             }
@@ -262,10 +278,13 @@ impl Host {
         let id = RStr::from(data_id.as_str());
         let bytes = RSlice::from(data.as_slice());
         for entry in self.plugins.iter().filter(|e| e.loaded) {
+            let Some(ctx) = entry.ctx.as_ref() else {
+                continue;
+            };
             if let abi_stable::std_types::RResult::RErr(e) = entry
                 .plugin
                 .plugin
-                .on_plugin_data(server_id, sender, id, bytes)
+                .on_plugin_data(ctx, server_id, sender, id, bytes)
             {
                 tracing::warn!(plugin = %entry.name, error = %e, "on_plugin_data failed");
             }
@@ -294,7 +313,11 @@ impl Host {
             channel_id: args.channel_id.map_or(RNone, RSome),
         };
         let _ = args.target_sessions; // routing happens server-side; ignored here
-        if let abi_stable::std_types::RResult::RErr(e) = entry.plugin.plugin.on_plugin_message(msg)
+        let Some(ctx) = entry.ctx.as_ref() else {
+            return;
+        };
+        if let abi_stable::std_types::RResult::RErr(e) =
+            entry.plugin.plugin.on_plugin_message(ctx, msg)
         {
             tracing::warn!(plugin = %args.plugin_name, error = %e, "on_plugin_message failed");
         }
@@ -362,16 +385,36 @@ impl Host {
         }
         if enabled {
             let prefix = format!("plugin.{name}");
-            let scoped = ScopedContext::new(Arc::clone(&self.base_context), prefix);
-            let ctx_to =
-                PluginContext_TO::from_ptr(RArc::new(scoped), abi_stable::sabi_trait::TD_Opaque);
-            if let abi_stable::std_types::RResult::RErr(e) = entry.plugin.plugin.on_load(ctx_to) {
+            // Build two independent trait objects backed by
+            // equivalent ScopedContexts: one is handed by value to
+            // `on_load` so the plugin can retain it across threads,
+            // the other stays in `Entry` so later callbacks (which
+            // take `&ctx`) and `on_unload` can be dispatched without
+            // depending on whether the plugin held on to its copy.
+            let host_ctx_to = PluginContext_TO::from_ptr(
+                RArc::new(ScopedContext::new(Arc::clone(&self.base_context), prefix.clone())),
+                abi_stable::sabi_trait::TD_Opaque,
+            );
+            let plugin_ctx_to = PluginContext_TO::from_ptr(
+                RArc::new(ScopedContext::new(Arc::clone(&self.base_context), prefix)),
+                abi_stable::sabi_trait::TD_Opaque,
+            );
+            entry.ctx = Some(host_ctx_to);
+            if let abi_stable::std_types::RResult::RErr(e) =
+                entry.plugin.plugin.on_load(plugin_ctx_to)
+            {
+                entry.ctx = None;
                 return Err(format!("on_load failed: {e}"));
             }
             entry.loaded = true;
         } else {
-            let result = entry.plugin.plugin.on_unload();
+            let result = entry
+                .ctx
+                .as_ref()
+                .map(|ctx| entry.plugin.plugin.on_unload(ctx))
+                .unwrap_or(abi_stable::std_types::RResult::ROk(()));
             entry.loaded = false;
+            entry.ctx = None;
             if let abi_stable::std_types::RResult::RErr(e) = result {
                 return Err(format!("on_unload failed: {e}"));
             }
@@ -532,16 +575,30 @@ fn build_entry(
         version,
         info_envelope,
         plugin: loaded,
+        ctx: None,
         loaded: false,
         marketplace_id,
         installed_at,
         builtin: false,
     };
     if enabled {
-        let scoped = ScopedContext::new(Arc::clone(base_context), prefix);
-        let ctx_to =
-            PluginContext_TO::from_ptr(RArc::new(scoped), abi_stable::sabi_trait::TD_Opaque);
-        if let abi_stable::std_types::RResult::RErr(e) = entry.plugin.plugin.on_load(ctx_to) {
+        // Build two independent trait objects backed by equivalent
+        // ScopedContexts (see [`HostState::set_enabled`] for the
+        // rationale): one is given to the plugin's `on_load`, the
+        // other is kept in `Entry.ctx` for borrowed-reference
+        // callbacks and `on_unload`.
+        let host_ctx_to = PluginContext_TO::from_ptr(
+            RArc::new(ScopedContext::new(Arc::clone(base_context), prefix.clone())),
+            abi_stable::sabi_trait::TD_Opaque,
+        );
+        let plugin_ctx_to = PluginContext_TO::from_ptr(
+            RArc::new(ScopedContext::new(Arc::clone(base_context), prefix)),
+            abi_stable::sabi_trait::TD_Opaque,
+        );
+        entry.ctx = Some(host_ctx_to);
+        if let abi_stable::std_types::RResult::RErr(e) =
+            entry.plugin.plugin.on_load(plugin_ctx_to)
+        {
             return Err(BuildEntryError::OnLoad(e.to_string()));
         }
         entry.loaded = true;

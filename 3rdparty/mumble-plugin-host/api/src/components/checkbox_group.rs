@@ -1,11 +1,13 @@
-//! [`CheckboxGroup`] — modal-only multi-choice option set.  Discord
-//! component type `22`.
+//! [`CheckboxGroup`] — multi-choice option set.  Discord component
+//! type `22`.  Available in modal forms and in chat-bubble /
+//! overlay component trees: the client renders it as a vertical
+//! stack of native checkbox inputs in both contexts.
 
 use serde::{Deserialize, Serialize};
 
 use super::Component;
 
-/// Multi-choice modal option set.
+/// Multi-choice option set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckboxGroup {
     /// Echoed in the modal-submit payload.

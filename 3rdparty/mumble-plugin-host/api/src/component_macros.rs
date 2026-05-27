@@ -53,27 +53,50 @@ macro_rules! row {
     };
 }
 
-/// Build a `Message`-kind [`crate::InteractionResponse`] from a body
-/// and zero or more [`crate::ActionRow`]s.
-///
-/// The first argument is the Markdown body (`impl Into<String>`); the
-/// remaining arguments are rows, typically produced by the [`row!`]
-/// macro.  Returns an `InteractionResponse` so callers can chain
-/// `.ephemeral()`, `.with_correlation_id(...)`, etc.
-///
-/// ```ignore
-/// use mumble_plugin_api::{message, row, Button};
-/// let resp = message!(
-///     "Hello, world",
-///     row![ Button::new("again", "Again") ],
-/// )
-/// .ephemeral();
-/// ```
+/// Build a floating-overlay [`crate::InteractionResponse`] (a\n/// title-less [`crate::ResponseKind::ShowModal`]) from a body and\n/// zero or more [`crate::ActionRow`]s.\n///\n/// The first argument is the Markdown body (`impl Into<String>`); the\n/// remaining arguments are rows, typically produced by the [`row!`]\n/// macro.  Returns an `InteractionResponse` so callers can chain\n/// `.ephemeral()`, `.with_correlation_id(...)`, etc.\n///\n/// This macro is sugar over [`crate::InteractionResponse::message`],\n/// which lowers to a `ShowModal` with an empty `title`.  Use\n/// [`show_modal!`] when you need a titled modal form, or\n/// [`chat_message!`] when the payload should be persisted in the\n/// chat history instead of rendered as a transient overlay.\n///\n/// ```ignore\n/// use mumble_plugin_api::{message, row, Button};\n/// let resp = message!(\n///     \"Hello, world\",\n///     row![ Button::new(\"again\", \"Again\") ],\n/// )\n/// .ephemeral();\n/// ```
 #[macro_export]
 macro_rules! message {
     ($content:expr $(, $row:expr)* $(,)?) => {{
         #[allow(unused_mut, reason = "macro-generated when no rows are given")]
         let mut __r = $crate::InteractionResponse::message($content);
+        $( __r = __r.row($row); )*
+        __r
+    }};
+}
+
+/// Build a `ChatMessage`-kind [`crate::InteractionResponse`] - a
+/// literal chat message inserted into the client's channel/DM
+/// history, exactly like a [`mumble_protocol::proto::mumble_tcp::TextMessage`]
+/// authored by the plugin.
+///
+/// Same argument shape as [`message!`]: the first argument is the
+/// Markdown body, followed by zero or more
+/// [`crate::ActionRow`]s (typically produced by [`row!`]).  Chain
+/// `.channel(id)` (append a target) or `.channels(ids)` (set the
+/// whole list), plus `.ephemeral()` or `.with_correlation_id(...)`,
+/// on the returned [`crate::InteractionResponse`].
+///
+/// Unlike [`message!`], the resulting payload is **not** rendered as
+/// a transient floating card; it appears inline in the chat scroll
+/// alongside user-sent messages and participates in scroll, pinning,
+/// and history.
+///
+/// ```ignore
+/// use mumble_plugin_api::{chat_message, row, Button};
+/// // Plain body, posted to the originating chat tab:
+/// return chat_message!("Welcome to the channel!");
+/// // Body + interactive components, fanned out to several channels:
+/// return chat_message!(
+///     "Pick one:",
+///     row![ Button::new("ok", "OK"), Button::new("cancel", "Cancel") ],
+/// )
+/// .channels([42, 43]);
+/// ```
+#[macro_export]
+macro_rules! chat_message {
+    ($content:expr $(, $row:expr)* $(,)?) => {{
+        #[allow(unused_mut, reason = "macro-generated when no rows are given")]
+        let mut __r = $crate::InteractionResponse::chat_message($content);
         $( __r = __r.row($row); )*
         __r
     }};
@@ -215,16 +238,18 @@ mod tests {
             row![Button::new("ok", "OK").style(ButtonStyle::Success)],
         )
         .ephemeral();
-        let ResponseKind::Message {
+        let ResponseKind::ShowModal {
             content,
             components,
             ephemeral,
+            title,
             ..
         } = resp.kind
         else {
-            panic!("expected Message");
+            panic!("expected ShowModal");
         };
         assert_eq!(content, "hi");
+        assert!(title.is_empty());
         assert_eq!(components.len(), 1);
         assert!(ephemeral);
     }
@@ -232,10 +257,71 @@ mod tests {
     #[test]
     fn message_macro_zero_rows_compiles() {
         let resp = message!("hi");
-        let ResponseKind::Message { components, .. } = resp.kind else {
-            panic!("expected Message");
+        let ResponseKind::ShowModal {
+            components,
+            content,
+            title,
+            ephemeral,
+            ..
+        } = resp.kind
+        else {
+            panic!("expected ShowModal");
         };
         assert!(components.is_empty());
+        assert_eq!(content, "hi");
+        assert!(title.is_empty());
+        assert!(!ephemeral);
+    }
+
+    #[test]
+    fn chat_message_macro_attaches_rows_and_chains() {
+        let resp = chat_message!(
+            "hello chat",
+            row![Button::new("ok", "OK").style(ButtonStyle::Success)],
+        )
+        .channel(42)
+        .channel(43)
+        .ephemeral();
+        let ResponseKind::ChatMessage {
+            content,
+            components,
+            channel_ids,
+            ephemeral,
+            ..
+        } = resp.kind
+        else {
+            panic!("expected ChatMessage");
+        };
+        assert_eq!(content, "hello chat");
+        assert_eq!(components.len(), 1);
+        assert_eq!(channel_ids, vec![42, 43]);
+        assert!(ephemeral);
+    }
+
+    #[test]
+    fn chat_message_macro_channels_replaces_list() {
+        let resp = chat_message!("body").channel(1).channels([7, 9, 11]);
+        let ResponseKind::ChatMessage { channel_ids, .. } = resp.kind else {
+            panic!("expected ChatMessage");
+        };
+        assert_eq!(channel_ids, vec![7, 9, 11]);
+    }
+
+    #[test]
+    fn chat_message_macro_zero_rows_compiles() {
+        let resp = chat_message!("plain body");
+        let ResponseKind::ChatMessage {
+            components,
+            channel_ids,
+            ephemeral,
+            ..
+        } = resp.kind
+        else {
+            panic!("expected ChatMessage");
+        };
+        assert!(components.is_empty());
+        assert!(channel_ids.is_empty());
+        assert!(!ephemeral);
     }
 
     #[test]

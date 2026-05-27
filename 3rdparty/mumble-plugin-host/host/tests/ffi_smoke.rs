@@ -110,6 +110,10 @@ fn create_dispatch_destroy_roundtrip() {
         send_plugin_message: None,
         set_config: None,
         delete_config_prefix: None,
+        sessions_in_channel: None,
+        all_sessions: None,
+        find_session_by_name: None,
+        free_sessions: None,
     };
 
     let handle = unsafe { plugin_host_create(&cb) };

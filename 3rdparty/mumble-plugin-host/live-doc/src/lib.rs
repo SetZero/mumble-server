@@ -130,7 +130,7 @@ impl MumblePlugin for LiveDocPlugin {
         }
     }
 
-    fn on_unload(&self) -> PluginResult<()> {
+    fn on_unload(&self, _ctx: &PluginContext_TO<RArc<()>>) -> PluginResult<()> {
         let Some(mut running) = self.inner.lock().ok().and_then(|mut g| g.take()) else {
             return ROk(());
         };
@@ -142,13 +142,13 @@ impl MumblePlugin for LiveDocPlugin {
         ROk(())
     }
 
-    fn on_client_connected(&self, _info: ClientInfo) -> PluginResult<()> {
+    fn on_client_connected(&self, _ctx: &PluginContext_TO<RArc<()>>, _info: ClientInfo) -> PluginResult<()> {
         // Configuration is advertised via `fancy-plugin-info` (info_json),
         // so there is nothing to send out per-client here.
         ROk(())
     }
 
-    fn on_client_disconnected(&self, server_id: ServerId, session: SessionId) -> PluginResult<()> {
+    fn on_client_disconnected(&self, _ctx: &PluginContext_TO<RArc<()>>, server_id: ServerId, session: SessionId) -> PluginResult<()> {
         let Ok(guard) = self.inner.lock() else {
             return ROk(());
         };
@@ -164,6 +164,7 @@ impl MumblePlugin for LiveDocPlugin {
 
     fn on_plugin_data(
         &self,
+        _ctx: &PluginContext_TO<RArc<()>>,
         server_id: ServerId,
         sender: SessionId,
         data_id: RStr<'_>,
@@ -186,7 +187,7 @@ impl MumblePlugin for LiveDocPlugin {
         ROk(())
     }
 
-    fn on_plugin_message(&self, msg: PluginMessageIn) -> PluginResult<()> {
+    fn on_plugin_message(&self, _ctx: &PluginContext_TO<RArc<()>>, msg: PluginMessageIn) -> PluginResult<()> {
         if msg.payload_type.as_str() != "OpenRequest" {
             return ROk(());
         }

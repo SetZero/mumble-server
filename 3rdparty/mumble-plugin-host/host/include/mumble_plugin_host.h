@@ -117,6 +117,37 @@ typedef struct PluginHostCallbacks {
    * strip its `plugin.<name>.*` keys from the server settings.
    */
   int (*delete_config_prefix)(void *user_data, const char *prefix);
+  /**
+   * Enumerate every session currently joined to `channel_id` on
+   * `server_id`.  On success the host allocates an array of
+   * `*out_count` `u32` session IDs (via the host's allocator) and
+   * returns the pointer; the caller releases it via
+   * [`Self::free_sessions`].  Returns NULL on failure (including
+   * when the channel is unknown).
+   */
+  uint32_t *(*sessions_in_channel)(void *user_data,
+                                   uint32_t server_id,
+                                   uint32_t channel_id,
+                                   uintptr_t *out_count);
+  /**
+   * Enumerate every connected session on `server_id`.  Same
+   * allocation contract as [`Self::sessions_in_channel`].
+   */
+  uint32_t *(*all_sessions)(void *user_data, uint32_t server_id, uintptr_t *out_count);
+  /**
+   * Resolve a username (exact match) to a session ID, writing the
+   * result through `out_session`.  Returns `true` on success and
+   * `false` when no connected user carries that name.
+   */
+  bool (*find_session_by_name)(void *user_data,
+                               uint32_t server_id,
+                               const char *name,
+                               uint32_t *out_session);
+  /**
+   * Release a session-ID array previously returned by
+   * [`Self::sessions_in_channel`] or [`Self::all_sessions`].
+   */
+  void (*free_sessions)(void *user_data, uint32_t *ptr, uintptr_t count);
 } PluginHostCallbacks;
 
 #ifdef __cplusplus

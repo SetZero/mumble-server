@@ -33,6 +33,7 @@ pub mod client_manifest;
 pub mod commands;
 pub mod component_macros;
 pub mod components;
+pub mod host_facade;
 pub mod info_macros;
 pub mod permissions;
 pub mod plugin;
@@ -49,9 +50,11 @@ pub use crate::client_manifest::{
     INTERACTION_RESPONSE_PAYLOAD_TYPE,
 };
 pub use crate::commands::{
-    extract_field, extract_option, parse_interaction, send_interaction_response, FieldExtractError,
-    FromField, FromOption, OptionExtractError,
+    extract_field, extract_option, parse_interaction, send_interaction_response,
+    send_interaction_response_to_channel, send_interaction_response_to_sessions,
+    FieldExtractError, FromField, FromOption, OptionExtractError,
 };
+pub use crate::host_facade::{Caller, Host};
 #[doc(hidden)]
 pub use crate::component_macros::__text_input_with_id;
 pub use crate::permissions::Permissions;

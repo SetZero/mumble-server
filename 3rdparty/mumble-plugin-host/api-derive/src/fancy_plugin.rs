@@ -1,30 +1,39 @@
 //! `#[fancy_plugin]` attribute implementation.
 //!
-//! Walks an `impl MumblePlugin for X` block and:
+//! Walks an **inherent** `impl X { ... }` block (no trait keyword) and:
 //!
 //! * Extracts the impl-position `plugin_info! { ... }` invocation
 //!   tokens and reuses them inside a synthesised `fn info_json`.
 //! * Collects `#[command]`-tagged methods, building per-method
 //!   slash-command manifest entries and an inherent dispatch table.
-//! * Generates `fn name`, `fn version`, `fn info_json`, and (if the
-//!   user didn't write one) `fn on_plugin_message`.  When the user
-//!   *did* write `fn on_plugin_message`, the dispatch prelude is
-//!   inserted at the top of their existing body.
+//! * Collects lifecycle methods written by the user
+//!   (`on_load`, `on_unload`, `on_client_connected`,
+//!   `on_client_disconnected`, `on_plugin_data`, `on_plugin_message`),
+//!   each of which takes `host: Host<'_>` as its first parameter
+//!   after `&self`.
+//! * Generates a complete `impl MumblePlugin for X` block: every
+//!   lifecycle wrapper constructs `Host::new(ctx, name)` and calls
+//!   into the user's inherent method; users never see the raw
+//!   `PluginContext_TO`.
 //! * Emits a sibling inherent impl with the auto-generated
 //!   `__fancy_auto_slash_commands` and `__fancy_dispatch` helpers.
 //!
-//! Plugin authors must provide one accessor on the plugin type
-//! (outside the trait impl) so the dispatcher can ship responses.
-//! Callback-style because `PluginContext_TO` is not `Clone`:
+//! Plugin authors no longer store any plugin context themselves; the
+//! host crate owns the `PluginContext_TO` and passes it into every
+//! callback.
 //!
 //! ```ignore
+//! #[fancy_plugin(name = "my-plugin", version = env!("CARGO_PKG_VERSION"))]
 //! impl MyPlugin {
-//!     fn with_ctx<R>(
-//!         &self,
-//!         f: impl FnOnce(&PluginContext_TO<RArc<()>>) -> R,
-//!     ) -> Option<R> {
-//!         /* run `f` with a borrow of the stored trait object, or None when not loaded */
+//!     plugin_info! { description: "...", ... }
+//!
+//!     fn on_load(&self, host: Host<'_>) -> PluginResult<()> {
+//!         // use host.get_config(...), host.send_plugin_message(...), ...
+//!         ROk(())
 //!     }
+//!
+//!     #[command(name = "ping")]
+//!     fn ping(&self, host: Host<'_>) -> InteractionResponse { /* ... */ }
 //! }
 //! ```
 
@@ -43,6 +52,19 @@ pub(crate) fn expand(args: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let args = FancyPluginArgs::parse(args)?;
     let mut input: ItemImpl = parse2(item)?;
 
+    // The macro now generates the `impl MumblePlugin for X` block
+    // itself, so the input must be an *inherent* impl.  Refusing the
+    // legacy `impl MumblePlugin for X { ... }` shape early gives a
+    // clearer migration error than the trait-impl method conflicts
+    // that would otherwise surface.
+    if let Some((_, ref path, _)) = input.trait_ {
+        return Err(syn::Error::new_spanned(
+            path,
+            "#[fancy_plugin] now wraps an *inherent* `impl YourPlugin { ... }` block; \
+             remove the `MumblePlugin for` part - the trait impl is generated for you",
+        ));
+    }
+
     // Pull the self-type ident so we can attach an inherent impl with
     // the right path even when there are generic parameters.
     let self_ty = input.self_ty.clone();
@@ -52,9 +74,8 @@ pub(crate) fn expand(args: TokenStream, item: TokenStream) -> syn::Result<TokenS
         commands,
         mut components,
         mut modals,
-        user_on_plugin_message,
+        lifecycle,
         kept_items,
-        moved_methods,
     } = walk_impl(&mut input)?;
 
     let self_ty_ident = extract_self_ty_ident(&self_ty)?;
@@ -69,21 +90,21 @@ pub(crate) fn expand(args: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let info_json_fn = build_info_json_fn(plugin_info_tokens.as_ref());
     let name_fn = build_name_fn(name_expr);
     let version_fn = build_version_fn(&version_expr);
-    let on_msg_fn = build_on_plugin_message_fn(user_on_plugin_message);
+    let lifecycle_fns = build_lifecycle_fns(&lifecycle, name_expr);
+    let on_msg_fn = build_on_plugin_message_fn(lifecycle.on_plugin_message, name_expr);
     let auto_cmds_fn = build_auto_slash_commands_fn(&commands);
     let dispatch_fn = build_dispatch_fn(&commands, &components, &modals);
     let id_consts = build_id_consts(&commands, &components, &modals);
     let no_desc_warnings = build_no_description_warnings(&commands, &self_ty);
 
-    // Reassemble the trait impl with the user's surviving items plus
-    // the synthesised trait methods.  Order: user items first so any
-    // helper inherent calls they make resolve as written, then the
-    // generated trait methods.
+    // The user's input becomes a plain inherent impl carrying every
+    // item they wrote (handlers, lifecycle methods, helpers).  The
+    // synthesised `impl MumblePlugin for X` and the dispatch helpers
+    // live in separate sibling impls so the user's writeable surface
+    // stays uncluttered.
     input.items = kept_items;
-    input.items.push(ImplItem::Fn(name_fn));
-    input.items.push(ImplItem::Fn(version_fn));
-    input.items.push(ImplItem::Fn(info_json_fn));
-    input.items.push(ImplItem::Fn(on_msg_fn));
+
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     Ok(quote! {
         #input
@@ -93,8 +114,15 @@ pub(crate) fn expand(args: TokenStream, item: TokenStream) -> syn::Result<TokenS
             #no_desc_warnings
         };
 
-        impl #self_ty {
-            #( #moved_methods )*
+        impl #impl_generics ::mumble_plugin_api::MumblePlugin for #self_ty #ty_generics #where_clause {
+            #name_fn
+            #version_fn
+            #info_json_fn
+            #(#lifecycle_fns)*
+            #on_msg_fn
+        }
+
+        impl #impl_generics #self_ty #ty_generics #where_clause {
             #auto_cmds_fn
             #dispatch_fn
             #id_consts
@@ -155,23 +183,50 @@ struct Walked {
     commands: Vec<Command>,
     components: Vec<ComponentHandler>,
     modals: Vec<ModalHandler>,
-    user_on_plugin_message: Option<ImplItemFn>,
-    /// Items that survive into the trait impl unchanged.
+    /// Lifecycle methods (`on_load`, `on_unload`, `on_client_connected`,
+    /// `on_client_disconnected`, `on_plugin_data`, `on_plugin_message`)
+    /// the user wrote.  Each entry records *whether* the user wrote
+    /// the method (so the generated trait wrapper can call it) or
+    /// *not* (so the trait wrapper uses a no-op default).  The
+    /// methods themselves remain in [`Walked::kept_items`] as
+    /// inherent methods.
+    lifecycle: LifecyclePresence,
+    /// Every other item from the user's inherent impl, in source
+    /// order.  Includes lifecycle methods, command/component/modal
+    /// handlers (with their attribute removed), `use` items, type
+    /// aliases, plain helper methods, and so on.
     kept_items: Vec<ImplItem>,
-    /// Handler methods (`#[command]`, `#[component]`, `#[modal]`)
-    /// lifted out of the trait impl into the inherent impl alongside
-    /// the auto-generated dispatch helpers.  (Rust forbids non-trait
-    /// methods inside a trait impl, so we move them.)
-    moved_methods: Vec<ImplItemFn>,
 }
+
+#[derive(Default)]
+struct LifecyclePresence {
+    on_load: bool,
+    on_unload: bool,
+    on_client_connected: bool,
+    on_client_disconnected: bool,
+    on_plugin_data: bool,
+    /// Whether the user wrote a `fn on_plugin_message`.  When `true`,
+    /// the generated trait wrapper calls into the user's inherent
+    /// method after the auto-dispatch pass fails to claim the
+    /// envelope.  When `false`, the wrapper simply returns `ROk(())`.
+    on_plugin_message: bool,
+}
+
+const LIFECYCLE_METHOD_NAMES: &[&str] = &[
+    "on_load",
+    "on_unload",
+    "on_client_connected",
+    "on_client_disconnected",
+    "on_plugin_data",
+    "on_plugin_message",
+];
 
 fn walk_impl(input: &mut ItemImpl) -> syn::Result<Walked> {
     let mut plugin_info_tokens: Option<TokenStream> = None;
     let mut commands: Vec<Command> = Vec::new();
     let mut components: Vec<ComponentHandler> = Vec::new();
     let mut modals: Vec<ModalHandler> = Vec::new();
-    let mut moved_methods: Vec<ImplItemFn> = Vec::new();
-    let mut user_on_plugin_message: Option<ImplItemFn> = None;
+    let mut lifecycle = LifecyclePresence::default();
     let mut kept_items: Vec<ImplItem> = Vec::new();
 
     // Take ownership of items so we can move them out selectively.
@@ -197,7 +252,7 @@ fn walk_impl(input: &mut ItemImpl) -> syn::Result<Walked> {
                 }
             }
             // Functions: classify as command / component / modal /
-            // on_plugin_message / forbidden override (name/version/
+            // lifecycle hook / forbidden override (name/version/
             // info_json) / passthrough.
             ImplItem::Fn(mut f) => {
                 let ident = f.sig.ident.clone();
@@ -209,16 +264,6 @@ fn walk_impl(input: &mut ItemImpl) -> syn::Result<Walked> {
                              remove this definition or drop the attribute"
                         ),
                     ));
-                }
-                if ident == "on_plugin_message" {
-                    if user_on_plugin_message.is_some() {
-                        return Err(syn::Error::new_spanned(
-                            &f.sig.ident,
-                            "duplicate `fn on_plugin_message`",
-                        ));
-                    }
-                    user_on_plugin_message = Some(f);
-                    continue;
                 }
                 // Reject overlapping attributes up front so we don't
                 // emit confusing "duplicate id" errors later.
@@ -241,19 +286,89 @@ fn walk_impl(input: &mut ItemImpl) -> syn::Result<Walked> {
                     let cmd = parse_command(&attr, &f)?;
                     strip_param_macro_attrs(&mut f);
                     commands.push(cmd);
-                    moved_methods.push(f);
+                    kept_items.push(ImplItem::Fn(f));
                 } else if let Some(idx) = comp_idx {
                     let attr = f.attrs.remove(idx);
                     let comp = parse_component(&attr, &f)?;
                     strip_param_macro_attrs(&mut f);
                     components.push(comp);
-                    moved_methods.push(f);
+                    kept_items.push(ImplItem::Fn(f));
                 } else if let Some(idx) = modal_idx {
                     let attr = f.attrs.remove(idx);
                     let m = parse_modal(&attr, &f)?;
                     strip_param_macro_attrs(&mut f);
                     modals.push(m);
-                    moved_methods.push(f);
+                    kept_items.push(ImplItem::Fn(f));
+                } else if LIFECYCLE_METHOD_NAMES.contains(&ident.to_string().as_str()) {
+                    // Lifecycle method: record presence (and for
+                    // on_plugin_message, the original body so the
+                    // dispatch prelude can be spliced in).  The
+                    // method itself stays as an inherent method on
+                    // the user's impl so the macro-generated trait
+                    // wrapper can call `Self::on_load(self, host)`.
+                    match ident.to_string().as_str() {
+                        "on_load" => {
+                            if lifecycle.on_load {
+                                return Err(syn::Error::new_spanned(
+                                    &f.sig.ident,
+                                    "duplicate `fn on_load`",
+                                ));
+                            }
+                            lifecycle.on_load = true;
+                            kept_items.push(ImplItem::Fn(f));
+                        }
+                        "on_unload" => {
+                            if lifecycle.on_unload {
+                                return Err(syn::Error::new_spanned(
+                                    &f.sig.ident,
+                                    "duplicate `fn on_unload`",
+                                ));
+                            }
+                            lifecycle.on_unload = true;
+                            kept_items.push(ImplItem::Fn(f));
+                        }
+                        "on_client_connected" => {
+                            if lifecycle.on_client_connected {
+                                return Err(syn::Error::new_spanned(
+                                    &f.sig.ident,
+                                    "duplicate `fn on_client_connected`",
+                                ));
+                            }
+                            lifecycle.on_client_connected = true;
+                            kept_items.push(ImplItem::Fn(f));
+                        }
+                        "on_client_disconnected" => {
+                            if lifecycle.on_client_disconnected {
+                                return Err(syn::Error::new_spanned(
+                                    &f.sig.ident,
+                                    "duplicate `fn on_client_disconnected`",
+                                ));
+                            }
+                            lifecycle.on_client_disconnected = true;
+                            kept_items.push(ImplItem::Fn(f));
+                        }
+                        "on_plugin_data" => {
+                            if lifecycle.on_plugin_data {
+                                return Err(syn::Error::new_spanned(
+                                    &f.sig.ident,
+                                    "duplicate `fn on_plugin_data`",
+                                ));
+                            }
+                            lifecycle.on_plugin_data = true;
+                            kept_items.push(ImplItem::Fn(f));
+                        }
+                        "on_plugin_message" => {
+                            if lifecycle.on_plugin_message {
+                                return Err(syn::Error::new_spanned(
+                                    &f.sig.ident,
+                                    "duplicate `fn on_plugin_message`",
+                                ));
+                            }
+                            lifecycle.on_plugin_message = true;
+                            kept_items.push(ImplItem::Fn(f));
+                        }
+                        _ => unreachable!(),
+                    }
                 } else {
                     kept_items.push(ImplItem::Fn(f));
                 }
@@ -281,9 +396,8 @@ fn walk_impl(input: &mut ItemImpl) -> syn::Result<Walked> {
         commands,
         components,
         modals,
-        user_on_plugin_message,
+        lifecycle,
         kept_items,
-        moved_methods,
     })
 }
 
@@ -320,7 +434,13 @@ struct Command {
     /// Description expression (string literal, ident, or `&str` expr).
     /// `None` if absent and there's no doc-comment fallback either.
     description_expr: Option<Expr>,
-    /// Typed parameters in declaration order.
+    /// `true` when the user declared `host: Host<'_>` as the first
+    /// parameter after `&self`.  The dispatcher then injects the
+    /// active `Host` for that position; the parameter is NOT added
+    /// to the slash-command manifest.
+    takes_host: bool,
+    /// Typed parameters in declaration order (with any leading
+    /// `host: Host<'_>` excluded).
     params: Vec<CommandParam>,
 }
 
@@ -368,7 +488,7 @@ fn parse_command(attr: &Attribute, method: &ImplItemFn) -> syn::Result<Command> 
     let description_expr =
         description.or_else(|| extract_doc_string(&method.attrs).map(|s| parse_quote!(#s)));
 
-    let params = method
+    let typed: Vec<&syn::PatType> = method
         .sig
         .inputs
         .iter()
@@ -376,6 +496,28 @@ fn parse_command(attr: &Attribute, method: &ImplItemFn) -> syn::Result<Command> 
             FnArg::Receiver(_) => None,
             FnArg::Typed(pt) => Some(pt),
         })
+        .collect();
+
+    // A leading `host: Host<'_>` parameter is consumed by the
+    // dispatcher and excluded from the slash-command manifest.
+    let (takes_host, rest): (bool, &[&syn::PatType]) = match typed.split_first() {
+        Some((first, tail)) if is_host_param_type(&first.ty) => (true, tail),
+        _ => (false, typed.as_slice()),
+    };
+    // Host must come before the wire params; reject it anywhere else
+    // to keep dispatcher injection straightforward and the error
+    // message obvious.
+    for pt in rest {
+        if is_host_param_type(&pt.ty) {
+            return Err(syn::Error::new_spanned(
+                &pt.ty,
+                "`host: Host<'_>` must be the first parameter after `&self`",
+            ));
+        }
+    }
+    let params = rest
+        .iter()
+        .copied()
         .map(parse_command_param)
         .collect::<syn::Result<Vec<_>>>()?;
 
@@ -395,8 +537,24 @@ fn parse_command(attr: &Attribute, method: &ImplItemFn) -> syn::Result<Command> 
         name_expr: name,
         literal_name,
         description_expr,
+        takes_host,
         params,
     })
+}
+
+/// Detect a `host: Host<'_>` parameter type.  Match the last
+/// path-segment ident equal to `Host` so users can write either the
+/// short form (`Host<'_>`, after `use ::mumble_plugin_api::Host`) or
+/// any qualified form (`mumble_plugin_api::Host<'_>`).  The lifetime
+/// argument is not checked - any lifetime/elided lifetime is accepted.
+fn is_host_param_type(ty: &Type) -> bool {
+    let Type::Path(TypePath { qself: None, path }) = ty else {
+        return false;
+    };
+    path.segments
+        .last()
+        .map(|s| s.ident == "Host")
+        .unwrap_or(false)
 }
 
 fn parse_command_param(pt: &syn::PatType) -> syn::Result<CommandParam> {
@@ -596,47 +754,117 @@ fn build_info_json_fn(plugin_info_tokens: Option<&TokenStream>) -> ImplItemFn {
     }
 }
 
-fn build_on_plugin_message_fn(user: Option<ImplItemFn>) -> ImplItemFn {
-    // The dispatch prelude calls `self.with_ctx(...)` so plugin
-    // authors do not have to clone the (non-Clone) `PluginContext_TO`
-    // out of their inner state.  See the `#[fancy_plugin]` module
-    // docs for the required accessor signature.
-    let dispatch_prelude = quote! {
-        if let ::std::option::Option::Some(__response) = self.__fancy_dispatch(&msg) {
-            let __sent = self.with_ctx(|__ctx| {
-                ::mumble_plugin_api::send_interaction_response(__ctx, &msg, __response);
-            });
-            if __sent.is_none() {
-                ::std::eprintln!(
-                    "[mumble-plugin-api] dispatched command produced a response but \
-                     `self.with_ctx(..)` returned None; response dropped"
-                );
-            }
-            return ::abi_stable::std_types::RResult::ROk(());
+fn build_on_plugin_message_fn(user_provided: bool, name_expr: &Expr) -> ImplItemFn {
+    // The dispatch prelude builds a `Host` over the borrowed context
+    // and asks `__fancy_dispatch` to claim the envelope.  If a
+    // `#[command]` / `#[component]` / `#[modal]` handler matched, the
+    // generated response is shipped via `host.respond`.  Otherwise -
+    // and only otherwise - control falls through to the user's
+    // inherent `on_plugin_message` (when present), or to a no-op
+    // default.
+    let fallthrough = if user_provided {
+        quote! {
+            <Self>::on_plugin_message(self, __host, msg)
+        }
+    } else {
+        quote! {
+            ::abi_stable::std_types::RResult::ROk(())
         }
     };
 
-    match user {
-        Some(mut f) => {
-            // Splice the prelude in at the top of the user's body.
-            let user_stmts = std::mem::take(&mut f.block.stmts);
-            let new_block: syn::Block = parse_quote! {{
-                #dispatch_prelude
-                #(#user_stmts)*
-            }};
-            f.block = new_block;
-            f
-        }
-        None => parse_quote! {
-            fn on_plugin_message(
-                &self,
-                msg: ::mumble_plugin_api::PluginMessageIn,
-            ) -> ::mumble_plugin_api::PluginResult<()> {
-                #dispatch_prelude
-                ::abi_stable::std_types::RResult::ROk(())
+    parse_quote! {
+        fn on_plugin_message(
+            &self,
+            __ctx: &::mumble_plugin_api::PluginContext_TO<::abi_stable::std_types::RArc<()>>,
+            msg: ::mumble_plugin_api::PluginMessageIn,
+        ) -> ::mumble_plugin_api::PluginResult<()> {
+            let __host = ::mumble_plugin_api::Host::new(__ctx, #name_expr);
+            if let ::std::option::Option::Some(__response) = self.__fancy_dispatch(__host, &msg) {
+                __host.respond(&msg, __response);
+                return ::abi_stable::std_types::RResult::ROk(());
             }
-        },
+            #fallthrough
+        }
     }
+}
+
+/// Build the trait-impl wrappers for every lifecycle hook the user
+/// provided.  Each wrapper translates the FFI signature
+/// (`&PluginContext_TO<RArc<()>>` + payload) into the ergonomic
+/// `Host<'_>` shape the user wrote against, then delegates to the
+/// inherent method on `Self`.  Hooks the user didn't write are
+/// omitted entirely so the trait's default no-op impl applies.
+fn build_lifecycle_fns(presence: &LifecyclePresence, name_expr: &Expr) -> Vec<ImplItemFn> {
+    let mut fns = Vec::new();
+    if presence.on_load {
+        fns.push(parse_quote! {
+            fn on_load(
+                &self,
+                __ctx: ::mumble_plugin_api::PluginContext_TO<::abi_stable::std_types::RArc<()>>,
+            ) -> ::mumble_plugin_api::PluginResult<()> {
+                // The trait hands `on_load` an owned trait object so
+                // plugins that need long-lived access can retain it.
+                // Macro-driven plugins only see `Host<'_>`, so we
+                // build a host facade over the borrowed handle and
+                // drop the owned copy at the end of this scope.
+                let __ctx_owned = __ctx;
+                let __host = ::mumble_plugin_api::Host::new(&__ctx_owned, #name_expr);
+                <Self>::on_load(self, __host)
+            }
+        });
+    }
+    if presence.on_unload {
+        fns.push(parse_quote! {
+            fn on_unload(
+                &self,
+                __ctx: &::mumble_plugin_api::PluginContext_TO<::abi_stable::std_types::RArc<()>>,
+            ) -> ::mumble_plugin_api::PluginResult<()> {
+                let __host = ::mumble_plugin_api::Host::new(__ctx, #name_expr);
+                <Self>::on_unload(self, __host)
+            }
+        });
+    }
+    if presence.on_client_connected {
+        fns.push(parse_quote! {
+            fn on_client_connected(
+                &self,
+                __ctx: &::mumble_plugin_api::PluginContext_TO<::abi_stable::std_types::RArc<()>>,
+                info: ::mumble_plugin_api::ClientInfo,
+            ) -> ::mumble_plugin_api::PluginResult<()> {
+                let __host = ::mumble_plugin_api::Host::new(__ctx, #name_expr);
+                <Self>::on_client_connected(self, __host, info)
+            }
+        });
+    }
+    if presence.on_client_disconnected {
+        fns.push(parse_quote! {
+            fn on_client_disconnected(
+                &self,
+                __ctx: &::mumble_plugin_api::PluginContext_TO<::abi_stable::std_types::RArc<()>>,
+                server_id: ::mumble_plugin_api::ServerId,
+                session: ::mumble_plugin_api::SessionId,
+            ) -> ::mumble_plugin_api::PluginResult<()> {
+                let __host = ::mumble_plugin_api::Host::new(__ctx, #name_expr);
+                <Self>::on_client_disconnected(self, __host, server_id, session)
+            }
+        });
+    }
+    if presence.on_plugin_data {
+        fns.push(parse_quote! {
+            fn on_plugin_data(
+                &self,
+                __ctx: &::mumble_plugin_api::PluginContext_TO<::abi_stable::std_types::RArc<()>>,
+                server_id: ::mumble_plugin_api::ServerId,
+                sender: ::mumble_plugin_api::SessionId,
+                data_id: ::abi_stable::std_types::RStr<'_>,
+                data: ::abi_stable::std_types::RSlice<'_, u8>,
+            ) -> ::mumble_plugin_api::PluginResult<()> {
+                let __host = ::mumble_plugin_api::Host::new(__ctx, #name_expr);
+                <Self>::on_plugin_data(self, __host, server_id, sender, data_id, data)
+            }
+        });
+    }
+    fns
 }
 
 // ---------------------------------------------------------------------------
@@ -714,10 +942,15 @@ fn build_dispatch_fn(
             }
         });
         let arg_idents = c.params.iter().map(|p| &p.ident);
+        let host_prefix = if c.takes_host {
+            quote!(__host,)
+        } else {
+            TokenStream::new()
+        };
         quote! {
             __name if __name == ::std::convert::AsRef::<str>::as_ref(#name_expr) => {
                 #(#extractions)*
-                let mut __resp = self.#method( #(#arg_idents),* );
+                let mut __resp = self.#method( #host_prefix #(#arg_idents),* );
                 if __resp.correlation_id.is_none() {
                     __resp.correlation_id = ::std::option::Option::Some(__correlation_id.to_owned());
                 }
@@ -729,10 +962,18 @@ fn build_dispatch_fn(
     let component_arms = components.iter().map(|c| {
         let method = &c.method_ident;
         let id_expr = &c.custom_id_expr;
+        let host_prefix = if c.takes_host {
+            quote!(__host,)
+        } else {
+            TokenStream::new()
+        };
         let call = match c.values_binding {
-            ComponentValuesBinding::None => quote! { self.#method() },
+            ComponentValuesBinding::None => quote! { self.#method( #host_prefix ) },
             ComponentValuesBinding::Values => quote! {
-                self.#method(__values.iter().map(::std::string::ToString::to_string).collect::<::std::vec::Vec<::std::string::String>>())
+                self.#method(
+                    #host_prefix
+                    __values.iter().map(::std::string::ToString::to_string).collect::<::std::vec::Vec<::std::string::String>>(),
+                )
             },
         };
         quote! {
@@ -772,10 +1013,15 @@ fn build_dispatch_fn(
             }
         });
         let arg_idents = m.fields.iter().map(|f| &f.ident);
+        let host_prefix = if m.takes_host {
+            quote!(__host,)
+        } else {
+            TokenStream::new()
+        };
         quote! {
             __cid if __cid == ::std::convert::AsRef::<str>::as_ref(#id_expr) => {
                 #(#extractions)*
-                let mut __resp = self.#method( #(#arg_idents),* );
+                let mut __resp = self.#method( #host_prefix #(#arg_idents),* );
                 if __resp.correlation_id.is_none() {
                     __resp.correlation_id = ::std::option::Option::Some(__correlation_id.to_owned());
                 }
@@ -789,14 +1035,29 @@ fn build_dispatch_fn(
         #[allow(non_snake_case, reason = "macro-generated identifier")]
         fn __fancy_dispatch(
             &self,
+            __host: ::mumble_plugin_api::Host<'_>,
             __msg: &::mumble_plugin_api::PluginMessageIn,
         ) -> ::std::option::Option<::mumble_plugin_api::InteractionResponse> {
+            // `__host` is always available for handlers; suppress the
+            // unused warning when no handler claims it.
+            let _ = __host;
             if __msg.payload_type.as_str() != ::mumble_plugin_api::INTERACTION_PAYLOAD_TYPE {
                 return ::std::option::Option::None;
             }
             let __interaction = ::mumble_plugin_api::parse_interaction(__msg)?;
             let __correlation_id = __interaction.correlation_id.clone();
             let __correlation_id: &::std::primitive::str = __correlation_id.as_str();
+            // Rebuild `__host` with caller context so handlers can
+            // call `host.caller()` to find out who triggered them.
+            let __host = ::mumble_plugin_api::Host::with_caller(
+                __host.raw(),
+                __host.plugin_name(),
+                ::mumble_plugin_api::Caller::new(
+                    __msg.server_id,
+                    __msg.sender_session,
+                    __interaction.channel_id,
+                ),
+            );
             match &__interaction.kind {
                 ::mumble_plugin_api::InteractionKind::SlashCommand { name, options, .. } => {
                     let __name: &str = name.as_str();
@@ -876,6 +1137,10 @@ struct ComponentHandler {
     literal_custom_id: Option<String>,
     /// Whether the handler takes a `values: Vec<String>` parameter.
     values_binding: ComponentValuesBinding,
+    /// `true` when the user declared `host: Host<'_>` as the first
+    /// parameter after `&self` (the dispatcher injects the active
+    /// `Host` and the parameter is excluded from any manifest).
+    takes_host: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -889,6 +1154,9 @@ struct ModalHandler {
     custom_id_expr: Expr,
     literal_custom_id: Option<String>,
     fields: Vec<ModalField>,
+    /// `true` when the user declared `host: Host<'_>` as the first
+    /// parameter after `&self`.
+    takes_host: bool,
 }
 
 struct ModalField {
@@ -928,8 +1196,10 @@ fn parse_component(attr: &Attribute, method: &ImplItemFn) -> syn::Result<Compone
         ));
     }
 
-    // Classify the non-self parameter list: either zero params or a
-    // single `Vec<String>` named `values`.
+    // Classify the non-self parameter list.  A leading `host:
+    // Host<'_>` parameter is consumed by the dispatcher.  After
+    // that, the handler accepts either zero parameters or a single
+    // `Vec<String>` named `values`.
     let typed: Vec<&syn::PatType> = method
         .sig
         .inputs
@@ -939,14 +1209,26 @@ fn parse_component(attr: &Attribute, method: &ImplItemFn) -> syn::Result<Compone
             FnArg::Receiver(_) => None,
         })
         .collect();
-    let values_binding = match typed.as_slice() {
+    let (takes_host, rest): (bool, &[&syn::PatType]) = match typed.split_first() {
+        Some((first, tail)) if is_host_param_type(&first.ty) => (true, tail),
+        _ => (false, typed.as_slice()),
+    };
+    for pt in rest {
+        if is_host_param_type(&pt.ty) {
+            return Err(syn::Error::new_spanned(
+                &pt.ty,
+                "`host: Host<'_>` must be the first parameter after `&self`",
+            ));
+        }
+    }
+    let values_binding = match rest {
         [] => ComponentValuesBinding::None,
         [pt] => {
             if !type_is_vec_string(&pt.ty) {
                 return Err(syn::Error::new_spanned(
                     &pt.ty,
-                    "#[component] methods accept either no parameters or a single \
-                     `Vec<String>` parameter",
+                    "#[component] methods accept an optional `host: Host<'_>` followed by \
+                     either no parameters or a single `Vec<String>` parameter",
                 ));
             }
             ComponentValuesBinding::Values
@@ -954,8 +1236,8 @@ fn parse_component(attr: &Attribute, method: &ImplItemFn) -> syn::Result<Compone
         _ => {
             return Err(syn::Error::new_spanned(
                 &method.sig.inputs,
-                "#[component] methods accept either no parameters or a single \
-                 `Vec<String>` parameter",
+                "#[component] methods accept an optional `host: Host<'_>` followed by \
+                 either no parameters or a single `Vec<String>` parameter",
             ));
         }
     };
@@ -965,6 +1247,7 @@ fn parse_component(attr: &Attribute, method: &ImplItemFn) -> syn::Result<Compone
         custom_id_expr,
         literal_custom_id,
         values_binding,
+        takes_host,
     })
 }
 
@@ -1000,16 +1283,38 @@ fn parse_modal(attr: &Attribute, method: &ImplItemFn) -> syn::Result<ModalHandle
     }
 
     let mut fields: Vec<ModalField> = Vec::new();
+    let mut takes_host = false;
+    let mut saw_field = false;
     for input in &method.sig.inputs {
         let FnArg::Typed(pt) = input else { continue };
+        // A leading `host: Host<'_>` is consumed by the dispatcher.
+        // It must precede every `#[field]` param so injection is
+        // positional and obvious.
+        if is_host_param_type(&pt.ty) {
+            if saw_field {
+                return Err(syn::Error::new_spanned(
+                    &pt.ty,
+                    "`host: Host<'_>` must be the first parameter after `&self`",
+                ));
+            }
+            if takes_host {
+                return Err(syn::Error::new_spanned(
+                    &pt.ty,
+                    "duplicate `host: Host<'_>` parameter",
+                ));
+            }
+            takes_host = true;
+            continue;
+        }
         let has_field = pt.attrs.iter().any(|a| a.path().is_ident("field"));
         if !has_field {
             return Err(syn::Error::new_spanned(
                 pt,
-                "every parameter of a #[modal] method (other than `&self`) must be \
-                 tagged with `#[field]`",
+                "every parameter of a #[modal] method (other than `&self` and an \
+                 optional leading `host: Host<'_>`) must be tagged with `#[field]`",
             ));
         }
+        saw_field = true;
         let ident = match &*pt.pat {
             Pat::Ident(p) => p.ident.clone(),
             _ => {
@@ -1042,6 +1347,7 @@ fn parse_modal(attr: &Attribute, method: &ImplItemFn) -> syn::Result<ModalHandle
         custom_id_expr,
         literal_custom_id,
         fields,
+        takes_host,
     })
 }
 

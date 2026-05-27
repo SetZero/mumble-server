@@ -7,7 +7,7 @@ use std::os::raw::c_void;
 use std::ptr;
 use std::sync::Arc;
 
-use abi_stable::std_types::{RNone, ROption, RSlice, RSome, RStr, RString};
+use abi_stable::std_types::{RNone, ROption, RSlice, RSome, RStr, RString, RVec};
 use mumble_plugin_api::{
     ChannelId, PluginContext, PluginError, PluginMessageOut, PluginResult, ServerId, SessionId,
 };
@@ -120,6 +120,48 @@ pub struct PluginHostCallbacks {
     /// strip its `plugin.<name>.*` keys from the server settings.
     pub delete_config_prefix:
         Option<unsafe extern "C" fn(user_data: *mut c_void, prefix: *const c_char) -> c_int>,
+
+    /// Enumerate every session currently joined to `channel_id` on
+    /// `server_id`.  On success the host allocates an array of
+    /// `*out_count` `u32` session IDs (via the host's allocator) and
+    /// returns the pointer; the caller releases it via
+    /// [`Self::free_sessions`].  Returns NULL on failure (including
+    /// when the channel is unknown).
+    pub sessions_in_channel: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            server_id: u32,
+            channel_id: u32,
+            out_count: *mut usize,
+        ) -> *mut u32,
+    >,
+
+    /// Enumerate every connected session on `server_id`.  Same
+    /// allocation contract as [`Self::sessions_in_channel`].
+    pub all_sessions: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            server_id: u32,
+            out_count: *mut usize,
+        ) -> *mut u32,
+    >,
+
+    /// Resolve a username (exact match) to a session ID, writing the
+    /// result through `out_session`.  Returns `true` on success and
+    /// `false` when no connected user carries that name.
+    pub find_session_by_name: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            server_id: u32,
+            name: *const c_char,
+            out_session: *mut u32,
+        ) -> bool,
+    >,
+
+    /// Release a session-ID array previously returned by
+    /// [`Self::sessions_in_channel`] or [`Self::all_sessions`].
+    pub free_sessions:
+        Option<unsafe extern "C" fn(user_data: *mut c_void, ptr: *mut u32, count: usize)>,
 }
 
 // SAFETY: callbacks are documented as thread-safe; user_data is owned
@@ -406,4 +448,97 @@ impl PluginContext for ScopedContext {
             ))
         }
     }
+
+    fn sessions_in_channel(
+        &self,
+        server_id: ServerId,
+        channel: ChannelId,
+    ) -> RVec<SessionId> {
+        let Some(func) = self.inner.callbacks.sessions_in_channel else {
+            return RVec::new();
+        };
+        let mut count: usize = 0;
+        // SAFETY: callback non-null; `count` is a valid stack slot.
+        let ptr = unsafe {
+            func(
+                self.inner.callbacks.user_data,
+                server_id,
+                channel,
+                &mut count,
+            )
+        };
+        copy_and_free_sessions(self, ptr, count)
+    }
+
+    fn all_sessions(&self, server_id: ServerId) -> RVec<SessionId> {
+        let Some(func) = self.inner.callbacks.all_sessions else {
+            return RVec::new();
+        };
+        let mut count: usize = 0;
+        // SAFETY: callback non-null; `count` is a valid stack slot.
+        let ptr = unsafe { func(self.inner.callbacks.user_data, server_id, &mut count) };
+        copy_and_free_sessions(self, ptr, count)
+    }
+
+    fn find_session_by_name(
+        &self,
+        server_id: ServerId,
+        name: RStr<'_>,
+    ) -> ROption<SessionId> {
+        let Some(func) = self.inner.callbacks.find_session_by_name else {
+            return RNone;
+        };
+        let Ok(name_c) = CString::new(name.as_str()) else {
+            return RNone;
+        };
+        let mut out: u32 = 0;
+        // SAFETY: callback non-null; name_c outlives the call; `out`
+        // is a valid stack slot.
+        let ok = unsafe {
+            func(
+                self.inner.callbacks.user_data,
+                server_id,
+                name_c.as_ptr(),
+                &mut out,
+            )
+        };
+        if ok {
+            RSome(out)
+        } else {
+            RNone
+        }
+    }
+}
+
+/// Copy a host-allocated session-ID array into an `RVec` and release
+/// the original buffer via the host's `free_sessions` callback.  When
+/// the buffer is empty or the free callback is missing the data is
+/// left untouched (leaking is preferable to a double-free in the
+/// missing-callback case).
+fn copy_and_free_sessions(
+    ctx: &ScopedContext,
+    ptr: *mut u32,
+    count: usize,
+) -> RVec<SessionId> {
+    if ptr.is_null() || count == 0 {
+        if !ptr.is_null() {
+            if let Some(free) = ctx.inner.callbacks.free_sessions {
+                // SAFETY: `ptr` came from the host's allocator and
+                // `count` matches the host-reported length.
+                unsafe { free(ctx.inner.callbacks.user_data, ptr, count) };
+            }
+        }
+        return RVec::new();
+    }
+    // SAFETY: host promises `ptr` points to `count` readable `u32`s.
+    let slice = unsafe { std::slice::from_raw_parts(ptr, count) };
+    let mut out: RVec<SessionId> = RVec::with_capacity(count);
+    for s in slice {
+        out.push(*s);
+    }
+    if let Some(free) = ctx.inner.callbacks.free_sessions {
+        // SAFETY: `ptr` came from the host allocator; freed exactly once.
+        unsafe { free(ctx.inner.callbacks.user_data, ptr, count) };
+    }
+    out
 }
