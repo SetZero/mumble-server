@@ -112,11 +112,7 @@ pub trait PluginContext: Send + Sync + 'static {
     /// Returns the session IDs of every user currently joined to
     /// `channel`.  Returns an empty vector if the channel is unknown
     /// or the host does not implement enumeration.
-    fn sessions_in_channel(
-        &self,
-        server_id: ServerId,
-        channel: ChannelId,
-    ) -> RVec<SessionId> {
+    fn sessions_in_channel(&self, server_id: ServerId, channel: ChannelId) -> RVec<SessionId> {
         let _ = (server_id, channel);
         RVec::new()
     }
@@ -132,11 +128,7 @@ pub trait PluginContext: Send + Sync + 'static {
     /// Resolve a username (exact match) to its current session ID.
     /// Returns `RNone` when no connected user carries that name or
     /// when the host does not implement name lookup.
-    fn find_session_by_name(
-        &self,
-        server_id: ServerId,
-        name: RStr<'_>,
-    ) -> ROption<SessionId> {
+    fn find_session_by_name(&self, server_id: ServerId, name: RStr<'_>) -> ROption<SessionId> {
         let _ = (server_id, name);
         abi_stable::std_types::RNone
     }

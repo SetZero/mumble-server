@@ -121,7 +121,11 @@ impl MumblePlugin for FileServerPlugin {
         ROk(())
     }
 
-    fn on_client_connected(&self, _ctx: &PluginContext_TO<RArc<()>>, info: ClientInfo) -> PluginResult<()> {
+    fn on_client_connected(
+        &self,
+        _ctx: &PluginContext_TO<RArc<()>>,
+        info: ClientInfo,
+    ) -> PluginResult<()> {
         let Ok(guard) = self.inner.lock() else {
             return PluginResult::RErr(PluginError::Other("file-server state poisoned".into()));
         };
@@ -145,7 +149,12 @@ impl MumblePlugin for FileServerPlugin {
         ROk(())
     }
 
-    fn on_client_disconnected(&self, _ctx: &PluginContext_TO<RArc<()>>, _server: ServerId, session: SessionId) -> PluginResult<()> {
+    fn on_client_disconnected(
+        &self,
+        _ctx: &PluginContext_TO<RArc<()>>,
+        _server: ServerId,
+        session: SessionId,
+    ) -> PluginResult<()> {
         let Ok(guard) = self.inner.lock() else {
             return ROk(());
         };

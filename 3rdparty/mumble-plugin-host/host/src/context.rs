@@ -449,11 +449,7 @@ impl PluginContext for ScopedContext {
         }
     }
 
-    fn sessions_in_channel(
-        &self,
-        server_id: ServerId,
-        channel: ChannelId,
-    ) -> RVec<SessionId> {
+    fn sessions_in_channel(&self, server_id: ServerId, channel: ChannelId) -> RVec<SessionId> {
         let Some(func) = self.inner.callbacks.sessions_in_channel else {
             return RVec::new();
         };
@@ -480,11 +476,7 @@ impl PluginContext for ScopedContext {
         copy_and_free_sessions(self, ptr, count)
     }
 
-    fn find_session_by_name(
-        &self,
-        server_id: ServerId,
-        name: RStr<'_>,
-    ) -> ROption<SessionId> {
+    fn find_session_by_name(&self, server_id: ServerId, name: RStr<'_>) -> ROption<SessionId> {
         let Some(func) = self.inner.callbacks.find_session_by_name else {
             return RNone;
         };
@@ -515,11 +507,7 @@ impl PluginContext for ScopedContext {
 /// the buffer is empty or the free callback is missing the data is
 /// left untouched (leaking is preferable to a double-free in the
 /// missing-callback case).
-fn copy_and_free_sessions(
-    ctx: &ScopedContext,
-    ptr: *mut u32,
-    count: usize,
-) -> RVec<SessionId> {
+fn copy_and_free_sessions(ctx: &ScopedContext, ptr: *mut u32, count: usize) -> RVec<SessionId> {
     if ptr.is_null() || count == 0 {
         if !ptr.is_null() {
             if let Some(free) = ctx.inner.callbacks.free_sessions {

@@ -546,8 +546,9 @@ mod tests {
                 message_id: "mid".into(),
                 channel_ids: vec![7, 11],
                 content: "hello chat".into(),
-                components: vec![ActionRow::new()
-                    .push(Button::new("ok", "OK").style(ButtonStyle::Primary))],
+                components: vec![
+                    ActionRow::new().push(Button::new("ok", "OK").style(ButtonStyle::Primary))
+                ],
                 ephemeral: false,
             },
         };

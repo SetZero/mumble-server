@@ -54,11 +54,7 @@ impl Caller {
     /// Build a caller record by hand (mostly useful in tests and in
     /// manual `MumblePlugin` implementations).
     #[must_use]
-    pub fn new(
-        server_id: ServerId,
-        session_id: SessionId,
-        channel_id: Option<ChannelId>,
-    ) -> Self {
+    pub fn new(server_id: ServerId, session_id: SessionId, channel_id: Option<ChannelId>) -> Self {
         Self {
             server_id,
             session_id,
@@ -148,11 +144,7 @@ impl<'a> Host<'a> {
     /// Returns an empty `Vec` if the channel is unknown or the host
     /// does not implement enumeration.
     #[must_use]
-    pub fn sessions_in_channel(
-        &self,
-        server_id: ServerId,
-        channel: ChannelId,
-    ) -> Vec<SessionId> {
+    pub fn sessions_in_channel(&self, server_id: ServerId, channel: ChannelId) -> Vec<SessionId> {
         self.ctx
             .sessions_in_channel(server_id, channel)
             .into_iter()
@@ -167,11 +159,7 @@ impl<'a> Host<'a> {
 
     /// Resolve a username (exact match) to its current session ID.
     #[must_use]
-    pub fn find_session_by_name(
-        &self,
-        server_id: ServerId,
-        name: &str,
-    ) -> Option<SessionId> {
+    pub fn find_session_by_name(&self, server_id: ServerId, name: &str) -> Option<SessionId> {
         self.ctx
             .find_session_by_name(server_id, RStr::from_str(name))
             .into_option()
@@ -179,11 +167,7 @@ impl<'a> Host<'a> {
 
     /// Channel the session is currently in, or `None` if unknown.
     #[must_use]
-    pub fn current_channel(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-    ) -> Option<ChannelId> {
+    pub fn current_channel(&self, server_id: ServerId, session: SessionId) -> Option<ChannelId> {
         self.ctx.current_channel(server_id, session).into_option()
     }
 
@@ -201,7 +185,8 @@ impl<'a> Host<'a> {
         session: SessionId,
         channel: ChannelId,
     ) -> bool {
-        self.ctx.user_has_channel_access(server_id, session, channel)
+        self.ctx
+            .user_has_channel_access(server_id, session, channel)
     }
 
     /// Returns `true` if the session has every permission in `perms`

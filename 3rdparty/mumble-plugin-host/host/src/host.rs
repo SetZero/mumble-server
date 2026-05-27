@@ -89,8 +89,7 @@ impl Drop for Entry {
         // their on_load.
         if self.loaded {
             if let Some(ctx) = self.ctx.as_ref() {
-                if let abi_stable::std_types::RResult::RErr(e) = self.plugin.plugin.on_unload(ctx)
-                {
+                if let abi_stable::std_types::RResult::RErr(e) = self.plugin.plugin.on_unload(ctx) {
                     tracing::warn!(plugin = %self.name, error = %e, "on_unload failed");
                 }
             }
@@ -392,7 +391,10 @@ impl Host {
             // take `&ctx`) and `on_unload` can be dispatched without
             // depending on whether the plugin held on to its copy.
             let host_ctx_to = PluginContext_TO::from_ptr(
-                RArc::new(ScopedContext::new(Arc::clone(&self.base_context), prefix.clone())),
+                RArc::new(ScopedContext::new(
+                    Arc::clone(&self.base_context),
+                    prefix.clone(),
+                )),
                 abi_stable::sabi_trait::TD_Opaque,
             );
             let plugin_ctx_to = PluginContext_TO::from_ptr(
@@ -596,8 +598,7 @@ fn build_entry(
             abi_stable::sabi_trait::TD_Opaque,
         );
         entry.ctx = Some(host_ctx_to);
-        if let abi_stable::std_types::RResult::RErr(e) =
-            entry.plugin.plugin.on_load(plugin_ctx_to)
+        if let abi_stable::std_types::RResult::RErr(e) = entry.plugin.plugin.on_load(plugin_ctx_to)
         {
             return Err(BuildEntryError::OnLoad(e.to_string()));
         }
