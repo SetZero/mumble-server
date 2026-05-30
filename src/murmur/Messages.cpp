@@ -31,6 +31,7 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QJsonArray>
+#include <QtCore/QSettings>
 #include <QtCore/QStack>
 #include <QtCore/QTimeZone>
 #include <QtCore/QtEndian>
