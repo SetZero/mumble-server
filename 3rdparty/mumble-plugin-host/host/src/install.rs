@@ -77,6 +77,11 @@ pub(crate) struct Manifest {
     pub marketplace_id: String,
     /// Semver version string.
     pub version: String,
+    /// [`mumble_plugin_api::PLUGIN_ABI_VERSION`] this artifact was compiled
+    /// against.  When present the host rejects the install immediately if the
+    /// value does not match, before any artifact is downloaded.
+    #[serde(default)]
+    pub required_abi_version: Option<u32>,
     /// Per-(os,arch,format) downloadable artifacts.
     pub artifacts: Vec<ManifestArtifact>,
 }

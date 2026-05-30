@@ -7,6 +7,18 @@ use abi_stable::library::lib_header_from_path;
 use mumble_plugin_api::{FancyPluginModRef, MumblePlugin_TO, PLUGIN_ABI_VERSION};
 use thiserror::Error;
 
+/// Condense a potentially multi-kilobyte abi_stable layout-diff error into a
+/// single human-readable line.  When the error contains an abi_stable type
+/// layout dump (identified by the characteristic `Type Layout` marker) we
+/// replace the whole thing with a short summary; otherwise we pass it through.
+fn summarize_load_error(raw: &str) -> String {
+    if raw.contains("Type Layout") {
+        "incompatible plugin API (vtable layout mismatch; recompile against the current mumble-plugin-api)".to_owned()
+    } else {
+        raw.to_owned()
+    }
+}
+
 /// Errors produced while loading a single plugin cdylib.
 #[derive(Debug, Error)]
 pub enum LoadError {
@@ -16,7 +28,7 @@ pub enum LoadError {
     Invalid {
         /// File that failed to load.
         path: PathBuf,
-        /// Underlying loader error message.
+        /// Short summary of the underlying loader error.
         message: String,
     },
 
@@ -129,13 +141,13 @@ pub fn load_plugin(path: &Path) -> Result<LoadedPlugin, LoadError> {
     // plugin's code.
     let header = lib_header_from_path(path).map_err(|e| LoadError::Invalid {
         path: path.to_path_buf(),
-        message: e.to_string(),
+        message: summarize_load_error(&e.to_string()),
     })?;
     let module = header
         .init_root_module::<FancyPluginModRef>()
         .map_err(|e| LoadError::Invalid {
             path: path.to_path_buf(),
-            message: e.to_string(),
+            message: summarize_load_error(&e.to_string()),
         })?;
     let abi = module.abi_version();
     if abi != PLUGIN_ABI_VERSION {

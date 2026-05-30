@@ -10,7 +10,7 @@ use std::sync::Arc;
 use abi_stable::std_types::{RArc, RNone, RSlice, RSome, RStr, RVec};
 use mumble_plugin_api::{
     ChannelId, ClientInfo, PluginContext_TO, PluginMessageIn, ServerId, SessionId,
-    PLUGIN_INFO_DATA_ID,
+    PLUGIN_ABI_VERSION, PLUGIN_INFO_DATA_ID,
 };
 use serde::Serialize;
 
@@ -66,6 +66,20 @@ struct Entry {
     builtin: bool,
 }
 
+/// Plugin that was discovered on disk but could not be loaded (ABI mismatch,
+/// missing symbols, `on_load` failure, etc.).  Tracked so the admin UI can
+/// list and delete broken files even when the host cannot introspect them.
+#[derive(Debug)]
+struct FailedPlugin {
+    /// Identifier exposed in the admin API.  For binary-level failures
+    /// (ABI mismatch, missing symbol) this is the file stem; for
+    /// `on_load` failures we have the real plugin name.
+    name: String,
+    path: PathBuf,
+    error: String,
+    builtin: bool,
+}
+
 impl std::fmt::Debug for Entry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Entry")
@@ -112,6 +126,8 @@ pub(crate) struct PluginAdminInfo {
     pub marketplace_id: Option<String>,
     pub installed_at: Option<u64>,
     pub builtin: bool,
+    /// Set when the plugin could not be loaded; contains the error message.
+    pub load_error: Option<String>,
 }
 
 /// JSON-serialisable result envelope returned from every mutable FFI
@@ -144,6 +160,8 @@ impl FfiResult {
 pub struct Host {
     base_context: Arc<HostContext>,
     plugins: Vec<Entry>,
+    /// Plugins that were discovered but could not be loaded.
+    failed_plugins: Vec<FailedPlugin>,
     /// First configured plugins directory; used as the install target
     /// for marketplace downloads.  None if neither configured nor
     /// supplied via `MUMBLE_PLUGIN_DIRS`.
@@ -180,6 +198,7 @@ impl Host {
             "plugin host initialising"
         );
         let mut plugins = Vec::new();
+        let mut failed_plugins: Vec<FailedPlugin> = Vec::new();
         for dir in &dirs {
             let candidates = scan_dir(dir);
             tracing::debug!(
@@ -201,24 +220,44 @@ impl Host {
                             );
                             plugins.push(e);
                         }
-                        Err(e) => {
-                            tracing::error!(error = %e, path = %path.display(), "plugin build failed");
+                        Err(BuildEntryError::OnLoad { name, error }) => {
+                            let is_builtin = builtin_names.contains(&name);
+                            tracing::error!(plugin = %name, error = %error, path = %path.display(), "plugin build failed");
+                            failed_plugins.push(FailedPlugin {
+                                name,
+                                path,
+                                error,
+                                builtin: is_builtin,
+                            });
                         }
                     },
                     Err(e) => {
-                        tracing::error!(error = %e, path = %path.display(), "plugin load failed");
+                        let stem = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown")
+                            .to_owned();
+                        tracing::error!(plugin = %stem, error = %e, path = %path.display(), "plugin load failed");
+                        failed_plugins.push(FailedPlugin {
+                            name: stem,
+                            path,
+                            error: e.to_string(),
+                            builtin: false,
+                        });
                     }
                 }
             }
         }
         tracing::info!(
-            discovered = plugins.len(),
+            discovered = plugins.len() + failed_plugins.len(),
             loaded = plugins.iter().filter(|e| e.loaded).count(),
+            failed = failed_plugins.len(),
             "plugin host ready"
         );
         Ok(Self {
             base_context,
             plugins,
+            failed_plugins,
             install_dir,
         })
     }
@@ -346,9 +385,10 @@ impl Host {
     }
 
     /// Plugin-admin: snapshot every known plugin plus the install
-    /// directory used by the marketplace flow.
+    /// directory used by the marketplace flow.  Failed plugins are
+    /// included so the admin can identify and remove broken files.
     pub(crate) fn list_plugins(&self) -> (Vec<PluginAdminInfo>, Option<String>) {
-        let out: Vec<PluginAdminInfo> = self
+        let mut out: Vec<PluginAdminInfo> = self
             .plugins
             .iter()
             .map(|e| PluginAdminInfo {
@@ -361,8 +401,23 @@ impl Host {
                 marketplace_id: e.marketplace_id.clone(),
                 installed_at: e.installed_at,
                 builtin: e.builtin,
+                load_error: None,
             })
             .collect();
+        for f in &self.failed_plugins {
+            out.push(PluginAdminInfo {
+                plugin_name: f.name.clone(),
+                version: String::new(),
+                enabled: false,
+                loaded: false,
+                path: f.path.display().to_string(),
+                info_json: "{}".to_owned(),
+                marketplace_id: None,
+                installed_at: None,
+                builtin: f.builtin,
+                load_error: Some(f.error.clone()),
+            });
+        }
         let dir = self.install_dir.as_ref().map(|p| p.display().to_string());
         (out, dir)
     }
@@ -452,6 +507,14 @@ impl Host {
                 manifest.version
             ));
         }
+        if let Some(required) = manifest.required_abi_version {
+            if required != PLUGIN_ABI_VERSION {
+                return Err(format!(
+                    "plugin requires API version {required} but this server has {PLUGIN_ABI_VERSION}; \
+                     update the server or install a compatible plugin version"
+                ));
+            }
+        }
         let artifact = install::pick_artifact(&manifest).map_err(|e| e.to_string())?;
         let installed =
             install::download_and_extract(artifact, &dest_dir).map_err(|e| e.to_string())?;
@@ -496,22 +559,34 @@ impl Host {
 
     /// Plugin-admin: drop the entry (RAII unloads it), remove the
     /// cdylib from disk, and strip `plugin.<name>.*` from the server
-    /// config.
+    /// config.  Also handles broken plugins that are tracked in
+    /// `failed_plugins` rather than `plugins`.
     pub(crate) fn uninstall_plugin(&mut self, name: &str) -> Result<(), String> {
-        let idx = self
-            .plugins
-            .iter()
-            .position(|e| e.name == name)
-            .ok_or_else(|| format!("plugin '{name}' not found"))?;
-        let path = self.plugins[idx].plugin.path.clone();
-        let _ = self.plugins.swap_remove(idx);
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("failed to delete {}: {e}", path.display()))?;
+        // Try loaded plugins first.
+        if let Some(idx) = self.plugins.iter().position(|e| e.name == name) {
+            let path = self.plugins[idx].plugin.path.clone();
+            let _ = self.plugins.swap_remove(idx);
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("failed to delete {}: {e}", path.display()))?;
+            }
+            self.base_context
+                .delete_config_prefix(&format!("plugin.{name}."))?;
+            return Ok(());
         }
-        self.base_context
-            .delete_config_prefix(&format!("plugin.{name}."))?;
-        Ok(())
+        // Fall back to broken (failed-to-load) plugins.
+        if let Some(idx) = self.failed_plugins.iter().position(|f| f.name == name) {
+            let path = self.failed_plugins.swap_remove(idx).path;
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("failed to delete {}: {e}", path.display()))?;
+            }
+            // Best-effort config cleanup: the registered name may differ from
+            // the file stem for binary-level failures, so ignore any error.
+            let _ = self.base_context.delete_config_prefix(&format!("plugin.{name}."));
+            return Ok(());
+        }
+        Err(format!("plugin '{name}' not found"))
     }
 }
 
@@ -600,7 +675,10 @@ fn build_entry(
         entry.ctx = Some(host_ctx_to);
         if let abi_stable::std_types::RResult::RErr(e) = entry.plugin.plugin.on_load(plugin_ctx_to)
         {
-            return Err(BuildEntryError::OnLoad(e.to_string()));
+            return Err(BuildEntryError::OnLoad {
+                name: entry.name.clone(),
+                error: format!("on_load failed: {e}"),
+            });
         }
         entry.loaded = true;
     } else {
@@ -679,8 +757,8 @@ fn build_info_envelope(name: &str, version: &str, loaded: &LoadedPlugin) -> Opti
 
 #[derive(Debug, thiserror::Error)]
 enum BuildEntryError {
-    #[error("on_load failed: {0}")]
-    OnLoad(String),
+    #[error("on_load failed: {error}")]
+    OnLoad { name: String, error: String },
 }
 
 /// Owned parameters for [`Host::on_plugin_message`].  Grouping these
