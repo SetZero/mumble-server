@@ -77,6 +77,16 @@ pub use mumble_plugin_api_derive::{
 /// from its [`FancyPluginMod::abi_version`] field.
 pub const PLUGIN_ABI_VERSION: u32 = 2;
 
+/// Name of the plain C-ABI function every plugin cdylib exports via
+/// [`fancy_export_plugin!`].  The host reads this *before* performing any
+/// `abi_stable` layout cast: a cdylib built against an incompatible
+/// `mumble-plugin-api` can have a vtable/layout so different that the typed
+/// `abi_stable` cast segfaults instead of returning an error, so the host
+/// gates on this layout-independent `u32` first.
+///
+/// Signature: `extern "C" fn() -> u32` returning [`PLUGIN_ABI_VERSION`].
+pub const PLUGIN_ABI_VERSION_SYMBOL: &str = "__mumble_plugin_abi_version";
+
 /// Hard cap on the uncompressed size of a plugin's [`PluginInfo`] JSON.
 ///
 /// Enforced by the host at load time and again before broadcasting.
@@ -298,6 +308,17 @@ macro_rules! fancy_export_plugin {
                     create_plugin: _fancy_plugin_create,
                 }
                 .leak_into_prefix()
+            }
+
+            // Plain C-ABI version probe the host reads *before* any
+            // `abi_stable` typed cast (see
+            // [`$crate::PLUGIN_ABI_VERSION_SYMBOL`]).  Reading a bare
+            // `u32` is layout-independent, so the host can reject a
+            // mismatched plugin without risking the segfault that a
+            // typed vtable cast against an incompatible binary causes.
+            #[no_mangle]
+            pub extern "C" fn __mumble_plugin_abi_version() -> u32 {
+                $crate::PLUGIN_ABI_VERSION
             }
 
             extern "C" fn _fancy_plugin_create(

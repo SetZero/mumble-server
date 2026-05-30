@@ -268,7 +268,11 @@ pub unsafe extern "C" fn plugin_host_free_string(ptr: *mut c_char) {
 /// Plugin-admin: return a JSON snapshot of every known plugin.
 ///
 /// Body shape: `{"plugins":[{plugin_name,version,enabled,loaded,path,
-/// info_json,marketplace_id,installed_at,builtin}, ...],"plugins_dir":".."}`.
+/// info_json,marketplace_id,installed_at,builtin}, ...],"plugins_dir":"..",
+/// "host_abi_version":N}`.  `host_abi_version` is the
+/// [`mumble_plugin_api::PLUGIN_ABI_VERSION`] this host was compiled
+/// against, so admin clients can flag marketplace plugins that target a
+/// different ABI before attempting to install them.
 /// Returns NULL on allocation failure; otherwise free with
 /// [`plugin_host_free_string`].
 ///
@@ -284,6 +288,7 @@ pub unsafe extern "C" fn plugin_host_list_plugins(handle: *mut PluginHostHandle)
         json_to_cstring(&serde_json::json!({
             "plugins": entries,
             "plugins_dir": dir,
+            "host_abi_version": mumble_plugin_api::PLUGIN_ABI_VERSION,
         }))
     })
 }

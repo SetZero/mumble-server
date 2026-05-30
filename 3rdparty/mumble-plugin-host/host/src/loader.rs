@@ -3,12 +3,14 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use abi_stable::library::lib_header_from_path;
-use mumble_plugin_api::{FancyPluginModRef, MumblePlugin_TO, PLUGIN_ABI_VERSION};
+use abi_stable::library::{lib_header_from_path, RawLibrary};
+use mumble_plugin_api::{
+    FancyPluginModRef, MumblePlugin_TO, PLUGIN_ABI_VERSION, PLUGIN_ABI_VERSION_SYMBOL,
+};
 use thiserror::Error;
 
-/// Condense a potentially multi-kilobyte abi_stable layout-diff error into a
-/// single human-readable line.  When the error contains an abi_stable type
+/// Condense a potentially multi-kilobyte `abi_stable` layout-diff error into a
+/// single human-readable line.  When the error contains an `abi_stable` type
 /// layout dump (identified by the characteristic `Type Layout` marker) we
 /// replace the whole thing with a short summary; otherwise we pass it through.
 fn summarize_load_error(raw: &str) -> String {
@@ -41,6 +43,19 @@ pub enum LoadError {
         found: u32,
         /// [`PLUGIN_ABI_VERSION`] of the host build.
         expected: u32,
+    },
+
+    /// Plugin cdylib lacks the layout-independent
+    /// [`PLUGIN_ABI_VERSION_SYMBOL`] probe, so the host cannot safely
+    /// determine its ABI version without risking a vtable-cast crash.
+    #[error(
+        "plugin '{path}' does not export {symbol}; rebuild against the current mumble-plugin-api"
+    )]
+    MissingAbiProbe {
+        /// File that was rejected.
+        path: PathBuf,
+        /// Name of the missing symbol.
+        symbol: &'static str,
     },
 }
 
@@ -133,6 +148,38 @@ pub fn scan_dir(dir: &Path) -> Vec<PathBuf> {
 /// Load a single plugin cdylib via `abi_stable`, verify its ABI
 /// version, and return the constructed trait object.
 pub fn load_plugin(path: &Path) -> Result<LoadedPlugin, LoadError> {
+    // Pre-flight: read the plugin's ABI version through a plain
+    // `extern "C" fn() -> u32` symbol BEFORE handing the binary to
+    // `abi_stable`'s typed loader.  A cdylib built against an
+    // incompatible `mumble-plugin-api` can have a vtable/type layout
+    // different enough that `abi_stable`'s `init_root_module` cast (or
+    // even its layout walk) dereferences bad pointers and SIGSEGVs
+    // instead of returning a `LibraryError`.  Reading a bare integer
+    // is layout-independent, so we can reject a mismatched plugin
+    // cleanly here and never feed it to the typed cast.
+    match read_plugin_abi_version(path) {
+        Ok(found) if found == PLUGIN_ABI_VERSION => { /* compatible: fall through */ }
+        Ok(found) => {
+            return Err(LoadError::AbiMismatch {
+                path: path.to_path_buf(),
+                found,
+                expected: PLUGIN_ABI_VERSION,
+            });
+        }
+        Err(AbiProbeError::SymbolMissing) => {
+            return Err(LoadError::MissingAbiProbe {
+                path: path.to_path_buf(),
+                symbol: PLUGIN_ABI_VERSION_SYMBOL,
+            });
+        }
+        Err(AbiProbeError::LibraryError(message)) => {
+            return Err(LoadError::Invalid {
+                path: path.to_path_buf(),
+                message: summarize_load_error(&message),
+            });
+        }
+    }
+
     // Load the LibHeader directly from this specific file rather than going
     // through `RootModule::load_from_file`, which uses a per-type static
     // cache in the host process: the cache returns the FIRST loaded module
@@ -162,6 +209,34 @@ pub fn load_plugin(path: &Path) -> Result<LoadedPlugin, LoadError> {
         path: path.to_path_buf(),
         plugin,
     })
+}
+
+/// Failure modes of the plain-C ABI version probe.
+enum AbiProbeError {
+    /// The cdylib loaded but did not export [`PLUGIN_ABI_VERSION_SYMBOL`].
+    SymbolMissing,
+    /// The cdylib itself could not be opened (corrupt file, missing
+    /// dependency, wrong architecture, ...).
+    LibraryError(String),
+}
+
+/// Open `path` as a raw shared object and call its
+/// [`PLUGIN_ABI_VERSION_SYMBOL`] export to learn the ABI version it was
+/// built against, without performing any `abi_stable` layout cast.
+fn read_plugin_abi_version(path: &Path) -> Result<u32, AbiProbeError> {
+    let lib = RawLibrary::load_at(path).map_err(|e| AbiProbeError::LibraryError(e.to_string()))?;
+    // The symbol must be NUL-terminated for the underlying loader.
+    let mut symbol = PLUGIN_ABI_VERSION_SYMBOL.as_bytes().to_vec();
+    symbol.push(0);
+    // SAFETY: every plugin built with `fancy_export_plugin!` exports this
+    // symbol as `extern "C" fn() -> u32`.  If the type is wrong the call
+    // is UB, but the macro is the only supported way to export the symbol,
+    // so a present symbol always has this signature.  A genuinely foreign
+    // library is far more likely to omit the symbol entirely (handled as
+    // `SymbolMissing`) than to export an incompatible one under this name.
+    let probe = unsafe { lib.get::<extern "C" fn() -> u32>(&symbol) }
+        .map_err(|_| AbiProbeError::SymbolMissing)?;
+    Ok(probe())
 }
 
 #[cfg(test)]

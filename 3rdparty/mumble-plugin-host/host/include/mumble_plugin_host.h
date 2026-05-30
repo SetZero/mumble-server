@@ -267,7 +267,11 @@ void plugin_host_on_plugin_message(struct PluginHostHandle *handle,
  * Plugin-admin: return a JSON snapshot of every known plugin.
  *
  * Body shape: `{"plugins":[{plugin_name,version,enabled,loaded,path,
- * info_json,marketplace_id,installed_at,builtin}, ...],"plugins_dir":".."}`.
+ * info_json,marketplace_id,installed_at,builtin}, ...],"plugins_dir":"..",
+ * "host_abi_version":N}`.  `host_abi_version` is the
+ * [`mumble_plugin_api::PLUGIN_ABI_VERSION`] this host was compiled
+ * against, so admin clients can flag marketplace plugins that target a
+ * different ABI before attempting to install them.
  * Returns NULL on allocation failure; otherwise free with
  * [`plugin_host_free_string`].
  *

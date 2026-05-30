@@ -3647,6 +3647,10 @@ void buildPluginAdminListMessage(const QByteArray &json, MumbleProto::FancyPlugi
 	if (root.contains(QStringLiteral("plugins_dir"))) {
 		out.set_plugins_dir(root.value(QStringLiteral("plugins_dir")).toString().toStdString());
 	}
+	if (root.contains(QStringLiteral("host_abi_version"))) {
+		out.set_host_abi_version(
+			static_cast< uint32_t >(root.value(QStringLiteral("host_abi_version")).toInt(0)));
+	}
 	const QJsonArray plugins = root.value(QStringLiteral("plugins")).toArray();
 	for (const QJsonValue &v : plugins) {
 		const QJsonObject obj = v.toObject();

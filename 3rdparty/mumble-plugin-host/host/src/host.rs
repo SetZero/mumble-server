@@ -4,7 +4,7 @@
 //! client.
 
 use std::ffi::CString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use abi_stable::std_types::{RArc, RNone, RSlice, RSome, RStr, RVec};
@@ -525,31 +525,65 @@ impl Host {
             ini_snippet_len = installed.ini_snippet.as_ref().map(String::len).unwrap_or(0),
             "marketplace artifact extracted"
         );
-        let loaded = load_plugin(&installed.cdylib_path).map_err(|e| e.to_string())?;
+        // From here on the cdylib exists on disk.  Any failure must remove
+        // it again: a half-installed binary left behind would be rediscovered
+        // and load-attempted on the next startup, turning a one-off install
+        // failure into a permanent crash/restart loop.
+        let loaded = match load_plugin(&installed.cdylib_path) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                remove_failed_install(&installed.cdylib_path);
+                return Err(e.to_string());
+            }
+        };
         let name = loaded.plugin.name().as_str().to_owned();
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        self.base_context.set_config(
-            &format!("plugin.{name}.{CONFIG_KEY_MARKETPLACE_ID}"),
-            marketplace_id,
-        )?;
-        self.base_context.set_config(
-            &format!("plugin.{name}.{CONFIG_KEY_INSTALLED_AT}"),
-            &now_ms.to_string(),
-        )?;
-        // New plugins start disabled; admin issues SetEnabled to activate.
-        self.base_context
-            .set_config(&format!("plugin.{name}.{CONFIG_KEY_ENABLED}"), "false")?;
+        // Persist the install metadata.  If any write fails, roll back the
+        // on-disk binary and whatever keys were already written so a partial
+        // install cannot survive to crash the next startup scan.
+        let write_config = (|| {
+            self.base_context.set_config(
+                &format!("plugin.{name}.{CONFIG_KEY_MARKETPLACE_ID}"),
+                marketplace_id,
+            )?;
+            self.base_context.set_config(
+                &format!("plugin.{name}.{CONFIG_KEY_INSTALLED_AT}"),
+                &now_ms.to_string(),
+            )?;
+            // New plugins start disabled; admin issues SetEnabled to activate.
+            self.base_context
+                .set_config(&format!("plugin.{name}.{CONFIG_KEY_ENABLED}"), "false")
+        })();
+        if let Err(e) = write_config {
+            remove_failed_install(&installed.cdylib_path);
+            let _ = self
+                .base_context
+                .delete_config_prefix(&format!("plugin.{name}."));
+            return Err(e);
+        }
 
         // Drop any previous entry for this plugin name (RAII unloads it)
         // before pushing the freshly-loaded one.
         if let Some(idx) = self.plugins.iter().position(|e| e.name == name) {
             let _ = self.plugins.swap_remove(idx);
         }
-        let mut entry = build_entry(&self.base_context, loaded).map_err(|e| e.to_string())?;
+        let mut entry = match build_entry(&self.base_context, loaded) {
+            Ok(entry) => entry,
+            Err(e) => {
+                // The plugin's binary loaded but `on_load` (or info
+                // encoding) failed.  Roll back disk and config so the
+                // broken install does not poison the next startup.
+                remove_failed_install(&installed.cdylib_path);
+                let _ = self
+                    .base_context
+                    .delete_config_prefix(&format!("plugin.{name}."));
+                return Err(e.to_string());
+            }
+        };
         entry.marketplace_id = Some(marketplace_id.to_owned());
         entry.installed_at = Some(now_ms);
         let installed_name = entry.name.clone();
@@ -594,6 +628,23 @@ impl Host {
 // `Entry`, and `Drop for Entry` invokes `on_unload` for any plugin
 // still in the loaded state.  Centralising teardown in `Entry` means
 // uninstall, hot-toggle, and full shutdown share one code path.
+
+/// Best-effort removal of a cdylib left on disk by a failed install.
+///
+/// A binary that downloaded and extracted but failed to load (ABI
+/// mismatch, crash-on-load, `on_load` error) must not survive: the
+/// startup directory scan would rediscover it and retry the load every
+/// boot, turning a transient install failure into a crash loop.
+fn remove_failed_install(cdylib_path: &Path) {
+    if let Err(e) = std::fs::remove_file(cdylib_path) {
+        tracing::warn!(
+            cdylib = %cdylib_path.display(),
+            error = %e,
+            "failed to remove cdylib after unsuccessful install; \
+             it may be retried on next startup scan"
+        );
+    }
+}
 
 fn configured_dirs(ctx: &Arc<HostContext>) -> Vec<PathBuf> {
     let key = match CString::new(CONFIG_KEY_PLUGINS_DIR) {
