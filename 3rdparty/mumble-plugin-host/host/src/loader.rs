@@ -220,10 +220,75 @@ enum AbiProbeError {
     LibraryError(String),
 }
 
+/// Linux: parse `path` as an ELF binary *without* calling `dlopen` or
+/// executing any code inside it, and verify:
+///
+/// 1. The file is a shared library (`ET_DYN`).
+/// 2. It targets the same machine architecture as the running host.
+/// 3. Its dynamic symbol table exports [`PLUGIN_ABI_VERSION_SYMBOL`].
+///
+/// Returning an error here prevents the subsequent `dlopen` call, so a
+/// corrupt or wrong-arch binary can never run its `.init_array` entries
+/// inside the server process.
+#[cfg(target_os = "linux")]
+fn elf_pre_validate(path: &Path) -> Result<(), AbiProbeError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| AbiProbeError::LibraryError(format!("cannot read plugin file: {e}")))?;
+    let elf = goblin::elf::Elf::parse(&bytes)
+        .map_err(|e| AbiProbeError::LibraryError(format!("not a valid ELF binary: {e}")))?;
+
+    if elf.header.e_type != goblin::elf::header::ET_DYN {
+        return Err(AbiProbeError::LibraryError(
+            "not a shared library (ELF e_type != ET_DYN)".to_owned(),
+        ));
+    }
+
+    let host_machine: u16 = if cfg!(target_arch = "x86_64") {
+        goblin::elf::header::EM_X86_64
+    } else if cfg!(target_arch = "aarch64") {
+        goblin::elf::header::EM_AARCH64
+    } else {
+        0 // Unknown host arch — skip the machine-type check.
+    };
+    if host_machine != 0 && elf.header.e_machine != host_machine {
+        return Err(AbiProbeError::LibraryError(format!(
+            "binary targets machine type 0x{:04x} but host requires 0x{:04x}",
+            elf.header.e_machine, host_machine
+        )));
+    }
+
+    // The ABI probe symbol must be present in the dynamic symbol table.
+    // If it is absent, `abi_stable`'s typed loader would segfault trying
+    // to follow a null vtable pointer.
+    let has_symbol = elf
+        .dynsyms
+        .iter()
+        .any(|sym| elf.dynstrtab.get_at(sym.st_name) == Some(PLUGIN_ABI_VERSION_SYMBOL));
+    if !has_symbol {
+        return Err(AbiProbeError::SymbolMissing);
+    }
+
+    Ok(())
+}
+
+/// Non-Linux stub: no ELF pre-validation on platforms where the binary
+/// format is different (PE on Windows, Mach-O on macOS).
+#[cfg(not(target_os = "linux"))]
+fn elf_pre_validate(_path: &Path) -> Result<(), AbiProbeError> {
+    Ok(())
+}
+
 /// Open `path` as a raw shared object and call its
 /// [`PLUGIN_ABI_VERSION_SYMBOL`] export to learn the ABI version it was
 /// built against, without performing any `abi_stable` layout cast.
 fn read_plugin_abi_version(path: &Path) -> Result<u32, AbiProbeError> {
+    // Validate the ELF binary without `dlopen` first.  A corrupt or
+    // wrong-arch cdylib can SIGSEGV the server process inside `dlopen`
+    // when its `.init_array` runs — that happens *before* `dlopen`
+    // returns any error.  Parsing the ELF headers statically lets us
+    // reject such binaries before any code inside them ever executes.
+    elf_pre_validate(path)?;
+
     let lib = RawLibrary::load_at(path).map_err(|e| AbiProbeError::LibraryError(e.to_string()))?;
     // The symbol must be NUL-terminated for the underlying loader.
     let mut symbol = PLUGIN_ABI_VERSION_SYMBOL.as_bytes().to_vec();

@@ -25,6 +25,12 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# ELF pre-validation: parse the binary without dlopen so a corrupt or
+# wrong-arch cdylib is rejected before its .init_array can run and
+# SIGSEGV the server.
+goblin = { version = "0.9", default-features = false, features = ["elf64", "elf32", "std"] }
+
 [build-dependencies]
 cbindgen = "0.29"
 
