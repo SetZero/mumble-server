@@ -3811,6 +3811,12 @@ void Server::msgFancyPluginAdminSetEnabled(ServerUser *uSource,
 
 	const QString name = QString::fromStdString(msg.plugin_name());
 	const bool enabled = msg.enabled();
+	// Re-read the INI from disk before re-enabling a plugin so that
+	// on_load picks up any configuration changes (e.g. base_url,
+	// public_url) the operator made while the server was running.
+	if (enabled && Meta::mp && Meta::mp->qsSettings) {
+		Meta::mp->qsSettings->sync();
+	}
 	const QByteArray raw = m_pluginHost->setPluginEnabled(name, enabled);
 	const PluginAdminResult result = parsePluginAdminResult(raw);
 

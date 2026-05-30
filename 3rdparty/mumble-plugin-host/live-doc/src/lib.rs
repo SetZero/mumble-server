@@ -135,10 +135,17 @@ impl MumblePlugin for LiveDocPlugin {
             return ROk(());
         };
         let state = running.state.clone();
-        running.runtime.block_on(state.shutdown());
-        if let Some(handle) = running.handle.take() {
-            handle.shutdown();
-        }
+        let handle = running.handle.take();
+        // Tear down doc state and the WS server on the same runtime, and
+        // await the server task so the listening socket is fully released
+        // before this returns (otherwise a quick re-enable could hit
+        // EADDRINUSE when on_load re-binds the port).
+        running.runtime.block_on(async move {
+            state.shutdown().await;
+            if let Some(handle) = handle {
+                handle.shutdown().await;
+            }
+        });
         ROk(())
     }
 
