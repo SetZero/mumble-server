@@ -813,6 +813,23 @@ fn wit_component_to_native(c: wit_ui::Component) -> ncm::Component {
         wit_ui::Component::TextDisplay(t) => {
             ncm::Component::TextDisplay(ncm::TextDisplay { content: t.content })
         }
+        wit_ui::Component::TextInput(t) => ncm::Component::TextInput(ncm::TextInput {
+            custom_id: t.custom_id,
+            label: t.label,
+            value: t.value,
+            placeholder: t.placeholder,
+            style: wit_text_input_style_to_native(t.style),
+            required: t.required,
+            max_length: t.max_length,
+            min_length: t.min_length,
+        }),
+    }
+}
+
+fn wit_text_input_style_to_native(s: wit_ui::TextInputStyle) -> ncm::TextInputStyle {
+    match s {
+        wit_ui::TextInputStyle::Short => ncm::TextInputStyle::Short,
+        wit_ui::TextInputStyle::Paragraph => ncm::TextInputStyle::Paragraph,
     }
 }
 

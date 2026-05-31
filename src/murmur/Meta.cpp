@@ -960,7 +960,7 @@ bool Meta::boot(const ::mumble::db::ConnectionParameter &connectionParam, unsign
 	}
 
 	qhServers.insert(srvnum, s);
-	emit started(s);
+	m_events.serverStarted(*s);
 
 #ifdef Q_OS_UNIX
 	unsigned int sockets = 19; // Base
@@ -999,13 +999,13 @@ void Meta::kill(unsigned int srvnum) {
 	Server *s = qhServers.take(srvnum);
 	if (!s)
 		return;
-	emit stopped(s);
+	m_events.serverStopped(*s);
 	delete s;
 }
 
 void Meta::killAll() {
 	for (Server *s : qhServers) {
-		emit stopped(s);
+		m_events.serverStopped(*s);
 		delete s;
 	}
 	qhServers.clear();

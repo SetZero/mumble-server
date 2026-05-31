@@ -332,7 +332,7 @@ MumbleServerIce::MumbleServerIce() {
 			qWarning(R"({"event": "MumbleServerIce: Endpoint running", "payload": "%s"})", qPrintable(u8(ep->toString())));
 		}
 
-		meta->connectListener(this);
+		meta->events().registerSubscriber(this);
 	} catch (Ice::Exception &e) {
 		std::stringstream stream;
 		e.ice_print(stream);
@@ -487,10 +487,10 @@ static ServerPrx idToProxy(unsigned int id, const Ice::ObjectAdapterPtr &adapter
 	return ServerPrx::uncheckedCast(adapter->createProxy(ident));
 }
 
-void MumbleServerIce::started(::Server *s) {
-	s->connectListener(mi);
-	connect(s, SIGNAL(contextAction(const User *, const QString &, unsigned int, int)), this,
-			SLOT(contextAction(const User *, const QString &, unsigned int, int)));
+void MumbleServerIce::onServerStarted(::Server &server) {
+	// Subscribe to this virtual server's control-plane events. Registration is
+	// thread-safe (the distributor guards its subscriber list with a mutex).
+	server.events().registerSubscriber(this);
 
 	const QList<::MumbleServer::MetaCallbackPrx > &qlList = qlMetaCallbacks;
 
@@ -499,14 +499,17 @@ void MumbleServerIce::started(::Server *s) {
 
 	for (const ::MumbleServer::MetaCallbackPrx &prx : qlList) {
 		try {
-			prx->started(idToProxy(s->iServerNum, adapter));
+			prx->started(idToProxy(server.iServerNum, adapter));
 		} catch (...) {
 			badMetaProxy(prx);
 		}
 	}
 }
 
-void MumbleServerIce::stopped(::Server *s) {
+void MumbleServerIce::onServerStopped(::Server &server) {
+	server.events().unregisterSubscriber(this);
+
+	::Server *s = &server;
 	removeServerCallbacks(s);
 	removeServerAuthenticator(s);
 	removeServerUpdatingAuthenticator(s);
@@ -518,82 +521,99 @@ void MumbleServerIce::stopped(::Server *s) {
 
 	for (const ::MumbleServer::MetaCallbackPrx &prx : qmList) {
 		try {
-			prx->stopped(idToProxy(s->iServerNum, adapter));
+			prx->stopped(idToProxy(server.iServerNum, adapter));
 		} catch (...) {
 			badMetaProxy(prx);
 		}
 	}
 }
 
-void MumbleServerIce::userConnected(const ::User *p) {
-	::Server *s = qobject_cast<::Server * >(sender());
+// The per-server handlers below run synchronously on the Server's thread. They
+// snapshot the User/Channel to Ice value types up front (while those objects are
+// still owned by the Server thread), then re-post the proxy fan-out onto this
+// object's own (Ice) thread via ExecEvent, so all qmServerCallbacks access and
+// the blocking Ice calls happen there - exactly as the old queued slots did.
+//
+// The closures capture only the virtual-server number (not a Server*), and
+// re-resolve the live Server via meta->qhServers when they run. This is safe
+// against a server being killed (and deleted) between dispatch and delivery: if
+// it is gone, qhServers no longer holds it and the fan-out is simply skipped.
+// (meta->qhServers is only touched on this same - the Ice/meta - thread.)
 
-	const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[s->iServerNum];
-
-	if (qmList.isEmpty())
-		return;
-
-	::MumbleServer::User mp;
-	userToUser(p, mp);
-
-	for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
-		try {
-			prx->userConnected(mp);
-		} catch (...) {
-			badServerProxy(prx, s);
-		}
-	}
-}
-
-void MumbleServerIce::userDisconnected(const ::User *p) {
-	::Server *s = qobject_cast<::Server * >(sender());
-
-	qmServerContextCallbacks[s->iServerNum].remove(static_cast< int >(p->uiSession));
-
-	const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[s->iServerNum];
-
-	if (qmList.isEmpty())
-		return;
+void MumbleServerIce::onUserConnected(::Server &server, const ::User *p) {
+	const unsigned int serverNum = server.iServerNum;
 
 	::MumbleServer::User mp;
 	userToUser(p, mp);
 
-	for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
-		try {
-			prx->userDisconnected(mp);
-		} catch (...) {
-			badServerProxy(prx, s);
+	QCoreApplication::instance()->postEvent(this, new ExecEvent([this, serverNum, mp]() {
+		::Server *s = meta->qhServers.value(serverNum);
+		if (!s)
+			return;
+		const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[serverNum];
+		if (qmList.isEmpty())
+			return;
+		for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
+			try {
+				prx->userConnected(mp);
+			} catch (...) {
+				badServerProxy(prx, s);
+			}
 		}
-	}
+	}));
 }
 
-void MumbleServerIce::userStateChanged(const ::User *p) {
-	::Server *s = qobject_cast<::Server * >(sender());
-
-	const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[s->iServerNum];
-
-	if (qmList.isEmpty())
-		return;
+void MumbleServerIce::onUserDisconnected(::Server &server, const ::User *p) {
+	const unsigned int serverNum = server.iServerNum;
+	const unsigned int sessId    = p->uiSession;
 
 	::MumbleServer::User mp;
 	userToUser(p, mp);
 
-	for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
-		try {
-			prx->userStateChanged(mp);
-		} catch (...) {
-			badServerProxy(prx, s);
+	QCoreApplication::instance()->postEvent(this, new ExecEvent([this, serverNum, sessId, mp]() {
+		::Server *s = meta->qhServers.value(serverNum);
+		if (!s)
+			return;
+		qmServerContextCallbacks[serverNum].remove(static_cast< int >(sessId));
+
+		const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[serverNum];
+		if (qmList.isEmpty())
+			return;
+		for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
+			try {
+				prx->userDisconnected(mp);
+			} catch (...) {
+				badServerProxy(prx, s);
+			}
 		}
-	}
+	}));
 }
 
-void MumbleServerIce::userTextMessage(const ::User *p, const ::TextMessage &message) {
-	::Server *s = qobject_cast<::Server * >(sender());
+void MumbleServerIce::onUserStateChanged(::Server &server, const ::User *p) {
+	const unsigned int serverNum = server.iServerNum;
 
-	const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[s->iServerNum];
+	::MumbleServer::User mp;
+	userToUser(p, mp);
 
-	if (qmList.isEmpty())
-		return;
+	QCoreApplication::instance()->postEvent(this, new ExecEvent([this, serverNum, mp]() {
+		::Server *s = meta->qhServers.value(serverNum);
+		if (!s)
+			return;
+		const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[serverNum];
+		if (qmList.isEmpty())
+			return;
+		for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
+			try {
+				prx->userStateChanged(mp);
+			} catch (...) {
+				badServerProxy(prx, s);
+			}
+		}
+	}));
+}
+
+void MumbleServerIce::onUserTextMessage(::Server &server, const ::User *p, const ::TextMessage &message) {
+	const unsigned int serverNum = server.iServerNum;
 
 	::MumbleServer::User mp;
 	userToUser(p, mp);
@@ -601,112 +621,137 @@ void MumbleServerIce::userTextMessage(const ::User *p, const ::TextMessage &mess
 	::MumbleServer::TextMessage textMessage;
 	textmessageToTextmessage(message, textMessage);
 
-	for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
-		try {
-			prx->userTextMessage(mp, textMessage);
-		} catch (...) {
-			badServerProxy(prx, s);
+	QCoreApplication::instance()->postEvent(this, new ExecEvent([this, serverNum, mp, textMessage]() {
+		::Server *s = meta->qhServers.value(serverNum);
+		if (!s)
+			return;
+		const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[serverNum];
+		if (qmList.isEmpty())
+			return;
+		for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
+			try {
+				prx->userTextMessage(mp, textMessage);
+			} catch (...) {
+				badServerProxy(prx, s);
+			}
 		}
-	}
+	}));
 }
 
-void MumbleServerIce::channelCreated(const ::Channel *c) {
-	::Server *s = qobject_cast<::Server * >(sender());
-
-	const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[s->iServerNum];
-
-	if (qmList.isEmpty())
-		return;
+void MumbleServerIce::onChannelCreated(::Server &server, const ::Channel *c) {
+	const unsigned int serverNum = server.iServerNum;
 
 	::MumbleServer::Channel mc;
 	channelToChannel(c, mc);
 
-	for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
-		try {
-			prx->channelCreated(mc);
-		} catch (...) {
-			badServerProxy(prx, s);
+	QCoreApplication::instance()->postEvent(this, new ExecEvent([this, serverNum, mc]() {
+		::Server *s = meta->qhServers.value(serverNum);
+		if (!s)
+			return;
+		const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[serverNum];
+		if (qmList.isEmpty())
+			return;
+		for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
+			try {
+				prx->channelCreated(mc);
+			} catch (...) {
+				badServerProxy(prx, s);
+			}
 		}
-	}
+	}));
 }
 
-void MumbleServerIce::channelRemoved(const ::Channel *c) {
-	::Server *s = qobject_cast<::Server * >(sender());
-
-	const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[s->iServerNum];
-
-	if (qmList.isEmpty())
-		return;
+void MumbleServerIce::onChannelRemoved(::Server &server, const ::Channel *c) {
+	const unsigned int serverNum = server.iServerNum;
 
 	::MumbleServer::Channel mc;
 	channelToChannel(c, mc);
 
-	for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
-		try {
-			prx->channelRemoved(mc);
-		} catch (...) {
-			badServerProxy(prx, s);
+	QCoreApplication::instance()->postEvent(this, new ExecEvent([this, serverNum, mc]() {
+		::Server *s = meta->qhServers.value(serverNum);
+		if (!s)
+			return;
+		const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[serverNum];
+		if (qmList.isEmpty())
+			return;
+		for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
+			try {
+				prx->channelRemoved(mc);
+			} catch (...) {
+				badServerProxy(prx, s);
+			}
 		}
-	}
+	}));
 }
 
-void MumbleServerIce::channelStateChanged(const ::Channel *c) {
-	::Server *s = qobject_cast<::Server * >(sender());
-
-	const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[s->iServerNum];
-
-	if (qmList.isEmpty())
-		return;
+void MumbleServerIce::onChannelStateChanged(::Server &server, const ::Channel *c) {
+	const unsigned int serverNum = server.iServerNum;
 
 	::MumbleServer::Channel mc;
 	channelToChannel(c, mc);
 
-	for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
-		try {
-			prx->channelStateChanged(mc);
-		} catch (...) {
-			badServerProxy(prx, s);
+	QCoreApplication::instance()->postEvent(this, new ExecEvent([this, serverNum, mc]() {
+		::Server *s = meta->qhServers.value(serverNum);
+		if (!s)
+			return;
+		const QList<::MumbleServer::ServerCallbackPrx > &qmList = qmServerCallbacks[serverNum];
+		if (qmList.isEmpty())
+			return;
+		for (const ::MumbleServer::ServerCallbackPrx &prx : qmList) {
+			try {
+				prx->channelStateChanged(mc);
+			} catch (...) {
+				badServerProxy(prx, s);
+			}
 		}
-	}
+	}));
 }
 
-void MumbleServerIce::contextAction(const ::User *pSrc, const QString &action, unsigned int session, int iChannel) {
-	::Server *s = qobject_cast<::Server * >(sender());
-
-	if (!qmServerContextCallbacks.contains(s->iServerNum))
-		return;
-
-	QMap< int, QMap< QString, ::MumbleServer::ServerContextCallbackPrx > > &qmServer =
-		qmServerContextCallbacks[s->iServerNum];
-	if (!qmServer.contains(static_cast< int >(pSrc->uiSession)))
-		return;
-
-	QMap< QString, ::MumbleServer::ServerContextCallbackPrx > &qmUser = qmServer[static_cast< int >(pSrc->uiSession)];
-	if (!qmUser.contains(action))
-		return;
-
-	const ::MumbleServer::ServerContextCallbackPrx &prx = qmUser[action];
+void MumbleServerIce::onContextAction(::Server &server, const ::User *pSrc, const QString &action, unsigned int session,
+									  int iChannel) {
+	const unsigned int serverNum = server.iServerNum;
+	const unsigned int srcSess   = pSrc->uiSession;
 
 	::MumbleServer::User mp;
 	userToUser(pSrc, mp);
 
-	try {
-		prx->contextAction(iceString(action), mp, static_cast< int >(session), iChannel);
-	} catch (...) {
-		s->log(QString("Ice ServerContextCallback %1 for session %2, action %3 failed")
-				   .arg(QString::fromStdString(communicator->proxyToString(prx)))
-				   .arg(pSrc->uiSession)
-				   .arg(action));
-		removeServerContextCallback(s, static_cast< int >(pSrc->uiSession), action);
+	QCoreApplication::instance()->postEvent(
+		this, new ExecEvent([this, serverNum, mp, action, srcSess, session, iChannel]() {
+			::Server *s = meta->qhServers.value(serverNum);
+			if (!s)
+				return;
+			if (!qmServerContextCallbacks.contains(serverNum))
+				return;
 
-		// Remove clientside entry
-		MumbleProto::ContextActionModify mpcam;
-		mpcam.set_action(iceString(action));
-		mpcam.set_operation(MumbleProto::ContextActionModify_Operation_Remove);
-		ServerUser *su = s->qhUsers.value(session);
-		if (su)
-			s->sendMessage(su, mpcam);
-	}
+			QMap< int, QMap< QString, ::MumbleServer::ServerContextCallbackPrx > > &qmServer =
+				qmServerContextCallbacks[serverNum];
+			if (!qmServer.contains(static_cast< int >(srcSess)))
+				return;
+
+			QMap< QString, ::MumbleServer::ServerContextCallbackPrx > &qmUser = qmServer[static_cast< int >(srcSess)];
+			if (!qmUser.contains(action))
+				return;
+
+			const ::MumbleServer::ServerContextCallbackPrx &prx = qmUser[action];
+
+			try {
+				prx->contextAction(iceString(action), mp, static_cast< int >(session), iChannel);
+			} catch (...) {
+				s->log(QString("Ice ServerContextCallback %1 for session %2, action %3 failed")
+						   .arg(QString::fromStdString(communicator->proxyToString(prx)))
+						   .arg(srcSess)
+						   .arg(action));
+				removeServerContextCallback(s, static_cast< int >(srcSess), action);
+
+				// Remove clientside entry
+				MumbleProto::ContextActionModify mpcam;
+				mpcam.set_action(iceString(action));
+				mpcam.set_operation(MumbleProto::ContextActionModify_Operation_Remove);
+				ServerUser *su = s->qhUsers.value(session);
+				if (su)
+					s->sendMessage(su, mpcam);
+			}
+		}));
 }
 
 void MumbleServerIce::idToNameSlot(QString &name, int id) {

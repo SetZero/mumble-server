@@ -24,6 +24,7 @@
 #include "push/PushNotificationDispatcher.h"
 #include "WebRtcSfuManager.h"
 #include "LinkPreviewManager.h"
+#include "ServerEventDistributor.h"
 
 class PluginHostManager;
 #include "Mumble.pb.h"
@@ -377,6 +378,12 @@ public:
 
 	std::unique_ptr< LinkPreviewManager > m_linkPreviewManager;
 
+	/// Central event registry/dispatcher. Distributors (the internal plugin
+	/// host, ZeroC Ice, future gRPC, …) register here and the Server fans every
+	/// control-plane event out to all of them. Declared before m_pluginHost so
+	/// the host (a subscriber) is destroyed while the distributor is still alive.
+	ServerEventDistributor m_events{ *this };
+
 	std::unique_ptr< PluginHostManager > m_pluginHost;
 
 
@@ -516,11 +523,13 @@ public:
 
 	std::vector< UserInfo > getAllRegisteredUserProperties(QString nameSubstring = "");
 
+	/// Access the central event registry/dispatcher. Distributors register
+	/// here via events().registerSubscriber(...) or events().subscribe()....
+	ServerEventDistributor &events() { return m_events; }
+
 	// RPC functions. Implementation in RPC.cpp
 	void connectAuthenticator(QObject *p);
 	void disconnectAuthenticator(QObject *p);
-	void connectListener(QObject *p);
-	void disconnectListener(QObject *p);
 	void setTempGroups(int userid, int sessionId, Channel *cChannel, const QStringList &groups);
 	void clearTempGroups(User *user, Channel *cChannel = nullptr, bool recurse = true);
 	void startListeningToChannel(ServerUser *user, Channel *cChannel);
@@ -545,17 +554,7 @@ signals:
 	void nameToIdSig(int &, const QString &);
 	void idToTextureSig(QByteArray &, int);
 
-	void userStateChanged(const User *);
-	void userTextMessage(const User *, const TextMessage &);
-	void userConnected(const User *);
-	void userDisconnected(const User *);
-	void channelStateChanged(const Channel *);
-	void channelCreated(const Channel *);
-	void channelRemoved(const Channel *);
-
 	void textMessageFilterSig(int &, const User *, MumbleProto::TextMessage &);
-
-	void contextAction(const User *, const QString &, unsigned int, int);
 
 public:
 	void setUserState(User *p, Channel *parent, bool mute, bool deaf, bool suppressed, bool prioritySpeaker,

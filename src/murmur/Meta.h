@@ -8,6 +8,7 @@
 
 #include "DBState.h"
 #include "DBWrapper.h"
+#include "ServerEventDistributor.h"
 #include "Timer.h"
 #include "Version.h"
 
@@ -253,12 +254,14 @@ public:
 	void kill(unsigned int);
 	void killAll();
 	void getOSInfo();
-	void connectListener(QObject *);
+
+	/// Access the meta-level event registry/dispatcher (server started/stopped).
+	MetaEventDistributor &events() { return m_events; }
 	static void getVersion(Version::component_t &major, Version::component_t &minor, Version::component_t &patch,
 						   QString &string);
-signals:
-	void started(Server *);
-	void stopped(Server *);
+
+private:
+	MetaEventDistributor m_events;
 };
 
 extern Meta *meta;
