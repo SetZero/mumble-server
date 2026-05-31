@@ -1,0 +1,271 @@
+// Typed, language-agnostic UI abstraction layered on top of the generic
+// plugin-message channel (see `world.wit`).
+//
+// The native Rust plugin API (`mumble-plugin-api`) exposes the Tier-1 client
+// extension protocol — slash commands, components, modals, toasts — as JSON
+// carried on two reserved `payload_type` strings ("Interaction" /
+// "InteractionResponse") of the generic `PluginMessage` envelope.  A WASM guest
+// *could* hand-build and parse that JSON itself, but every guest language would
+// then re-implement (and risk drifting from) the wire format.
+//
+// Instead this file encodes the same protocol as **typed WIT records and
+// variants**.  Because the contract lives in WIT, every guest toolchain —
+// wit-bindgen (Rust / C / C++ / TinyGo), jco (JavaScript), componentize-py
+// (Python) — generates native, type-checked bindings for it, so a guest never
+// touches raw JSON.  The host (`mumble-plugin-host`) owns the single canonical
+// translation between these typed values and the client JSON wire format, so
+// the bytes on the wire stay byte-compatible with native plugins.
+//
+//   * Guests *export* `ui-guest`: a typed `manifest()` (folded into the
+//     plugin's `PluginInfo` by the host) and an `on-interaction()` hook the
+//     host calls after decoding an inbound "Interaction".
+//   * Guests *import* `ui-host`: `send-interaction-response()` encodes a typed
+//     response and dispatches it as an "InteractionResponse" message.
+//
+// The component vocabulary below is a deliberately small, practical core
+// (button, text display, action rows + the chat-message / update-message /
+// modal / toast responses).  It mirrors the native names 1:1 and is additive:
+// new component or response variants can be appended without breaking guests.
+//
+// This file is part of the `mumble:plugin@0.1.0` package declared in
+// `world.wit`; a WIT package spans every `.wit` file in this directory.
+
+/// Typed mirror of the Tier-1 client-extension wire types
+/// (`mumble-plugin-api::client_manifest` / `::components`).
+interface ui-types {
+    use types.{channel-id};
+
+    // ---- Manifest (plugin -> client, advertised once via PluginInfo) ------
+
+    /// Coarse capability tag surfaced in the client's trust prompt.
+    enum capability {
+        slash-commands,
+        modals,
+        components,
+        notifications,
+        settings-panel,
+        rich-layout,
+    }
+
+    /// Value type accepted by a slash-command option.
+    enum option-type {
+        %string,
+        integer,
+        boolean,
+        user,
+        channel,
+    }
+
+    /// Pre-defined value choice for a slash-command option.
+    record option-choice {
+        label: string,
+        value: string,
+    }
+
+    /// A single named argument to a slash command.
+    record slash-command-option {
+        name: string,
+        description: string,
+        option-type: option-type,
+        required: bool,
+        choices: list<option-choice>,
+    }
+
+    /// A slash command surfaced in the chat composer.
+    record slash-command {
+        name: string,
+        description: string,
+        options: list<slash-command-option>,
+    }
+
+    /// Top-level descriptor of the UI a plugin contributes to the client.
+    record client-manifest {
+        schema-version: u32,
+        slash-commands: list<slash-command>,
+        capabilities: list<capability>,
+    }
+
+    // ---- Components -------------------------------------------------------
+
+    /// Visual style of a button.
+    enum button-style {
+        primary,
+        secondary,
+        success,
+        danger,
+        link,
+    }
+
+    /// Click target.  `custom-id` is echoed back in a `component` interaction;
+    /// `link`-style buttons carry a `url` and emit no interaction.
+    record button {
+        custom-id: option<string>,
+        label: string,
+        style: button-style,
+        disabled: bool,
+        url: option<string>,
+    }
+
+    /// Markdown text block.
+    record text-display {
+        content: string,
+    }
+
+    /// A single component, in any supported shape.
+    variant component {
+        button(button),
+        text-display(text-display),
+    }
+
+    /// Horizontal row of components.
+    record action-row {
+        components: list<component>,
+    }
+
+    // ---- Interactions (client -> plugin) ----------------------------------
+
+    /// Type-tagged value of a slash-command option at submit time.
+    variant option-value {
+        text(string),
+        integer(s64),
+        boolean(bool),
+    }
+
+    /// A submitted slash-command argument.
+    record command-arg {
+        name: string,
+        value: option-value,
+    }
+
+    /// User invoked a slash command from the composer.
+    record slash-command-interaction {
+        name: string,
+        args: list<command-arg>,
+    }
+
+    /// User activated a component (button click, select pick).
+    record component-interaction {
+        custom-id: string,
+        values: list<string>,
+    }
+
+    /// User submitted a modal previously opened by the plugin.
+    record modal-submit-interaction {
+        custom-id: string,
+        fields: list<command-arg>,
+    }
+
+    /// What the user actually did.
+    variant interaction-kind {
+        slash-command(slash-command-interaction),
+        component(component-interaction),
+        modal-submit(modal-submit-interaction),
+    }
+
+    /// Envelope carrying a user-originated UI event back to the plugin.
+    record interaction {
+        correlation-id: string,
+        channel-id: option<channel-id>,
+        kind: interaction-kind,
+    }
+
+    // ---- Responses (plugin -> client) -------------------------------------
+
+    /// Severity hint for a toast.
+    enum toast-level {
+        info,
+        success,
+        warning,
+        error,
+    }
+
+    /// Inject a literal chat message (optionally with components) into the
+    /// client's chat history.
+    record chat-message {
+        message-id: string,
+        // `list<u32>` rather than `list<channel-id>`: jco 1.19's bindgen panics
+        // lowering a list whose element is a type alias.  `channel-id` is a
+        // `u32` alias, so this stays wire-compatible.
+        channel-ids: list<u32>,
+        content: string,
+        components: list<action-row>,
+        ephemeral: bool,
+    }
+
+    /// Patch an existing `chat-message` / `show-modal` in place.  A `none`
+    /// field keeps the existing value; `some(empty)` clears it.
+    record update-message {
+        message-id: string,
+        content: option<string>,
+        components: option<list<action-row>>,
+    }
+
+    /// Open a transient modal / floating card.
+    record show-modal {
+        custom-id: string,
+        title: string,
+        content: string,
+        components: list<action-row>,
+        ephemeral: bool,
+    }
+
+    /// Show a transient toast not bound to any message.
+    record toast {
+        message: string,
+        level: toast-level,
+    }
+
+    /// What the client should render in response to an interaction.
+    variant response-kind {
+        chat-message(chat-message),
+        update-message(update-message),
+        show-modal(show-modal),
+        toast(toast),
+    }
+
+    /// Envelope carrying a plugin-originated UI update back to the client.
+    record interaction-response {
+        correlation-id: option<string>,
+        kind: response-kind,
+    }
+}
+
+/// Typed UI callbacks the guest may invoke.  Implemented by the host; valid
+/// only while a `plugin` export call is running (same context rules as `host`).
+interface ui-host {
+    use types.{channel-id, plugin-error};
+    use ui-types.{interaction-response};
+
+    /// Encode `response` as an "InteractionResponse" message and dispatch it to
+    /// `targets` and/or everyone in `channel`.  The host stamps the calling
+    /// plugin's name onto the envelope, so the guest never has to.
+    send-interaction-response: func(
+        server-id: u32,
+        // `list<u32>` not `list<session-id>`: see the `channel-ids` note above
+        // (jco 1.19 cannot lower a list of a type alias).
+        targets: list<u32>,
+        channel: option<channel-id>,
+        response: interaction-response,
+    ) -> result<_, plugin-error>;
+}
+
+/// Typed UI hooks the guest implements.  Optional: a guest that returns `none`
+/// from `manifest` and ignores `on-interaction` simply contributes no client
+/// UI (these are no-ops for such plugins).
+interface ui-guest {
+    use types.{session-id, plugin-error};
+    use ui-types.{client-manifest, interaction};
+
+    /// Typed client manifest.  When `some`, the host folds it into the
+    /// `client_manifest` of the plugin's `PluginInfo`, so the guest never
+    /// hand-builds the manifest JSON.
+    manifest: func() -> option<client-manifest>;
+
+    /// Fires when an "Interaction" addressed to this plugin arrives.  The host
+    /// decodes the wire JSON into the typed `interaction` before calling this.
+    on-interaction: func(
+        server-id: u32,
+        sender: session-id,
+        interaction: interaction,
+    ) -> result<_, plugin-error>;
+}

@@ -56,9 +56,10 @@ pub(crate) enum InstallError {
 /// One artifact entry in the marketplace manifest.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ManifestArtifact {
-    /// `linux`, `windows`, or `macos`.
+    /// `linux`, `windows`, or `macos`.  Ignored for `wasm` artifacts,
+    /// which are portable (conventionally `"any"`).
     pub os: String,
-    /// `x86_64`, `aarch64`, ...
+    /// `x86_64`, `aarch64`, ...  Ignored for `wasm` artifacts.
     pub arch: String,
     /// `zip` or `tar.gz`.
     pub format: String,
@@ -66,8 +67,20 @@ pub(crate) struct ManifestArtifact {
     pub download_url: String,
     /// Hex-encoded SHA-256 of the archive body.
     pub sha256: String,
-    /// File name of the cdylib inside the archive (e.g. `libfancy_greeter.so`).
+    /// File name of the plugin binary inside the archive (e.g.
+    /// `libfancy_greeter.so` or, for wasm, `fancy_greeter.wasm`).
     pub cdylib_filename: String,
+    /// Backend: `"native"` (default) or `"wasm"`.  A `wasm` artifact is
+    /// portable and is selected on any host when no native artifact
+    /// matches the current platform.
+    #[serde(default = "default_artifact_kind")]
+    pub kind: String,
+}
+
+/// Default value for [`ManifestArtifact::kind`] when the manifest omits
+/// it, preserving backward compatibility with native-only manifests.
+fn default_artifact_kind() -> String {
+    "native".to_owned()
 }
 
 /// Top-level marketplace manifest schema (subset we actually use).
@@ -171,22 +184,33 @@ pub(crate) fn fetch_manifest(
 }
 
 /// Pick the artifact in `manifest` matching the current `(os, arch)`.
+///
+/// Preference order: a `native` artifact for this exact platform, then
+/// a portable `wasm` artifact (which runs on any host).
 pub(crate) fn pick_artifact(manifest: &Manifest) -> Result<&ManifestArtifact, InstallError> {
     let (os, arch) = current_platform();
-    manifest
+    if let Some(native) = manifest.artifacts.iter().find(|a| {
+        a.kind.eq_ignore_ascii_case("native")
+            && a.os.eq_ignore_ascii_case(os)
+            && a.arch.eq_ignore_ascii_case(arch)
+    }) {
+        return Ok(native);
+    }
+    if let Some(wasm) = manifest
         .artifacts
         .iter()
-        .find(|a| a.os.eq_ignore_ascii_case(os) && a.arch.eq_ignore_ascii_case(arch))
-        .ok_or_else(|| {
-            InstallError::Manifest(format!(
-                "no artifact for {os}/{arch}; available: {avail:?}",
-                avail = manifest
-                    .artifacts
-                    .iter()
-                    .map(|a| format!("{}/{}", a.os, a.arch))
-                    .collect::<Vec<_>>()
-            ))
-        })
+        .find(|a| a.kind.eq_ignore_ascii_case("wasm"))
+    {
+        return Ok(wasm);
+    }
+    Err(InstallError::Manifest(format!(
+        "no artifact for {os}/{arch} (and no portable wasm artifact); available: {avail:?}",
+        avail = manifest
+            .artifacts
+            .iter()
+            .map(|a| format!("{}/{}/{}", a.kind, a.os, a.arch))
+            .collect::<Vec<_>>()
+    )))
 }
 
 /// Extract `cdylib_filename` (and optional `plugin.example.ini`) from

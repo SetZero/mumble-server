@@ -1,0 +1,173 @@
+// Component-model interface shared by the plugin host (`mumble-plugin-host`)
+// and WASM plugin guests (`mumble-plugin-api-wasm`).
+//
+// The host loads a `.wasm` component implementing `plugin-world` and drives it
+// exactly like a native cdylib plugin: the guest *exports* the `guest`
+// interface (the lifecycle/event hooks mirroring the native `MumblePlugin`
+// trait) and *imports* the `host` interface (the callbacks mirroring the native
+// `PluginContext` trait).
+//
+// There is no per-call `ctx` argument: the imported `host` functions ARE the
+// context. The host installs the active `PluginContext` for the duration of
+// each exported call, so a guest simply calls the host imports directly.
+//
+// Sandbox: this world imports ONLY the `host` interface below. No WASI, no
+// filesystem, no sockets, no clock, no randomness are linked. A guest can only
+// affect the world through these explicit calls.
+package mumble:plugin@0.1.0;
+
+interface types {
+    /// Virtual server id within a single murmur process.
+    type server-id = u32;
+    /// Connected client session id within a virtual server.
+    type session-id = u32;
+    /// Channel id within a virtual server.
+    type channel-id = u32;
+
+    /// Snapshot of a newly connected client (mirrors native `ClientInfo`).
+    record client-info {
+        server-id: server-id,
+        session-id: session-id,
+        username: string,
+        cert-hash: string,
+    }
+
+    /// Inbound generic plugin message addressed to this plugin
+    /// (mirrors native `PluginMessageIn`).
+    record plugin-message-in {
+        server-id: server-id,
+        sender-session: session-id,
+        sender-name: string,
+        plugin-name: string,
+        payload-type: string,
+        payload: list<u8>,
+        channel-id: option<channel-id>,
+    }
+
+    /// Outbound generic plugin message produced by the guest
+    /// (mirrors native `PluginMessageOut`).
+    record plugin-message-out {
+        server-id: server-id,
+        plugin-name: string,
+        payload-type: string,
+        payload: list<u8>,
+        target-sessions: list<u32>,
+        channel-id: option<channel-id>,
+    }
+
+    /// Error returned from guest hooks and host calls
+    /// (mirrors native `PluginError`).
+    variant plugin-error {
+        config(string),
+        io(string),
+        context-disposed,
+        other(string),
+    }
+}
+
+/// Callbacks the guest may invoke (mirrors the native `PluginContext` trait).
+/// Implemented by the host; only valid while a `plugin` export call is running.
+interface host {
+    use types.{server-id, session-id, channel-id, plugin-message-out, plugin-error};
+
+    /// Send a `PluginDataTransmission` to a single connected session.
+    send-plugin-data: func(
+        server-id: server-id,
+        target-session: session-id,
+        data-id: string,
+        data: list<u8>,
+    ) -> result<_, plugin-error>;
+
+    /// Whether the session is currently connected.
+    is-session-active: func(server-id: server-id, session: session-id) -> bool;
+
+    /// Whether the session may enter the channel per server ACLs.
+    user-has-channel-access: func(
+        server-id: server-id,
+        session: session-id,
+        channel: channel-id,
+    ) -> bool;
+
+    /// Whether the session holds every permission in `permission-flags`.
+    has-permission: func(
+        server-id: server-id,
+        session: session-id,
+        channel: channel-id,
+        permission-flags: u32,
+    ) -> bool;
+
+    /// Channel the session is currently in, if known.
+    current-channel: func(server-id: server-id, session: session-id) -> option<channel-id>;
+
+    /// Look up a configuration value scoped to the calling plugin.
+    get-config: func(key: string) -> option<string>;
+
+    /// Dispatch a generic plugin message envelope (wire id 200).
+    send-plugin-message: func(msg: plugin-message-out) -> result<_, plugin-error>;
+
+    /// Session ids of every user currently in `channel`.
+    sessions-in-channel: func(server-id: server-id, channel: channel-id) -> list<u32>;
+
+    /// Session ids of every connected user on `server-id`.
+    all-sessions: func(server-id: server-id) -> list<u32>;
+
+    /// Resolve a username (exact match) to its current session id.
+    find-session-by-name: func(server-id: server-id, name: string) -> option<session-id>;
+}
+
+/// Hooks the guest implements (mirrors the native `MumblePlugin` trait).
+interface guest {
+    use types.{server-id, session-id, client-info, plugin-message-in, plugin-error};
+
+    /// Plugin-api ABI version the guest was built against. The host rejects
+    /// the component unless this equals its own `PLUGIN_ABI_VERSION`.
+    abi-version: func() -> u32;
+
+    /// Stable plugin identifier.
+    name: func() -> string;
+
+    /// SemVer of the plugin release.
+    version: func() -> string;
+
+    /// JSON-encoded `PluginInfo`. Defaults to `"{}"` when not overridden.
+    info-json: func() -> string;
+
+    /// Called once when the plugin is loaded.
+    on-load: func() -> result<_, plugin-error>;
+
+    /// Called once when the plugin is unloaded.
+    on-unload: func() -> result<_, plugin-error>;
+
+    /// Fires when a client authenticates and joins the server.
+    on-client-connected: func(info: client-info) -> result<_, plugin-error>;
+
+    /// Fires when a client disconnects.
+    on-client-disconnected: func(
+        server-id: server-id,
+        session: session-id,
+    ) -> result<_, plugin-error>;
+
+    /// Fires for every `PluginDataTransmission` the server receives.
+    on-plugin-data: func(
+        server-id: server-id,
+        sender: session-id,
+        data-id: string,
+        data: list<u8>,
+    ) -> result<_, plugin-error>;
+
+    /// Receives a generic plugin message envelope addressed to this plugin.
+    on-plugin-message: func(msg: plugin-message-in) -> result<_, plugin-error>;
+}
+
+/// The world a WASM plugin must implement to be loadable by the host.
+///
+/// `host` / `guest` are the low-level generic channel (raw `PluginMessage`
+/// bytes).  `ui-host` / `ui-guest` (see `ui.wit`) layer the typed, JSON-free
+/// Tier-1 UI protocol (slash commands, components, modals, toasts) on top, so
+/// guests can drive client UI without ever building or parsing wire JSON.
+world plugin-world {
+    import host;
+    import ui-host;
+    export guest;
+    export ui-guest;
+}

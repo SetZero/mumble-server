@@ -110,6 +110,18 @@ pub fn cdylib_suffix() -> &'static str {
     }
 }
 
+/// File-name suffix for WASM component plugins (platform-independent).
+pub fn wasm_suffix() -> &'static str {
+    ".wasm"
+}
+
+/// Whether `path` names a WASM component plugin (by extension).
+fn is_wasm_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("wasm"))
+}
+
 /// Enumerate cdylib candidates in `dir`.  Missing or unreadable
 /// directories yield an empty iterator; errors on individual entries
 /// are logged and skipped.
@@ -123,6 +135,7 @@ pub fn scan_dir(dir: &Path) -> Vec<PathBuf> {
         }
     };
     let suffix = cdylib_suffix();
+    let wasm = wasm_suffix();
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
@@ -138,16 +151,45 @@ pub fn scan_dir(dir: &Path) -> Vec<PathBuf> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if name.ends_with(suffix) {
+        if name.ends_with(suffix) || name.ends_with(wasm) {
             out.push(path);
         }
     }
     out
 }
 
-/// Load a single plugin cdylib via `abi_stable`, verify its ABI
-/// version, and return the constructed trait object.
+/// Load a single plugin from `path`, dispatching on file extension:
+/// `.wasm` files are loaded as WebAssembly components (when the
+/// `wasm-plugins` feature is enabled), everything else as a native
+/// `abi_stable` cdylib.  Both paths produce an identical
+/// [`LoadedPlugin`], so the rest of the host is agnostic to the backend.
 pub fn load_plugin(path: &Path) -> Result<LoadedPlugin, LoadError> {
+    if is_wasm_path(path) {
+        return load_wasm(path);
+    }
+    load_native(path)
+}
+
+/// Backend dispatch for `.wasm` components.
+#[cfg(feature = "wasm-plugins")]
+fn load_wasm(path: &Path) -> Result<LoadedPlugin, LoadError> {
+    crate::wasm::load_wasm_plugin(path)
+}
+
+/// Stub used when WASM support is compiled out: reject `.wasm` files
+/// with a clear message instead of silently ignoring them.
+#[cfg(not(feature = "wasm-plugins"))]
+fn load_wasm(path: &Path) -> Result<LoadedPlugin, LoadError> {
+    Err(LoadError::Invalid {
+        path: path.to_path_buf(),
+        message: "wasm plugin support not compiled in (enable the 'wasm-plugins' feature)"
+            .to_owned(),
+    })
+}
+
+/// Load a single native plugin cdylib via `abi_stable`, verify its ABI
+/// version, and return the constructed trait object.
+fn load_native(path: &Path) -> Result<LoadedPlugin, LoadError> {
     // Pre-flight: read the plugin's ABI version through a plain
     // `extern "C" fn() -> u32` symbol BEFORE handing the binary to
     // `abi_stable`'s typed loader.  A cdylib built against an

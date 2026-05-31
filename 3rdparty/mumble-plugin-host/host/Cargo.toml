@@ -8,6 +8,18 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# WASM component plugins loaded via wasmtime, side by side with native
+# cdylibs. Enabled by default; disable to drop the (large) wasmtime
+# dependency for size-sensitive builds that only need native plugins.
+default = ["wasm-plugins", "wasm-wasi"]
+wasm-plugins = ["dep:wasmtime"]
+# Link a locked-down WASI (no filesystem, network, args or env) into the
+# component linker. Required by guests whose toolchain embeds a runtime that
+# imports WASI - notably JavaScript plugins built with ComponentizeJS/jco.
+# Pure components (e.g. Rust guests via wit-bindgen) ignore these imports.
+wasm-wasi = ["wasm-plugins", "dep:wasmtime-wasi"]
+
 [dependencies]
 mumble-plugin-api = { path = "../api" }
 
@@ -25,11 +37,26 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
 
+# WASM component runtime for `.wasm` plugins. Synchronous. Guests get the
+# `host` interface imports defined in `../wit/world.wit`; with the `wasm-wasi`
+# feature they additionally get a sandboxed WASI (see below).
+wasmtime = { version = "27", default-features = false, features = [
+    "runtime",
+    "component-model",
+    "cranelift",
+    "std",
+], optional = true }
+# Sandboxed WASI implementation linked when the `wasm-wasi` feature is on, so
+# components that embed a WASI-dependent runtime (e.g. the JavaScript engine
+# produced by ComponentizeJS) can instantiate. The provided context grants no
+# filesystem, network, environment or argument access.
+wasmtime-wasi = { version = "27", optional = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # ELF pre-validation: parse the binary without dlopen so a corrupt or
 # wrong-arch cdylib is rejected before its .init_array can run and
 # SIGSEGV the server.
-goblin = { version = "0.9", default-features = false, features = ["elf64", "elf32", "std"] }
+goblin = { version = "0.9", default-features = false, features = ["elf64", "elf32", "endian_fd", "std"] }
 
 [build-dependencies]
 cbindgen = "0.29"

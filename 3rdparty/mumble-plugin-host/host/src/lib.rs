@@ -10,6 +10,8 @@ mod host;
 mod info;
 mod install;
 mod loader;
+#[cfg(feature = "wasm-plugins")]
+mod wasm;
 
 pub use context::PluginHostCallbacks;
 pub use ffi::{

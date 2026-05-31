@@ -41,6 +41,37 @@ const CONFIG_KEY_MARKETPLACE_ID: &str = "marketplace_id";
 /// marketplace flow last installed/upgraded the plugin.
 const CONFIG_KEY_INSTALLED_AT: &str = "installed_at";
 
+/// Backend a plugin is loaded through.  Purely informational — it is
+/// surfaced to the admin UI but never influences dispatch, which goes
+/// through the uniform [`MumblePlugin`](mumble_plugin_api::MumblePlugin)
+/// trait object regardless of backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum PluginKind {
+    /// Native `abi_stable` cdylib (`.so`/`.dll`/`.dylib`).
+    Native,
+    /// WebAssembly component (`.wasm`).
+    Wasm,
+}
+
+impl PluginKind {
+    /// Classify a plugin file by its extension.
+    fn from_path(path: &std::path::Path) -> Self {
+        match path.extension().and_then(|e| e.to_str()) {
+            Some(e) if e.eq_ignore_ascii_case("wasm") => PluginKind::Wasm,
+            _ => PluginKind::Native,
+        }
+    }
+
+    /// Stable lowercase label used in the admin JSON.
+    fn as_str(self) -> &'static str {
+        match self {
+            PluginKind::Native => "native",
+            PluginKind::Wasm => "wasm",
+        }
+    }
+}
+
 /// One plugin known to the host, loaded or merely discovered.
 struct Entry {
     name: String,
@@ -64,6 +95,8 @@ struct Entry {
     /// True when the plugin's `.so` is NOT in the user-writable
     /// install directory, i.e. it ships with the server distribution.
     builtin: bool,
+    /// Backend the plugin was loaded through (native cdylib vs WASM).
+    kind: PluginKind,
 }
 
 /// Plugin that was discovered on disk but could not be loaded (ABI mismatch,
@@ -126,6 +159,8 @@ pub(crate) struct PluginAdminInfo {
     pub marketplace_id: Option<String>,
     pub installed_at: Option<u64>,
     pub builtin: bool,
+    /// Backend the plugin loaded through (`"native"` or `"wasm"`).
+    pub kind: &'static str,
     /// Set when the plugin could not be loaded; contains the error message.
     pub load_error: Option<String>,
 }
@@ -401,6 +436,7 @@ impl Host {
                 marketplace_id: e.marketplace_id.clone(),
                 installed_at: e.installed_at,
                 builtin: e.builtin,
+                kind: e.kind.as_str(),
                 load_error: None,
             })
             .collect();
@@ -415,6 +451,7 @@ impl Host {
                 marketplace_id: None,
                 installed_at: None,
                 builtin: f.builtin,
+                kind: PluginKind::from_path(&f.path).as_str(),
                 load_error: Some(f.error.clone()),
             });
         }
@@ -698,6 +735,7 @@ fn build_entry(
     let installed_at =
         read_config_u64(base_context, &format!("{prefix}.{CONFIG_KEY_INSTALLED_AT}"));
     let enabled = plugin_is_enabled(base_context, &prefix);
+    let kind = PluginKind::from_path(&loaded.path);
     let mut entry = Entry {
         name,
         version,
@@ -708,6 +746,7 @@ fn build_entry(
         marketplace_id,
         installed_at,
         builtin: false,
+        kind,
     };
     if enabled {
         // Build two independent trait objects backed by equivalent
