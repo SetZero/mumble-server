@@ -22,11 +22,11 @@ use thiserror as _;
 use tracing as _;
 use tracing_subscriber as _;
 use ureq as _;
-use zip as _;
 #[cfg(feature = "wasm-plugins")]
 use wasmtime as _;
 #[cfg(feature = "wasm-wasi")]
 use wasmtime_wasi as _;
+use zip as _;
 use zstd as _;
 
 use std::ffi::{c_char, c_int, CStr, CString};

@@ -243,10 +243,17 @@ async fn run_recv_loop(mut ctx: RecvLoop) {
         match msg {
             WsMessage::Binary(bytes) => {
                 if bytes.len() > ctx.max_update {
-                    tracing::warn!(size = bytes.len(), "live-doc dropping oversized client update");
+                    tracing::warn!(
+                        size = bytes.len(),
+                        "live-doc dropping oversized client update"
+                    );
                     continue;
                 }
-                match ctx.room.apply_client_message(ctx.connection_id, &bytes).await {
+                match ctx
+                    .room
+                    .apply_client_message(ctx.connection_id, &bytes)
+                    .await
+                {
                     Ok((reply, awareness)) => {
                         // Forward the per-client sync reply (e.g. the
                         // sync-step-2 carrying the full document state) back
@@ -374,7 +381,10 @@ mod tests {
             issue_handshake_jwt(&secret, server_id, session, channel, slug, 300).unwrap()
         };
 
-        let url1 = format!("ws://{addr}/ws/{server_id}/{channel}/{slug}?token={}", mint(10));
+        let url1 = format!(
+            "ws://{addr}/ws/{server_id}/{channel}/{slug}?token={}",
+            mint(10)
+        );
         let (mut ws1, _) = connect_async(url1.as_str()).await.unwrap();
 
         let writer = Doc::new();
@@ -394,7 +404,10 @@ mod tests {
         drop(ws1);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let url2 = format!("ws://{addr}/ws/{server_id}/{channel}/{slug}?token={}", mint(11));
+        let url2 = format!(
+            "ws://{addr}/ws/{server_id}/{channel}/{slug}?token={}",
+            mint(11)
+        );
         let (mut ws2, _) = connect_async(url2.as_str()).await.unwrap();
 
         let reader_doc = Doc::new();

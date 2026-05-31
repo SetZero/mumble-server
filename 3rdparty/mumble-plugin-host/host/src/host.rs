@@ -654,7 +654,9 @@ impl Host {
             }
             // Best-effort config cleanup: the registered name may differ from
             // the file stem for binary-level failures, so ignore any error.
-            let _ = self.base_context.delete_config_prefix(&format!("plugin.{name}."));
+            let _ = self
+                .base_context
+                .delete_config_prefix(&format!("plugin.{name}."));
             return Ok(());
         }
         Err(format!("plugin '{name}' not found"))

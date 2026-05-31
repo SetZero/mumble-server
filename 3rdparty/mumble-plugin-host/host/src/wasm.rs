@@ -34,14 +34,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use abi_stable::sabi_trait::TD_Opaque;
-use abi_stable::std_types::{
-    RArc, RErr, ROk, ROption, RResult, RSlice, RStr, RString, RVec,
-};
+use abi_stable::std_types::{RArc, RErr, ROk, ROption, RResult, RSlice, RStr, RString, RVec};
+use mumble_plugin_api::client_manifest as ncm;
 use mumble_plugin_api::{
     ClientInfo, MumblePlugin, MumblePlugin_TO, PluginContext_TO, PluginError, PluginMessageIn,
     PluginMessageOut, PluginResult, ServerId, SessionId, PLUGIN_ABI_VERSION,
 };
-use mumble_plugin_api::client_manifest as ncm;
 use mumble_plugin_api::{INTERACTION_PAYLOAD_TYPE, INTERACTION_RESPONSE_PAYLOAD_TYPE};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
@@ -181,7 +179,9 @@ impl WasmPlugin {
         match result {
             Ok(Ok(())) => ROk(()),
             Ok(Err(e)) => RErr(wit_err_to_native(e)),
-            Err(trap) => RErr(PluginError::Other(RString::from(format!("wasm trap: {trap}")))),
+            Err(trap) => RErr(PluginError::Other(RString::from(format!(
+                "wasm trap: {trap}"
+            )))),
         }
     }
 }
@@ -248,13 +248,9 @@ impl MumblePlugin for WasmPlugin {
         let did = data_id.as_str().to_owned();
         let bytes = data.as_slice().to_vec();
         self.run(ctx, move |me, store| {
-            me.bindings.mumble_plugin_guest().call_on_plugin_data(
-                store,
-                server_id,
-                sender,
-                &did,
-                &bytes,
-            )
+            me.bindings
+                .mumble_plugin_guest()
+                .call_on_plugin_data(store, server_id, sender, &did, &bytes)
         })
     }
 
@@ -350,7 +346,11 @@ impl HostImports for HostState {
 
     fn sessions_in_channel(&mut self, server_id: u32, channel: u32) -> Vec<u32> {
         self.ctx()
-            .map(|ctx| ctx.sessions_in_channel(server_id, channel).into_iter().collect())
+            .map(|ctx| {
+                ctx.sessions_in_channel(server_id, channel)
+                    .into_iter()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -427,17 +427,22 @@ pub fn load_wasm_plugin(path: &Path) -> Result<LoadedPlugin, LoadError> {
         },
     )?;
 
-    let mut store = Store::new(engine, HostState {
-        active_ctx: ContextPtr(std::ptr::null()),
-        plugin_name: String::new(),
-        // A deliberately empty WASI context: no preopened directories, no
-        // network, no environment and no CLI args. `stderr` is inherited so a
-        // misbehaving guest's diagnostics reach the server log.
-        #[cfg(feature = "wasm-wasi")]
-        wasi: wasmtime_wasi::WasiCtxBuilder::new().inherit_stderr().build(),
-        #[cfg(feature = "wasm-wasi")]
-        table: wasmtime_wasi::ResourceTable::new(),
-    });
+    let mut store = Store::new(
+        engine,
+        HostState {
+            active_ctx: ContextPtr(std::ptr::null()),
+            plugin_name: String::new(),
+            // A deliberately empty WASI context: no preopened directories, no
+            // network, no environment and no CLI args. `stderr` is inherited so a
+            // misbehaving guest's diagnostics reach the server log.
+            #[cfg(feature = "wasm-wasi")]
+            wasi: wasmtime_wasi::WasiCtxBuilder::new()
+                .inherit_stderr()
+                .build(),
+            #[cfg(feature = "wasm-wasi")]
+            table: wasmtime_wasi::ResourceTable::new(),
+        },
+    );
     let world = PluginWorld::instantiate(&mut store, &component, &linker).map_err(|e| {
         LoadError::Invalid {
             path: path.to_path_buf(),
@@ -899,11 +904,7 @@ mod tests {
             true
         }
 
-        fn current_channel(
-            &self,
-            _server_id: ServerId,
-            _session: SessionId,
-        ) -> ROption<ChannelId> {
+        fn current_channel(&self, _server_id: ServerId, _session: SessionId) -> ROption<ChannelId> {
             RNone
         }
 
