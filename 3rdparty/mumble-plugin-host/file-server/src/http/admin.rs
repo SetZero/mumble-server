@@ -6,10 +6,13 @@
 //!
 //! Endpoints:
 //!
-//! * `GET  /admin/documents/{name}`                 - latest revision body
-//! * `PUT  /admin/documents/{name}`                 - append new revision
-//! * `GET  /admin/documents/{name}/revisions`       - list revisions (newest first)
-//! * `GET  /admin/documents/{name}/revisions/{rev}` - specific revision body
+//! * `GET    /admin/documents/{name}`                      - latest revision body
+//! * `PUT    /admin/documents/{name}`                      - append new revision
+//! * `GET    /admin/documents/{name}/revisions`            - list revisions (newest first)
+//! * `GET    /admin/documents/{name}/revisions/{rev}`      - specific revision body
+//! * `GET    /admin/documents/{name}/shared-with`          - list the document's ACL
+//! * `PUT    /admin/documents/{name}/shared-with`          - add/update an ACL entry
+//! * `DELETE /admin/documents/{name}/shared-with/{cert}`   - revoke one ACL entry
 //!
 //! The `{name}` segment is URL-percent-decoded and validated against
 //! a strict alphabet (ASCII alphanumeric + `-_./`) so directory
@@ -19,13 +22,13 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::Json;
 use axum::Router;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-use crate::documents::RevisionMeta;
+use crate::documents::{RevisionMeta, SharedWithEntry};
 use crate::state::AppState;
 
 /// Maximum bytes accepted by `PUT /admin/documents/{name}`.
@@ -41,6 +44,14 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/admin/documents/{name}", get(get_latest).put(put_revision))
         .route("/admin/documents/{name}/revisions", get(list_revisions))
         .route("/admin/documents/{name}/revisions/{rev}", get(get_revision))
+        .route(
+            "/admin/documents/{name}/shared-with",
+            put(add_shared_with).get(list_shared_with),
+        )
+        .route(
+            "/admin/documents/{name}/shared-with/{cert}",
+            axum::routing::delete(remove_shared_with),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -52,6 +63,25 @@ struct RevisionsResponse {
 #[derive(Debug, Serialize)]
 struct PutAccepted {
     rev_seq: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct SharedWithBody {
+    cert_hash: String,
+    #[serde(default = "default_user_id")]
+    user_id: i64,
+    #[serde(default)]
+    display_name: String,
+}
+
+fn default_user_id() -> i64 {
+    -1
+}
+
+#[derive(Debug, Serialize)]
+struct SharedWithResponse {
+    name: String,
+    shared_with: Vec<SharedWithEntry>,
 }
 
 async fn get_latest(
@@ -129,6 +159,70 @@ async fn put_revision(
         Ok(rev_seq) => Ok(Json(PutAccepted { rev_seq })),
         Err(err) => {
             tracing::warn!(?err, "admin put_revision failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn add_shared_with(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(body): Json<SharedWithBody>,
+) -> Result<StatusCode, StatusCode> {
+    authenticate(&state, &headers)?;
+    let validated = validate_name(&name)?;
+    if body.cert_hash.is_empty() || body.cert_hash.len() > 128 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    match state.documents.add_shared_with(
+        &validated,
+        &body.cert_hash,
+        body.user_id,
+        &body.display_name,
+    ) {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(err) => {
+            tracing::warn!(?err, "admin add_shared_with failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn list_shared_with(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<SharedWithResponse>, StatusCode> {
+    authenticate(&state, &headers)?;
+    let validated = validate_name(&name)?;
+    match state.documents.list_shared_with(&validated) {
+        Ok(shared_with) => Ok(Json(SharedWithResponse {
+            name: validated,
+            shared_with,
+        })),
+        Err(err) => {
+            tracing::warn!(?err, "admin list_shared_with failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn remove_shared_with(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((name, cert)): Path<(String, String)>,
+) -> Result<StatusCode, StatusCode> {
+    authenticate(&state, &headers)?;
+    let validated = validate_name(&name)?;
+    if cert.is_empty() || cert.len() > 128 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    match state.documents.remove_shared_with(&validated, &cert) {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err(StatusCode::NOT_FOUND),
+        Err(err) => {
+            tracing::warn!(?err, "admin remove_shared_with failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

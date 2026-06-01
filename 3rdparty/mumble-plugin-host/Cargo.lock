@@ -1762,6 +1762,7 @@ dependencies = [
  "flate2",
  "goblin",
  "mumble-plugin-api",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2",

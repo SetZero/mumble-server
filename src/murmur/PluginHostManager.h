@@ -81,7 +81,7 @@ public:
 
 private:
         // -- Forwarders to the Rust plugin host (invoked from the overrides above) --
-        void onClientConnected(uint32_t session, const QString &username, const QString &certHash);
+        void onClientConnected(uint32_t session, const QString &username, const QString &certHash, int64_t userId);
         void onClientDisconnected(uint32_t session);
         void onPluginData(uint32_t senderSession, const QString &dataId, const QByteArray &data);
         void onPluginMessage(uint32_t senderSession, const QString &senderName,

@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::issue_handshake_jwt;
+use crate::doc::{DocKey, Visibility};
 use crate::host_facade::PluginMessageArgs;
 use crate::state::AppState;
 use crate::{HANDSHAKE_JWT_TTL_SECS, PLUGIN_NAME};
@@ -25,13 +26,17 @@ use crate::{HANDSHAKE_JWT_TTL_SECS, PLUGIN_NAME};
 /// (legacy path, kept for completeness).
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpenRequest {
-    /// Channel the document belongs to.
+    /// Channel to publish into when creating a new published document.
     pub channel_id: ChannelId,
-    /// Doc slug within the channel.  Sanitised before use.
+    /// Server-scoped doc slug.  Sanitised before use.
     pub slug: String,
-    /// Human-readable title for announce banners.
+    /// Human-readable title.
     #[serde(default)]
     pub title: String,
+    /// `"private"` (default) or `"publish"` - only meaningful when the
+    /// requester is creating a brand-new document.
+    #[serde(default)]
+    pub mode: String,
 }
 
 /// Sanitise a slug to a URL-safe form (lowercase ascii + hyphen
@@ -58,6 +63,12 @@ pub fn sanitize_slug(raw: &str) -> Option<String> {
 }
 
 /// Typed entry point shared by both open-request paths.
+///
+/// Resolves ownership and membership: the first opener of a slug becomes
+/// the owner; a non-owner may join only if the document is published to
+/// a channel they can access (recording them as a share recipient), or
+/// if they were already shared with.  On success an `Invite` (ws url +
+/// token) is delivered back to the requester.
 pub async fn handle_open_request_typed(
     state: &AppState,
     server_id: ServerId,
@@ -65,30 +76,200 @@ pub async fn handle_open_request_typed(
     channel_id: ChannelId,
     slug: &str,
     title: &str,
+    mode: &str,
 ) {
     let Some(slug) = sanitize_slug(slug) else {
-        tracing::debug!(
-            slug,
-            "rejecting open request with empty slug after sanitization"
-        );
+        tracing::debug!(slug, "rejecting open request with empty slug after sanitization");
+        return;
+    };
+    let Some(identity) = state.identity(server_id, sender).await else {
+        tracing::debug!(sender, "rejecting open: unknown session identity");
         return;
     };
 
-    if state.ctx().current_channel(server_id, sender) != Some(channel_id) {
-        tracing::debug!(
-            sender,
-            requested = channel_id,
-            "rejecting open: sender not in requested channel"
-        );
-        return;
+    let key = DocKey {
+        server_id,
+        slug: slug.clone(),
+    };
+    let room = state.ensure_room(key).await;
+    let mut meta = room.meta().await;
+
+    if meta.owner_cert_hash.is_empty() {
+        // Brand-new document: the requester claims ownership.
+        if identity.cert_hash.is_empty() {
+            tracing::debug!(sender, "rejecting open: creator has no cert identity");
+            return;
+        }
+        meta.owner_cert_hash = identity.cert_hash.clone();
+        meta.title = title.to_owned();
+        if mode == "publish" {
+            meta.bound_channel = Some(channel_id);
+            meta.visibility = Visibility::Published;
+        } else {
+            meta.bound_channel = None;
+            meta.visibility = Visibility::Private;
+        }
+        room.set_meta(meta.clone()).await;
+        state.persist_room_now(&room).await;
     }
-    if !state.session_can_access(server_id, sender, channel_id) {
+
+    if !resolve_access(state, server_id, sender, &room, &meta, &identity).await {
+        tracing::debug!(sender, slug = %slug, "rejecting open: not permitted");
         return;
     }
 
-    let ws_url = build_ws_url(state, server_id, channel_id, &slug);
+    let ws_url = build_ws_url(state, server_id, &slug);
+    // The invite carries the channel the requester is acting in (for the
+    // client to place/keep its panel), which is distinct from the authz
+    // `bound_channel` (None for a private doc).
+    send_invite(state, server_id, sender, Some(channel_id), &slug, &meta.title, &ws_url);
+    send_shared_with(state, server_id, sender, &slug, &room).await;
+}
 
-    send_invite(state, server_id, sender, channel_id, &slug, title, &ws_url);
+/// Deliver the document's shared-with list to the requester so the
+/// client can display who it has been shared with.
+async fn send_shared_with(
+    state: &AppState,
+    server_id: ServerId,
+    sender: SessionId,
+    slug: &str,
+    room: &crate::doc::DocRoom,
+) {
+    let members = state.shared_with_members(room).await;
+    let payload = json!({ "slug": slug, "sharedWith": members });
+    let Ok(bytes) = serde_json::to_vec(&payload) else {
+        return;
+    };
+    let targets = [sender];
+    if let Err(err) = state.ctx().send_plugin_message(PluginMessageArgs {
+        server_id,
+        plugin_name: PLUGIN_NAME,
+        payload_type: "SharedWith",
+        payload: &bytes,
+        target_sessions: &targets,
+        channel_id: None,
+    }) {
+        tracing::warn!(?err, "failed to send live-doc shared-with");
+    }
+}
+
+/// Decide whether `identity` may open the document, recording a new
+/// share grant when a channel member joins a published document.
+async fn resolve_access(
+    state: &AppState,
+    server_id: ServerId,
+    sender: SessionId,
+    room: &crate::doc::DocRoom,
+    meta: &crate::doc::DocMeta,
+    identity: &crate::state::Identity,
+) -> bool {
+    if room.is_member(&identity.cert_hash).await {
+        return true;
+    }
+    let Some(channel) = meta.bound_channel else {
+        return false;
+    };
+    if state.has_channel_permission(server_id, sender, channel) {
+        state.record_shared_with(room, identity).await;
+        true
+    } else {
+        false
+    }
+}
+
+/// Publish an existing document to a channel.  Only the owner may
+/// publish; the target channel must be one the owner can access.
+pub async fn handle_publish(
+    state: &AppState,
+    server_id: ServerId,
+    sender: SessionId,
+    slug: &str,
+    channel_id: ChannelId,
+) {
+    let Some(slug) = sanitize_slug(slug) else {
+        return;
+    };
+    let Some(identity) = state.identity(server_id, sender).await else {
+        return;
+    };
+    let key = DocKey {
+        server_id,
+        slug,
+    };
+    let room = state.ensure_room(key).await;
+    if !room.is_owner(&identity.cert_hash).await {
+        tracing::debug!(sender, "rejecting publish: not the document owner");
+        return;
+    }
+    if !state.has_channel_permission(server_id, sender, channel_id) {
+        return;
+    }
+    let mut meta = room.meta().await;
+    meta.bound_channel = Some(channel_id);
+    meta.visibility = Visibility::Published;
+    room.set_meta(meta).await;
+    state.persist_room_now(&room).await;
+}
+
+/// Rename an existing document.  Only the owner may rename; the new
+/// title is stored in the document metadata and flushed to persistence
+/// so the saved entry reflects the change.  Live propagation to peers
+/// that currently have the document open is handled separately through
+/// the shared Yjs `meta` map.
+pub async fn handle_rename(
+    state: &AppState,
+    server_id: ServerId,
+    sender: SessionId,
+    slug: &str,
+    title: &str,
+) {
+    let Some(slug) = sanitize_slug(slug) else {
+        return;
+    };
+    let title = title.trim();
+    if title.is_empty() {
+        return;
+    }
+    let Some(identity) = state.identity(server_id, sender).await else {
+        return;
+    };
+    let key = DocKey { server_id, slug };
+    let room = state.ensure_room(key).await;
+    if !room.is_owner(&identity.cert_hash).await {
+        tracing::debug!(sender, "rejecting rename: not the document owner");
+        return;
+    }
+    let mut meta = room.meta().await;
+    if meta.title == title {
+        return;
+    }
+    meta.title = title.to_owned();
+    room.set_meta(meta).await;
+    state.persist_room_now(&room).await;
+}
+
+/// Flush a document to persistence on demand (owner-initiated manual
+/// save).  Only the owner may force a snapshot; the autosave loop still
+/// covers other members.
+pub async fn handle_persist(
+    state: &AppState,
+    server_id: ServerId,
+    sender: SessionId,
+    slug: &str,
+) {
+    let Some(slug) = sanitize_slug(slug) else {
+        return;
+    };
+    let Some(identity) = state.identity(server_id, sender).await else {
+        return;
+    };
+    let key = DocKey { server_id, slug };
+    let room = state.ensure_room(key).await;
+    if !room.is_owner(&identity.cert_hash).await {
+        tracing::debug!(sender, "rejecting persist: not the document owner");
+        return;
+    }
+    state.persist_room_now(&room).await;
 }
 
 /// Entry point invoked from the legacy `on_plugin_data` hook.
@@ -112,6 +293,7 @@ pub async fn handle_open_request(
         req.channel_id,
         &req.slug,
         &req.title,
+        &req.mode,
     )
     .await;
 }
@@ -120,23 +302,18 @@ fn send_invite(
     state: &AppState,
     server_id: ServerId,
     sender: SessionId,
-    channel_id: ChannelId,
+    bound_channel: Option<ChannelId>,
     slug: &str,
     title: &str,
     ws_url: &str,
 ) {
-    let Ok(token) = issue_handshake_jwt(
-        state.jwt_secret(),
-        server_id,
-        sender,
-        channel_id,
-        slug,
-        HANDSHAKE_JWT_TTL_SECS,
-    ) else {
+    let Ok(token) =
+        issue_handshake_jwt(state.jwt_secret(), server_id, sender, slug, HANDSHAKE_JWT_TTL_SECS)
+    else {
         return;
     };
     let payload = json!({
-        "channelId": channel_id,
+        "channelId": bound_channel.unwrap_or(0),
         "slug": slug,
         "title": title,
         "wsUrl": ws_url,
@@ -162,18 +339,13 @@ fn send_invite(
     }
 }
 
-fn build_ws_url(
-    state: &AppState,
-    server_id: ServerId,
-    channel_id: ChannelId,
-    slug: &str,
-) -> String {
+fn build_ws_url(state: &AppState, server_id: ServerId, slug: &str) -> String {
     let base = state
         .cfg()
         .public_url
         .clone()
         .unwrap_or_else(|| default_ws_base(state.cfg().bind));
-    format!("{base}/ws/{server_id}/{channel_id}/{slug}")
+    format!("{base}/ws/{server_id}/{slug}")
 }
 
 /// Build a WS base URL from the configured bind address.
@@ -222,19 +394,140 @@ mod tests {
 
     #[test]
     fn default_ws_base_substitutes_loopback_for_unspecified_ipv4() {
-        let bind: std::net::SocketAddr = "0.0.0.0:64740".parse().unwrap();
+        let bind: SocketAddr = "0.0.0.0:64740".parse().unwrap();
         assert_eq!(default_ws_base(bind), "ws://127.0.0.1:64740");
     }
 
     #[test]
     fn default_ws_base_substitutes_loopback_for_unspecified_ipv6() {
-        let bind: std::net::SocketAddr = "[::]:64740".parse().unwrap();
+        let bind: SocketAddr = "[::]:64740".parse().unwrap();
         assert_eq!(default_ws_base(bind), "ws://[::1]:64740");
     }
 
     #[test]
     fn default_ws_base_passes_through_routable_address() {
-        let bind: std::net::SocketAddr = "10.0.0.5:64740".parse().unwrap();
+        let bind: SocketAddr = "10.0.0.5:64740".parse().unwrap();
         assert_eq!(default_ws_base(bind), "ws://10.0.0.5:64740");
+    }
+
+    use crate::config::LiveDocConfig;
+    use crate::doc::{DocKey, DocMeta, Visibility as DocVisibility};
+    use crate::host_facade::{FacadeResult, HostFacade, PluginMessageArgs};
+    use crate::state::Identity;
+    use mumble_plugin_api::Permissions;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct AllowCtx;
+
+    impl HostFacade for AllowCtx {
+        fn send_plugin_data(&self, _: u32, _: u32, _: &str, _: &[u8]) -> FacadeResult<()> {
+            Ok(())
+        }
+        fn is_session_active(&self, _: u32, _: u32) -> bool {
+            true
+        }
+        fn user_has_channel_access(&self, _: u32, _: u32, _: u32) -> bool {
+            true
+        }
+        fn has_permission(&self, _: u32, _: u32, _: u32, _: Permissions) -> bool {
+            true
+        }
+        fn get_config(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn send_plugin_message(&self, _: PluginMessageArgs<'_>) -> FacadeResult<()> {
+            Ok(())
+        }
+    }
+
+    fn test_state() -> AppState {
+        let cfg = LiveDocConfig {
+            bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            public_url: None,
+            jwt_secret: Some("test-secret-0123456789abcdef0123456789".to_owned()),
+            state_path: std::env::temp_dir(),
+            max_update_bytes: 4 * 1024 * 1024,
+            snapshot_idle_secs: 60,
+            teardown_grace_secs: 30,
+            file_server_url: None,
+            file_server_admin_token: None,
+            port: 0,
+        };
+        AppState::new(Arc::new(cfg), Arc::new(AllowCtx))
+    }
+
+    async fn seed_owned_room(state: &AppState, server_id: ServerId, slug: &str) -> DocKey {
+        state
+            .set_identity(
+                server_id,
+                10,
+                Identity {
+                    cert_hash: "owner-cert".into(),
+                    user_id: 10,
+                    name: "owner".into(),
+                },
+            )
+            .await;
+        state
+            .set_identity(
+                server_id,
+                11,
+                Identity {
+                    cert_hash: "intruder-cert".into(),
+                    user_id: 11,
+                    name: "intruder".into(),
+                },
+            )
+            .await;
+        let key = DocKey {
+            server_id,
+            slug: slug.to_owned(),
+        };
+        let room = state.ensure_room(key.clone()).await;
+        room.set_meta(DocMeta {
+            owner_cert_hash: "owner-cert".into(),
+            title: "Old Title".into(),
+            bound_channel: None,
+            visibility: DocVisibility::Private,
+        })
+        .await;
+        key
+    }
+
+    #[tokio::test]
+    async fn owner_can_rename_document() {
+        let state = test_state();
+        let key = seed_owned_room(&state, 1, "notes").await;
+        handle_rename(&state, 1, 10, "notes", "  New Title  ").await;
+        let room = state.ensure_room(key).await;
+        assert_eq!(room.meta().await.title, "New Title");
+    }
+
+    #[tokio::test]
+    async fn non_owner_cannot_rename_document() {
+        let state = test_state();
+        let key = seed_owned_room(&state, 1, "notes").await;
+        handle_rename(&state, 1, 11, "notes", "Hijacked").await;
+        let room = state.ensure_room(key).await;
+        assert_eq!(room.meta().await.title, "Old Title");
+    }
+
+    #[tokio::test]
+    async fn rename_ignores_blank_title() {
+        let state = test_state();
+        let key = seed_owned_room(&state, 1, "notes").await;
+        handle_rename(&state, 1, 10, "notes", "   ").await;
+        let room = state.ensure_room(key).await;
+        assert_eq!(room.meta().await.title, "Old Title");
+    }
+
+    #[tokio::test]
+    async fn non_owner_persist_is_rejected() {
+        let state = test_state();
+        let _ = seed_owned_room(&state, 1, "notes").await;
+        // Should be a no-op and must not panic for a non-owner session.
+        handle_persist(&state, 1, 11, "notes").await;
     }
 }

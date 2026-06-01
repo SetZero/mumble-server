@@ -23,6 +23,7 @@ pub mod documents;
 pub mod emotes;
 pub mod host_facade;
 pub mod http;
+pub mod private_store;
 pub mod rate_limit;
 pub mod server;
 pub mod session;
@@ -134,9 +135,10 @@ impl MumblePlugin for FileServerPlugin {
         };
         let server_id: ServerId = info.server_id;
         let session_id: SessionId = info.session_id;
+        let user_id: i64 = info.user_id;
         let cert_hash: String = info.cert_hash.into_string();
         let username: String = info.username.into_string();
-        if let Err(e) = announce_to_client(running, server_id, session_id, &cert_hash) {
+        if let Err(e) = announce_to_client(running, server_id, session_id, &cert_hash, user_id) {
             tracing::warn!(
                 session = session_id,
                 user = %username,
@@ -230,12 +232,16 @@ fn build_running_state(facade: Arc<dyn HostFacade>) -> Result<RunningState, Plug
     let documents = documents::DocumentsStore::open(&cfg.storage_path)
         .map_err(|e| PluginError::Other(format!("documents: {e}").into()))?;
 
+    let private_store = private_store::PrivateStore::open(&cfg.storage_path)
+        .map_err(|e| PluginError::Other(format!("private store: {e}").into()))?;
+
     let signing_secret = load_or_create_signing_secret(&cfg.storage_path)
         .map_err(|e| PluginError::Other(format!("signing secret: {e}").into()))?;
 
     let app_state = AppState {
         storage: Arc::new(storage),
         documents: Arc::new(documents),
+        private_store: Arc::new(private_store),
         tickets: Arc::new(TicketStore::new()),
         sessions: Arc::new(SessionMap::new()),
         auth_rate_limiter: Arc::new(RateLimiter::new()),
@@ -266,6 +272,7 @@ fn announce_to_client(
     server_id: ServerId,
     session_id: SessionId,
     cert_hash: &str,
+    user_id: i64,
 ) -> Result<(), String> {
     let upload_token = generate_token_hex();
     let session_jwt = issue_session_jwt(
@@ -273,6 +280,7 @@ fn announce_to_client(
         cert_hash,
         session_id,
         server_id,
+        user_id,
         SESSION_JWT_TTL_SECS,
     )
     .map_err(|e| format!("issue jwt: {e}"))?;
@@ -296,6 +304,7 @@ fn announce_to_client(
         "ttl_seconds": running.state.config.ttl.as_secs(),
         "delete_on_download": running.state.config.delete_on_download,
         "delete_on_disconnect": running.state.config.delete_on_disconnect,
+        "registered": user_id >= 0,
         "can_manage_emotes": running.state.plugin_ctx.has_permission(
             server_id, session_id, 0, Permissions::MANAGE_EMOTES,
         ),

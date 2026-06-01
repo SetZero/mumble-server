@@ -28,10 +28,12 @@ pub mod persistence;
 pub mod state;
 pub mod ws;
 
-use crate::announce::{handle_open_request, handle_open_request_typed};
+use crate::announce::{
+    handle_open_request, handle_open_request_typed, handle_persist, handle_publish, handle_rename,
+};
 use crate::config::LiveDocConfig;
 use crate::host_facade::{HostFacade, SabiHostCtx};
-use crate::state::AppState;
+use crate::state::{AppState, Identity};
 use crate::ws::ServerHandle;
 
 /// Default JWT TTL for WS handshake tokens (5 minutes - users can
@@ -152,10 +154,29 @@ impl MumblePlugin for LiveDocPlugin {
     fn on_client_connected(
         &self,
         _ctx: &PluginContext_TO<RArc<()>>,
-        _info: ClientInfo,
+        info: ClientInfo,
     ) -> PluginResult<()> {
-        // Configuration is advertised via `fancy-plugin-info` (info_json),
-        // so there is nothing to send out per-client here.
+        // Capture the session's stable identity (cert hash + registration)
+        // so document ownership and share grants can be attributed without
+        // a per-call host round-trip.  Configuration itself is advertised
+        // via `fancy-plugin-info` (info_json), so nothing is sent here.
+        let Ok(guard) = self.inner.lock() else {
+            return ROk(());
+        };
+        let Some(running) = guard.as_ref() else {
+            return ROk(());
+        };
+        let state = running.state.clone();
+        let server_id = info.server_id;
+        let session = info.session_id;
+        let identity = Identity {
+            cert_hash: info.cert_hash.into_string(),
+            user_id: info.user_id,
+            name: info.username.into_string(),
+        };
+        running
+            .runtime
+            .block_on(async move { state.set_identity(server_id, session, identity).await });
         ROk(())
     }
 
@@ -208,7 +229,12 @@ impl MumblePlugin for LiveDocPlugin {
         _ctx: &PluginContext_TO<RArc<()>>,
         msg: PluginMessageIn,
     ) -> PluginResult<()> {
-        if msg.payload_type.as_str() != "OpenRequest" {
+        let payload_type = msg.payload_type.as_str();
+        if payload_type != "OpenRequest"
+            && payload_type != "Publish"
+            && payload_type != "Rename"
+            && payload_type != "Persist"
+        {
             return ROk(());
         }
         let Ok(guard) = self.inner.lock() else {
@@ -221,21 +247,50 @@ impl MumblePlugin for LiveDocPlugin {
         let server_id = msg.server_id;
         let sender = msg.sender_session;
         let payload = msg.payload.as_slice().to_vec();
-        let Some((channel_id, slug, title)) = parse_open_request(&payload) else {
+        let _ = (msg.plugin_name, msg.channel_id, msg.sender_name);
+        if payload_type == "Publish" {
+            let Some((channel_id, slug, _title, _mode)) = parse_open_request(&payload) else {
+                return ROk(());
+            };
+            running.runtime.block_on(async move {
+                handle_publish(&state, server_id, sender, &slug, channel_id).await;
+            });
+            return ROk(());
+        }
+        if payload_type == "Rename" {
+            let Some((_channel_id, slug, title, _mode)) = parse_open_request(&payload) else {
+                return ROk(());
+            };
+            running.runtime.block_on(async move {
+                handle_rename(&state, server_id, sender, &slug, &title).await;
+            });
+            return ROk(());
+        }
+        if payload_type == "Persist" {
+            let Some((_channel_id, slug, _title, _mode)) = parse_open_request(&payload) else {
+                return ROk(());
+            };
+            running.runtime.block_on(async move {
+                handle_persist(&state, server_id, sender, &slug).await;
+            });
+            return ROk(());
+        }
+        let Some((channel_id, slug, title, mode)) = parse_open_request(&payload) else {
             return ROk(());
         };
-        let _ = (msg.plugin_name, msg.channel_id, msg.sender_name);
         running.runtime.block_on(async move {
-            handle_open_request_typed(&state, server_id, sender, channel_id, &slug, &title).await;
+            handle_open_request_typed(&state, server_id, sender, channel_id, &slug, &title, &mode)
+                .await;
         });
         ROk(())
     }
 }
 
-/// Lightweight parser for the live-doc `OpenRequest` JSON shape used
-/// inside [`MumblePlugin::on_plugin_message`].  Accepts both camelCase
-/// (`channelId`/`slug`/`title`) and the legacy `snake_case` form.
-fn parse_open_request(payload: &[u8]) -> Option<(ChannelId, String, String)> {
+/// Lightweight parser for the live-doc `OpenRequest` / `Publish` JSON
+/// shape used inside [`MumblePlugin::on_plugin_message`].  Accepts both
+/// camelCase (`channelId`/`slug`/`title`/`mode`) and the legacy
+/// `snake_case` form.
+fn parse_open_request(payload: &[u8]) -> Option<(ChannelId, String, String, String)> {
     let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
     let channel_id = v
         .get("channelId")
@@ -250,7 +305,12 @@ fn parse_open_request(payload: &[u8]) -> Option<(ChannelId, String, String)> {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
         .to_owned();
-    Some((channel_id as ChannelId, slug, title))
+    let mode = v
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    Some((channel_id as ChannelId, slug, title, mode))
 }
 
 fn build_running_state(facade: Arc<dyn HostFacade>) -> Result<RunningState, PluginError> {
@@ -274,6 +334,22 @@ fn build_running_state(facade: Arc<dyn HostFacade>) -> Result<RunningState, Plug
         "live-doc plugin listening on {}",
         handle.local_addr()
     );
+
+    if cfg.file_server_url.is_none() || cfg.file_server_admin_token.is_none() {
+        tracing::warn!(
+            file_server_url = cfg.file_server_url.is_some(),
+            file_server_admin_token = cfg.file_server_admin_token.is_some(),
+            "live-doc persistence is DISABLED: set both \
+             plugin.fancy-live-doc.file_server_url and \
+             plugin.fancy-live-doc.file_server_admin_token to persist documents - \
+             until then live docs start blank on every open and are lost on teardown"
+        );
+    } else {
+        tracing::debug!(
+            file_server_url = %cfg.file_server_url.as_deref().unwrap_or_default(),
+            "live-doc persistence enabled"
+        );
+    }
 
     Ok(RunningState {
         handle: Some(handle),

@@ -22,10 +22,23 @@ pub struct SessionClaims {
     pub sid: u32,
     /// Mumble virtual server id.
     pub srv: u32,
+    /// Registered Mumble user id, or `-1` for an unregistered guest.
+    #[serde(default = "default_uid")]
+    pub uid: i64,
+    /// Whether the subject is a registered (non-guest) Mumble user.
+    /// Gates access to per-user private storage.
+    #[serde(default)]
+    pub reg: bool,
     /// Issued-at (unix seconds).
     pub iat: u64,
     /// Expiry (unix seconds).
     pub exp: u64,
+}
+
+/// `serde` default for [`SessionClaims::uid`] on tokens minted before the
+/// field existed: treat them as unregistered guests.
+fn default_uid() -> i64 {
+    -1
 }
 
 /// Reasons a credential check might fail.
@@ -80,6 +93,7 @@ pub fn issue_session_jwt(
     cert_hash: &str,
     session_id: u32,
     server_id: u32,
+    user_id: i64,
     ttl_seconds: u64,
 ) -> Result<String, AuthError> {
     use jsonwebtoken::{encode, EncodingKey, Header};
@@ -88,6 +102,8 @@ pub fn issue_session_jwt(
         sub: cert_hash.to_owned(),
         sid: session_id,
         srv: server_id,
+        uid: user_id,
+        reg: user_id >= 0,
         iat: now,
         exp: now.saturating_add(ttl_seconds),
     };
@@ -130,16 +146,27 @@ mod tests {
     #[test]
     fn jwt_roundtrip() {
         let secret = b"super-secret-key-32-bytes-x-x-x";
-        let token = issue_session_jwt(secret, "cert-hash-abc", 42, 1, 3600).expect("issues");
+        let token = issue_session_jwt(secret, "cert-hash-abc", 42, 1, 7, 3600).expect("issues");
         let claims = verify_session_jwt(secret, &token).expect("verifies");
         assert_eq!(claims.sub, "cert-hash-abc");
         assert_eq!(claims.sid, 42);
         assert_eq!(claims.srv, 1);
+        assert_eq!(claims.uid, 7);
+        assert!(claims.reg, "user_id >= 0 must be registered");
+    }
+
+    #[test]
+    fn jwt_guest_is_not_registered() {
+        let secret = b"super-secret-key-32-bytes-x-x-x";
+        let token = issue_session_jwt(secret, "guest", 1, 1, -1, 3600).expect("issues");
+        let claims = verify_session_jwt(secret, &token).expect("verifies");
+        assert_eq!(claims.uid, -1);
+        assert!(!claims.reg, "guest must not be registered");
     }
 
     #[test]
     fn jwt_signed_with_other_secret_rejected() {
-        let token = issue_session_jwt(b"secret-a", "x", 1, 1, 3600).expect("issues");
+        let token = issue_session_jwt(b"secret-a", "x", 1, 1, 0, 3600).expect("issues");
         let err = verify_session_jwt(b"secret-b", &token).unwrap_err();
         assert!(matches!(err, AuthError::InvalidJwt(_)));
     }
@@ -149,7 +176,7 @@ mod tests {
         let secret = b"secret";
         // ttl 0 -> exp == iat == now, validation rejects it as expired
         // (jsonwebtoken default leeway is 0)
-        let token = issue_session_jwt(secret, "x", 1, 1, 0).expect("issues");
+        let token = issue_session_jwt(secret, "x", 1, 1, 0, 0).expect("issues");
         std::thread::sleep(std::time::Duration::from_secs(1));
         let err = verify_session_jwt(secret, &token).unwrap_err();
         assert!(matches!(err, AuthError::InvalidJwt(_)));

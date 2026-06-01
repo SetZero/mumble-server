@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -38,6 +39,7 @@ use crate::state::AppState;
 pub struct ServerHandle {
     addr: SocketAddr,
     task: JoinHandle<()>,
+    autosave: JoinHandle<()>,
 }
 
 impl ServerHandle {
@@ -47,16 +49,18 @@ impl ServerHandle {
     }
     /// Abort the WS server task and wait for it to fully terminate so
     /// the bound `TcpListener` is dropped before we return.  Without the
-    /// `await`, a fast disable→enable cycle could call `on_load` (which
+    /// `await`, a fast disable->enable cycle could call `on_load` (which
     /// re-binds the same port) before the aborted task released the
     /// socket, producing an `EADDRINUSE` error.  Active connections are
     /// dropped.
     pub async fn shutdown(self) {
+        self.autosave.abort();
         self.task.abort();
         // The join resolves with `Err(Cancelled)` once the task's future
         // (and thus the listener) has been dropped; that is exactly the
         // signal we want, so the error is intentionally ignored.
         let _ = self.task.await;
+        let _ = self.autosave.await;
     }
 }
 
@@ -65,15 +69,31 @@ pub async fn serve(state: AppState) -> std::io::Result<ServerHandle> {
     let listener = TcpListener::bind(state.cfg().bind).await?;
     let addr = listener.local_addr()?;
     let router = Router::new()
-        .route("/ws/{server_id}/{channel_id}/{slug}", get(handle_upgrade))
-        .with_state(state);
+        .route("/ws/{server_id}/{slug}", get(handle_upgrade))
+        .with_state(state.clone());
 
     let task = tokio::spawn(async move {
         if let Err(err) = axum::serve(listener, router).await {
             tracing::error!(?err, "live-doc ws server stopped");
         }
     });
-    Ok(ServerHandle { addr, task })
+    let autosave = tokio::spawn(autosave_loop(state));
+    Ok(ServerHandle {
+        addr,
+        task,
+        autosave,
+    })
+}
+
+/// Periodically flush every room that has changed since its last save,
+/// so document content survives a crash / file-server outage and a
+/// rejoining client always reloads the latest state.
+async fn autosave_loop(state: AppState) {
+    let interval = Duration::from_secs(state.cfg().snapshot_idle_secs.max(1));
+    loop {
+        tokio::time::sleep(interval).await;
+        state.persist_dirty_rooms().await;
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,7 +102,7 @@ struct HandshakeQuery {
 }
 
 async fn handle_upgrade(
-    Path((server_id, channel_id, slug)): Path<(u32, u32, String)>,
+    Path((server_id, slug)): Path<(u32, String)>,
     Query(q): Query<HandshakeQuery>,
     State(state): State<AppState>,
     ws: WebSocketUpgrade,
@@ -94,33 +114,39 @@ async fn handle_upgrade(
             return StatusCode::UNAUTHORIZED.into_response();
         }
     };
-    if claims.server_id != server_id || claims.channel_id != channel_id || claims.doc_slug != slug {
+    if claims.server_id != server_id || claims.doc_slug != slug {
         tracing::debug!("ws handshake rejected: token doesn't match path");
         return StatusCode::FORBIDDEN.into_response();
     }
-    if !state.session_can_access(server_id, claims.session_id, channel_id) {
+
+    let key = DocKey { server_id, slug };
+    let session = claims.session_id;
+
+    // Ensure the room (hydrates owner / shared-with from the file-server)
+    // before the access check so membership can be evaluated.
+    let room = state.ensure_room(key.clone()).await;
+    if !state.session_can_connect(server_id, session, &key).await {
         tracing::debug!(
-            session = claims.session_id,
-            channel_id,
-            "ws handshake rejected: session no longer authorised"
+            session,
+            slug = %key.slug,
+            "ws handshake rejected: session is not owner or share recipient"
         );
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let key = DocKey {
-        server_id,
-        channel_id,
-        slug,
-    };
-    let session = claims.session_id;
-    ws.on_upgrade(move |socket| run_session(state, key, session, socket))
+    ws.on_upgrade(move |socket| run_session(state, key, session, room, socket))
 }
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
-async fn run_session(state: AppState, key: DocKey, session: u32, socket: WebSocket) {
+async fn run_session(
+    state: AppState,
+    key: DocKey,
+    session: u32,
+    room: Arc<DocRoom>,
+    socket: WebSocket,
+) {
     let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
-    let room = state.ensure_room(key.clone()).await;
     state.register_session(&key, session).await;
 
     let (mut sender, receiver) = socket.split();
@@ -147,7 +173,13 @@ async fn run_session(state: AppState, key: DocKey, session: u32, socket: WebSock
     // recv loop and read after both loops complete to broadcast removal.
     let seen_awareness: Arc<Mutex<HashMap<u64, u32>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    let send = run_send_loop(sender, personal_rx, room.subscribe(), connection_id);
+    let send = run_send_loop(
+        sender,
+        personal_rx,
+        room.subscribe(),
+        connection_id,
+        room.clone(),
+    );
     let recv = run_recv_loop(RecvLoop {
         receiver,
         room: room.clone(),
@@ -183,6 +215,7 @@ async fn run_send_loop(
     mut personal_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     mut bcast: broadcast::Receiver<Frame>,
     connection_id: u64,
+    room: Arc<DocRoom>,
 ) {
     loop {
         tokio::select! {
@@ -217,7 +250,23 @@ async fn run_send_loop(
                             break;
                         }
                     }
-                    Err(RecvError::Lagged(_)) => continue,
+                    // This subscriber fell behind the broadcast buffer and
+                    // missed updates.  Silently continuing would leave it
+                    // permanently desynced, so instead push a fresh
+                    // sync-step-1: the client replies and the room sends it
+                    // the full catch-up state, re-converging it.  This keeps
+                    // many-editor sessions correct under load.
+                    Err(RecvError::Lagged(skipped)) => {
+                        tracing::debug!(connection_id, skipped, "live-doc subscriber lagged; re-syncing");
+                        let resync = room.initial_sync_frame().await;
+                        if sender
+                            .send(WsMessage::Binary(resync.into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                     Err(RecvError::Closed) => break,
                 }
             }
@@ -369,22 +418,46 @@ mod tests {
     /// with an empty document.
     #[tokio::test]
     async fn reconnecting_client_receives_stored_content() {
+        use crate::doc::{DocKey, DocMeta};
+        use crate::state::Identity;
+
         let state = test_state();
         let secret = state.jwt_secret().to_vec();
+
+        let server_id = 1u32;
+        let slug = "notes";
+
+        // Establish ownership + share so the connect-time membership check
+        // passes (in production this is set up by the OpenRequest flow).
+        let ident = |cert: &str, session: u32| Identity {
+            cert_hash: cert.to_owned(),
+            user_id: session as i64,
+            name: format!("user-{session}"),
+        };
+        state.set_identity(server_id, 10, ident("owner-cert", 10)).await;
+        state.set_identity(server_id, 11, ident("member-cert", 11)).await;
+        let key = DocKey {
+            server_id,
+            slug: slug.to_owned(),
+        };
+        let room = state.ensure_room(key.clone()).await;
+        room.set_meta(DocMeta {
+            owner_cert_hash: "owner-cert".into(),
+            title: "Notes".into(),
+            bound_channel: None,
+            visibility: crate::doc::Visibility::Private,
+        })
+        .await;
+        room.add_member("member-cert".into()).await;
+        drop(room);
+
         let handle = serve(state).await.unwrap();
         let addr = handle.local_addr();
 
-        let server_id = 1u32;
-        let channel = 7u32;
-        let slug = "notes";
-        let mint = |session: u32| {
-            issue_handshake_jwt(&secret, server_id, session, channel, slug, 300).unwrap()
-        };
+        let mint =
+            |session: u32| issue_handshake_jwt(&secret, server_id, session, slug, 300).unwrap();
 
-        let url1 = format!(
-            "ws://{addr}/ws/{server_id}/{channel}/{slug}?token={}",
-            mint(10)
-        );
+        let url1 = format!("ws://{addr}/ws/{server_id}/{slug}?token={}", mint(10));
         let (mut ws1, _) = connect_async(url1.as_str()).await.unwrap();
 
         let writer = Doc::new();
@@ -404,10 +477,7 @@ mod tests {
         drop(ws1);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let url2 = format!(
-            "ws://{addr}/ws/{server_id}/{channel}/{slug}?token={}",
-            mint(11)
-        );
+        let url2 = format!("ws://{addr}/ws/{server_id}/{slug}?token={}", mint(11));
         let (mut ws2, _) = connect_async(url2.as_str()).await.unwrap();
 
         let reader_doc = Doc::new();
@@ -436,5 +506,50 @@ mod tests {
         );
 
         handle.shutdown().await;
+    }
+
+    /// The connect-time membership check must admit the owner and recorded
+    /// share recipients, and reject everyone else (including sessions with
+    /// no captured identity).
+    #[tokio::test]
+    async fn connect_requires_owner_or_member() {
+        use crate::doc::{DocKey, DocMeta, Visibility};
+        use crate::state::Identity;
+
+        let state = test_state();
+        let server_id = 1u32;
+        let ident = |cert: &str| Identity {
+            cert_hash: cert.to_owned(),
+            user_id: 1,
+            name: "u".into(),
+        };
+        state.set_identity(server_id, 1, ident("owner-cert")).await;
+        state.set_identity(server_id, 2, ident("member-cert")).await;
+        state.set_identity(server_id, 3, ident("stranger-cert")).await;
+
+        let key = DocKey {
+            server_id,
+            slug: "doc".into(),
+        };
+        let room = state.ensure_room(key.clone()).await;
+        room.set_meta(DocMeta {
+            owner_cert_hash: "owner-cert".into(),
+            title: "Doc".into(),
+            bound_channel: None,
+            visibility: Visibility::Private,
+        })
+        .await;
+        room.add_member("member-cert".into()).await;
+
+        assert!(state.session_can_connect(server_id, 1, &key).await, "owner");
+        assert!(state.session_can_connect(server_id, 2, &key).await, "member");
+        assert!(
+            !state.session_can_connect(server_id, 3, &key).await,
+            "stranger rejected"
+        );
+        assert!(
+            !state.session_can_connect(server_id, 9, &key).await,
+            "unknown session rejected"
+        );
     }
 }

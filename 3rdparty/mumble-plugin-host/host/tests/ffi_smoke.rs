@@ -126,7 +126,7 @@ fn create_dispatch_destroy_roundtrip() {
     let user = CString::new("alice").expect("c-string");
     let cert = CString::new("deadbeef").expect("c-string");
     unsafe {
-        plugin_host_on_client_connected(handle, 0, 42, user.as_ptr(), cert.as_ptr());
+        plugin_host_on_client_connected(handle, 0, 42, user.as_ptr(), cert.as_ptr(), 7);
         plugin_host_on_client_disconnected(handle, 0, 42);
         plugin_host_destroy(handle);
     }

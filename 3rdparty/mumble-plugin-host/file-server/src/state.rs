@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::config::FileServerConfig;
 use crate::documents::DocumentsStore;
 use crate::host_facade::HostFacade;
+use crate::private_store::PrivateStore;
 use crate::rate_limit::RateLimiter;
 use crate::session::SessionMap;
 use crate::storage::Storage;
@@ -18,6 +19,9 @@ pub struct AppState {
     /// Stable-named documents with revision history.  Used by sibling
     /// plugins via the `/admin/documents/...` endpoints.
     pub documents: Arc<DocumentsStore>,
+    /// Per-user private key/value storage (registered users only),
+    /// reachable via the `/me/storage/...` endpoints.
+    pub private_store: Arc<PrivateStore>,
     /// In-memory single-use ticket map.
     pub tickets: Arc<TicketStore>,
     /// Active session table.

@@ -28,6 +28,9 @@ zstd = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# CSPRNG for the auto-generated file-server admin token that bridges the
+# live-doc persistence (see `provision_live_doc_bridge`).
+rand = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Marketplace install: blocking HTTP, integrity check, archive extraction.

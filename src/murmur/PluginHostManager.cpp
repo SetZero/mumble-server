@@ -59,7 +59,7 @@ PluginHostManager::~PluginHostManager() {
 }
 
 void PluginHostManager::onUserConnected(Server &, const User *user) {
-	onClientConnected(user->uiSession, user->qsName, user->qsHash);
+	onClientConnected(user->uiSession, user->qsName, user->qsHash, static_cast< int64_t >(user->iId));
 }
 
 void PluginHostManager::onUserDisconnected(Server &, const User *user) {
@@ -75,14 +75,14 @@ void PluginHostManager::onPluginMessage(Server &, const PluginInbound &in) {
 }
 
 void PluginHostManager::onClientConnected(uint32_t session, const QString &username,
-                                          const QString &certHash) {
+                                          const QString &certHash, int64_t userId) {
 	if (!m_handle) {
 		return;
 	}
 	const QByteArray usernameUtf8 = username.toUtf8();
 	const QByteArray certUtf8     = certHash.toUtf8();
 	plugin_host_on_client_connected(m_handle, static_cast< uint32_t >(m_server->iServerNum), session,
-	                                usernameUtf8.constData(), certUtf8.constData());
+	                                usernameUtf8.constData(), certUtf8.constData(), userId);
 }
 
 void PluginHostManager::onClientDisconnected(uint32_t session) {
