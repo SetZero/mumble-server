@@ -1,0 +1,9 @@
+# libFuzzer crash/leak reproducers dropped in the corpus or cwd
+crash-*
+leak-*
+oom-*
+timeout-*
+
+# fuzzer-generated C++ corpus entries; keep hand-written seed_* files
+/corpus/*/*
+!/corpus/*/seed_*

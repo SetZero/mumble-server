@@ -28,9 +28,19 @@ public:
 	void fetchPreview(const QUrl &url, QNetworkAccessManager *nam,
 					  SuccessCallback onSuccess, FailureCallback onFailure) override;
 
+	// Fuzzing entry point: runs the full Open Graph / HTML meta-tag parser
+	// (the QRegularExpression-heavy code path) over an arbitrary byte buffer
+	// with a fixed, safe base URL.  Exposed only for the libFuzzer harness in
+	// fuzzing/cpp; it has no production callers and performs no network I/O.
+	static QJsonObject fuzzParse(const QByteArray &html);
+
 private:
+	// fetchPage applies the SSRF gate (resolveAndCheck) and, on success,
+	// hands off to fetchPageResolved which issues the actual request.
 	void fetchPage(const QUrl &url, QNetworkAccessManager *nam, SuccessCallback onSuccess,
 				   FailureCallback onFailure, int redirectCount);
+	void fetchPageResolved(const QUrl &url, QNetworkAccessManager *nam, SuccessCallback onSuccess,
+						   FailureCallback onFailure, int redirectCount);
 
 	static QJsonObject parseOpenGraphTags(const QByteArray &html, const QUrl &url);
 	static void parseMetaTags(const QString &content, QHash< QString, QString > &meta);

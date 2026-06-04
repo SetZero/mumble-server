@@ -23,6 +23,10 @@ QString OpenGraphPlugin::name() const {
 	return QStringLiteral("OpenGraph");
 }
 
+QJsonObject OpenGraphPlugin::fuzzParse(const QByteArray &html) {
+	return parseOpenGraphTags(html, QUrl(QStringLiteral("https://example.com/page")));
+}
+
 bool OpenGraphPlugin::canHandle(const QUrl &url) const {
 	return isSafeUrl(url);
 }
@@ -62,6 +66,22 @@ void OpenGraphPlugin::fetchPage(const QUrl &url, QNetworkAccessManager *nam,
 		return;
 	}
 
+	// SSRF gate: resolve the host and reject if it (or any redirect target,
+	// since each hop re-enters fetchPage) resolves to an internal address.
+	resolveAndCheck(
+		url, this,
+		[this, url, nam, onSuccess, onFailure, redirectCount]() {
+			fetchPageResolved(url, nam, onSuccess, onFailure, redirectCount);
+		},
+		[onFailure]() {
+			qWarning() << "[OpenGraph] blocked unsafe / unresolvable host";
+			onFailure();
+		});
+}
+
+void OpenGraphPlugin::fetchPageResolved(const QUrl &url, QNetworkAccessManager *nam,
+										SuccessCallback onSuccess, FailureCallback onFailure,
+										int redirectCount) {
 	qInfo() << "[OpenGraph] GET (redirect" << redirectCount << ")";
 	QNetworkReply *reply = nam->get(buildPageRequest(url));
 
@@ -613,30 +633,48 @@ std::optional< QJsonObject > OpenGraphPlugin::parseDiscoveredOEmbed(const QByteA
 void OpenGraphPlugin::fetchDiscoveredOEmbed(const QString &endpoint, const QUrl &originalUrl,
 											QNetworkAccessManager *nam, SuccessCallback onSuccess,
 											FailureCallback onFailure) {
-	QUrl oembedUrl(endpoint);
-	if (!isSafeUrl(oembedUrl)) {
-		onFailure();
-		return;
-	}
+	const QUrl oembedUrl(endpoint);
 
-	QNetworkRequest request(oembedUrl);
-	request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("FancyMumbleBot/1.0"));
-	request.setTransferTimeout(FETCH_TIMEOUT_MS);
-	request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+	// The discovered endpoint comes from attacker-influenced page HTML, so it
+	// gets the full SSRF gate (resolve + validate every resolved address).
+	resolveAndCheck(
+		oembedUrl, this,
+		[this, oembedUrl, originalUrl, nam, onSuccess, onFailure]() {
+			QNetworkRequest request(oembedUrl);
+			request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("FancyMumbleBot/1.0"));
+			request.setTransferTimeout(FETCH_TIMEOUT_MS);
+			request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+			// Do NOT let Qt auto-follow redirects: a redirect target would
+			// bypass the SSRF gate above.  This is best-effort enrichment, so
+			// a redirect is simply treated as a failure rather than followed.
+			request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+								 QNetworkRequest::ManualRedirectPolicy);
 
-	QNetworkReply *reply = nam->get(request);
-	connect(reply, &QNetworkReply::finished, this,
-			[reply, originalUrl, onSuccess, onFailure]() {
-				reply->deleteLater();
-				if (reply->error() != QNetworkReply::NoError
-					|| reply->bytesAvailable() > MAX_RESPONSE_BYTES) {
-					onFailure();
-					return;
-				}
-				const auto embed = parseDiscoveredOEmbed(reply->readAll(), originalUrl);
-				if (embed)
-					onSuccess(*embed);
-				else
-					onFailure();
-			});
+			QNetworkReply *reply = nam->get(request);
+			connect(reply, &QNetworkReply::finished, this,
+					[reply, originalUrl, onSuccess, onFailure]() {
+						reply->deleteLater();
+						const int statusCode =
+							reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+						if (statusCode >= 300 && statusCode < 400) {
+							qWarning() << "[OpenGraph] discovered oEmbed redirected, not following";
+							onFailure();
+							return;
+						}
+						if (reply->error() != QNetworkReply::NoError
+							|| reply->bytesAvailable() > MAX_RESPONSE_BYTES) {
+							onFailure();
+							return;
+						}
+						const auto embed = parseDiscoveredOEmbed(reply->readAll(), originalUrl);
+						if (embed)
+							onSuccess(*embed);
+						else
+							onFailure();
+					});
+		},
+		[onFailure]() {
+			qWarning() << "[OpenGraph] blocked unsafe discovered oEmbed endpoint";
+			onFailure();
+		});
 }

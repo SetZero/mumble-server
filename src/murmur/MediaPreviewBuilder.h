@@ -63,6 +63,12 @@ public:
 	/// if decoding fails.
 	static std::optional< Result > buildFromBytes(const QByteArray &source, int maxDim, int quality,
 												  const QString &contentType);
+
+private:
+	/// Issues the actual network request once the SSRF gate has confirmed the
+	/// URL's resolved addresses are all public.
+	void issueFetch(const QUrl &url, QNetworkAccessManager *nam, int maxDim, int quality,
+					Callback cb);
 };
 
 #endif // MEDIA_PREVIEW_BUILDER_H_

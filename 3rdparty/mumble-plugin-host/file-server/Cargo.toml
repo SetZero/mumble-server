@@ -8,6 +8,12 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Exposes thin wrappers around internal parsers (e.g. the download path
+# validator) so the out-of-tree `fuzz/` crate can target them.  Never enable
+# in production builds.
+fuzzing = []
+
 [dependencies]
 mumble-plugin-api = { path = "../api" }
 abi_stable = "0.11"

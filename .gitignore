@@ -55,3 +55,6 @@ CLAUDE.md
 SECURITY_AUDIT_E2E.md
 tests/integration/test_ghost_kick.py
 3rdparty/mumble-plugin-host/target/.rustc_info.json
+
+# C++ libFuzzer build tree (at repo root, produced by tools.dev_fuzz cpp)
+build-fuzz-cpp/

@@ -148,20 +148,63 @@ void DirectMediaPlugin::fetchImage(const QUrl &url, QNetworkAccessManager *nam,
 
 void DirectMediaPlugin::describeOnly(const QUrl &url, Kind kind, QNetworkAccessManager *nam,
 									 SuccessCallback onSuccess, FailureCallback onFailure) {
+	// SSRF gate before any network access; each redirect hop is re-gated in
+	// headDescribe.
+	resolveAndCheck(
+		url, this,
+		[this, url, kind, nam, onSuccess, onFailure]() {
+			headDescribe(url, kind, nam, onSuccess, onFailure, MAX_REDIRECTS);
+		},
+		[onFailure]() {
+			qWarning() << "[DirectMedia] blocked unsafe / unresolvable host";
+			onFailure();
+		});
+}
+
+void DirectMediaPlugin::headDescribe(const QUrl &url, Kind kind, QNetworkAccessManager *nam,
+									 SuccessCallback onSuccess, FailureCallback onFailure,
+									 int redirectsLeft) {
 	// HEAD-only fetch to learn Content-Type / Content-Length without
-	// downloading the full media.
+	// downloading the full media.  Redirects are followed manually so the
+	// SSRF gate can re-validate every hop (Qt's automatic redirect handling
+	// would connect to the target before we could inspect it).
 	QNetworkRequest req(url);
 	req.setHeader(QNetworkRequest::UserAgentHeader,
 				  QStringLiteral("Mozilla/5.0 (compatible; FancyMumbleBot/1.0)"));
 	req.setTransferTimeout(FETCH_TIMEOUT_MS);
 	req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
-	req.setMaximumRedirectsAllowed(3);
+	req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+					 QNetworkRequest::ManualRedirectPolicy);
 
 	QNetworkReply *reply = nam->head(req);
 
 	connect(reply, &QNetworkReply::finished, this,
-			[reply, url, kind, onSuccess, onFailure]() {
+			[this, reply, url, kind, nam, onSuccess, onFailure, redirectsLeft]() {
 				reply->deleteLater();
+
+				const int statusCode =
+					reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+				if (statusCode >= 300 && statusCode < 400) {
+					if (redirectsLeft <= 0) {
+						qWarning() << "[DirectMedia] too many redirects";
+						onFailure();
+						return;
+					}
+					QUrl redir = reply->header(QNetworkRequest::LocationHeader).toUrl();
+					if (redir.isRelative())
+						redir = url.resolved(redir);
+					// Re-run the full SSRF gate on the redirect target.
+					resolveAndCheck(
+						redir, this,
+						[this, redir, kind, nam, onSuccess, onFailure, redirectsLeft]() {
+							headDescribe(redir, kind, nam, onSuccess, onFailure, redirectsLeft - 1);
+						},
+						[onFailure]() {
+							qWarning() << "[DirectMedia] blocked unsafe redirect target";
+							onFailure();
+						});
+					return;
+				}
 
 				QString contentType = reply->header(QNetworkRequest::ContentTypeHeader)
 										  .toString()
@@ -220,7 +263,4 @@ void DirectMediaPlugin::describeOnly(const QUrl &url, Kind kind, QNetworkAccessM
 
 				onSuccess(embed);
 			});
-
-	Q_UNUSED(onFailure);
-	Q_UNUSED(nam);
 }

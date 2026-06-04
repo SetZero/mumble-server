@@ -6,6 +6,7 @@
 #ifndef LINK_PREVIEW_PLUGIN_H_
 #define LINK_PREVIEW_PLUGIN_H_
 
+#include <QHostAddress>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QObject>
@@ -51,12 +52,35 @@ public:
 	static constexpr int FETCH_TIMEOUT_MS   = 20000;
 	static constexpr int MAX_RESPONSE_BYTES = 1024 * 1024;
 
-	/// Returns false for non-HTTP(S) schemes and private/loopback addresses
-	/// (SSRF protection).
+	/// Cheap, synchronous SSRF pre-filter: returns false for non-HTTP(S)
+	/// schemes, empty hosts, literal private/loopback/link-local addresses
+	/// (in any encoding) and obviously-internal host names.
+	///
+	/// This does NOT resolve DNS, so a public host name that resolves to an
+	/// internal address still passes here.  Any code that is about to issue a
+	/// network request to a user-influenced URL MUST gate it through
+	/// resolveAndCheck() instead, which validates the *resolved* addresses.
 	static bool isSafeUrl(const QUrl &url);
 
-	/// Returns true when @p host resolves to a private or loopback range.
+	/// Returns true when @p host (a literal IP or host name) is known to be
+	/// private/loopback/internal without performing DNS resolution.
 	static bool isPrivateAddress(const QString &host);
+
+	/// Returns true when @p addr falls in a loopback, link-local, private,
+	/// CGNAT, multicast, broadcast or otherwise non-public range.  IPv4-mapped
+	/// IPv6 addresses are normalised to IPv4 first so encodings such as
+	/// `::ffff:127.0.0.1` are classified by their embedded IPv4 address.
+	static bool isBlockedIp(const QHostAddress &addr);
+
+	/// Authoritative, asynchronous SSRF gate.  Applies isSafeUrl(), then (for
+	/// host names) resolves the host and rejects the URL if *any* resolved
+	/// address is blocked by isBlockedIp().  Exactly one of @p onSafe /
+	/// @p onUnsafe is invoked.  @p ctx scopes the async DNS callback's
+	/// lifetime.  Every fetch of a user-influenced URL — including each
+	/// redirect hop — must pass through this gate before the request is issued.
+	static void resolveAndCheck(const QUrl &url, QObject *ctx,
+								std::function< void() > onSafe,
+								std::function< void() > onUnsafe);
 
 	/// Replaces common HTML entities (&amp; &lt; &gt; &quot; &#39; &apos;)
 	/// with their plain-text equivalents.

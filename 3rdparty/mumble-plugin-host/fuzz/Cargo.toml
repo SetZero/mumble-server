@@ -1,0 +1,88 @@
+# cargo-fuzz harness for the Rust plugin-host + file-server parsers.
+#
+# Run from `3rdparty/mumble-plugin-host/`:
+#   cargo +nightly fuzz run fileserver_signing
+#
+# This crate is intentionally NOT a member of the parent workspace (see the
+# empty `[workspace]` table below) so it does not inherit the workspace's
+# `missing_docs`/`unused_results`/`unsafe_code = deny` lints, and so that
+# cargo-fuzz can manage its own sanitizer build flags.
+
+[package]
+name = "mumble-plugin-host-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# The file-server parsers (signed-URL HMAC, JWT, access-mode, path validator).
+mumble-file-server = { path = "../file-server", features = ["fuzzing"] }
+
+# The plugin-host marketplace-install parsers (manifest JSON, zip/tar.gz).
+# `default-features = false` drops the heavy wasmtime dependency we don't need
+# for these targets, keeping fuzz builds fast.
+mumble-plugin-host = { path = "../host", default-features = false, features = ["fuzzing"] }
+
+# Prevent this crate from being picked up by the parent workspace.
+[workspace]
+
+[profile.release]
+debug = 1
+
+# --- File-server targets ---------------------------------------------------
+
+[[bin]]
+name = "fileserver_signing"
+path = "fuzz_targets/fileserver_signing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fileserver_jwt"
+path = "fuzz_targets/fileserver_jwt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fileserver_access_mode"
+path = "fuzz_targets/fileserver_access_mode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fileserver_path_validate"
+path = "fuzz_targets/fileserver_path_validate.rs"
+test = false
+doc = false
+bench = false
+
+# --- Plugin-host install targets ------------------------------------------
+
+[[bin]]
+name = "host_manifest"
+path = "fuzz_targets/host_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "host_zip"
+path = "fuzz_targets/host_zip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "host_targz"
+path = "fuzz_targets/host_targz.rs"
+test = false
+doc = false
+bench = false

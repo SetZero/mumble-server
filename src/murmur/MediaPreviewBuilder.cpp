@@ -103,11 +103,22 @@ MediaPreviewBuilder::buildFromBytes(const QByteArray &source, int maxDim, int qu
 
 void MediaPreviewBuilder::fetchAndDownscale(const QUrl &url, QNetworkAccessManager *nam, int maxDim,
 											int quality, Callback cb) {
-	if (!url.isValid() || !LinkPreviewPlugin::isSafeUrl(url)) {
+	if (!url.isValid()) {
 		cb(std::nullopt);
 		return;
 	}
 
+	// SSRF gate: resolve the host and reject if any resolved address is
+	// internal.  Each redirect hop re-enters fetchAndDownscale, so redirect
+	// targets are validated the same way.
+	LinkPreviewPlugin::resolveAndCheck(
+		url, this,
+		[this, url, nam, maxDim, quality, cb]() { issueFetch(url, nam, maxDim, quality, cb); },
+		[cb]() { cb(std::nullopt); });
+}
+
+void MediaPreviewBuilder::issueFetch(const QUrl &url, QNetworkAccessManager *nam, int maxDim,
+									 int quality, Callback cb) {
 	QNetworkRequest request(url);
 	request.setHeader(QNetworkRequest::UserAgentHeader,
 					  QStringLiteral("Mozilla/5.0 (compatible; FancyMumbleBot/1.0)"));

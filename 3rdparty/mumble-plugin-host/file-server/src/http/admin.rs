@@ -203,6 +203,25 @@ fn hex_digit(b: u8) -> Result<u8, ()> {
     }
 }
 
+/// Fuzzing-only re-exports of the internal request validators.  These are
+/// the functions that turn an attacker-controlled `{name}` path segment into
+/// a stored-document key, so they are the natural target for the out-of-tree
+/// `fuzz/` crate (path traversal, percent-decode edge cases).  Compiled only
+/// under the `fuzzing` feature.
+#[cfg(feature = "fuzzing")]
+pub mod fuzz {
+    /// Validate a percent-decoded document name (see [`super::validate_name`]).
+    /// Returns the numeric HTTP status on rejection so no internal types leak.
+    pub fn validate_name(raw: &str) -> Result<String, u16> {
+        super::validate_name(raw).map_err(|s| s.as_u16())
+    }
+
+    /// Percent-decode a raw path segment (see [`super::urlencoding_decode`]).
+    pub fn urlencoding_decode(input: &str) -> Option<String> {
+        super::urlencoding_decode(input).ok()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test code - panics are acceptable")]
 mod tests {

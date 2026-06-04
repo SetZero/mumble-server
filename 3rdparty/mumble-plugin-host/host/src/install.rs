@@ -180,7 +180,7 @@ pub(crate) fn fetch_manifest(
             });
         }
     }
-    serde_json::from_slice::<Manifest>(&body).map_err(|e| InstallError::Manifest(e.to_string()))
+    parse_manifest_bytes(&body)
 }
 
 /// Pick the artifact in `manifest` matching the current `(os, arch)`.
@@ -213,9 +213,16 @@ pub(crate) fn pick_artifact(manifest: &Manifest) -> Result<&ManifestArtifact, In
     )))
 }
 
+/// Parse a marketplace manifest from raw bytes.  Split out from
+/// [`fetch_manifest`] so the fuzz harness can target the JSON parser in
+/// isolation without performing any network I/O.
+pub(crate) fn parse_manifest_bytes(data: &[u8]) -> Result<Manifest, InstallError> {
+    serde_json::from_slice::<Manifest>(data).map_err(|e| InstallError::Manifest(e.to_string()))
+}
+
 /// Extract `cdylib_filename` (and optional `plugin.example.ini`) from
 /// a zip archive.
-fn extract_zip(
+pub(crate) fn extract_zip(
     archive: &[u8],
     cdylib_filename: &str,
 ) -> Result<(Vec<u8>, Option<String>), InstallError> {
@@ -254,7 +261,7 @@ fn extract_zip(
 
 /// Extract `cdylib_filename` (and optional `plugin.example.ini`) from
 /// a gzip-compressed tar archive.
-fn extract_tar_gz(
+pub(crate) fn extract_tar_gz(
     archive: &[u8],
     cdylib_filename: &str,
 ) -> Result<(Vec<u8>, Option<String>), InstallError> {

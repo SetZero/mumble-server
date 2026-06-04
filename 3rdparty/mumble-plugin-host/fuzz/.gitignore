@@ -1,0 +1,11 @@
+# cargo-fuzz build + coverage artifacts
+/target/
+/artifacts/
+/coverage/
+Cargo.lock
+
+# fuzzer-generated corpus entries (hex-hash filenames).
+# Keep hand-written seeds (seed_* / seed.json) but ignore everything else
+# under each target directory.
+/corpus/*/*
+!/corpus/*/seed*

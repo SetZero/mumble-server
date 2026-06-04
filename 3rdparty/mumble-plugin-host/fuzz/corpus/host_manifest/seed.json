@@ -1,0 +1,1 @@
+{"marketplace_id":"abc","version":"1.2.3","required_abi_version":1,"artifacts":[{"os":"linux","arch":"x86_64","format":"tar.gz","download_url":"https://example.com/p.tgz","sha256":"00","cdylib_filename":"libp.so","kind":"native"},{"os":"any","arch":"any","format":"zip","download_url":"https://example.com/p.zip","sha256":"11","cdylib_filename":"p.wasm","kind":"wasm"}]}

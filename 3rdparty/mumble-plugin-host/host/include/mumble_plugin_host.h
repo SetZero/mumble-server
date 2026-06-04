@@ -3,7 +3,7 @@
 #ifndef MUMBLE_PLUGIN_HOST_H
 #define MUMBLE_PLUGIN_HOST_H
 
-/* Generated with cbindgen:0.29.2 */
+/* Generated with cbindgen:0.29.3 */
 
 /* This file is auto-generated. Do not modify. */
 

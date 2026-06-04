@@ -37,6 +37,10 @@ private:
 					FailureCallback onFailure);
 	void describeOnly(const QUrl &url, Kind kind, QNetworkAccessManager *nam,
 					  SuccessCallback onSuccess, FailureCallback onFailure);
+	// Issues the HEAD request once the SSRF gate has cleared `url`, following
+	// up to `redirectsLeft` redirects with the SSRF gate re-applied per hop.
+	void headDescribe(const QUrl &url, Kind kind, QNetworkAccessManager *nam,
+					  SuccessCallback onSuccess, FailureCallback onFailure, int redirectsLeft);
 };
 
 #endif // DIRECT_MEDIA_PLUGIN_H_

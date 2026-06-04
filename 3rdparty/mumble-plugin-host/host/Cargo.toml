@@ -19,6 +19,10 @@ wasm-plugins = ["dep:wasmtime"]
 # imports WASI - notably JavaScript plugins built with ComponentizeJS/jco.
 # Pure components (e.g. Rust guests via wit-bindgen) ignore these imports.
 wasm-wasi = ["wasm-plugins", "dep:wasmtime-wasi"]
+# Exposes thin wrappers around the marketplace install parsers (manifest JSON,
+# zip / tar.gz archive extraction) for the out-of-tree `fuzz/` crate. Never
+# enable in production builds.
+fuzzing = []
 
 [dependencies]
 mumble-plugin-api = { path = "../api" }
