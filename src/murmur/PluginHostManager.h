@@ -40,8 +40,10 @@ public:
 	explicit PluginHostManager(Server *server, QObject *parent = nullptr);
 	~PluginHostManager() override;
 
-	/// Forward a client-connected event to the plugin host.
-	void onClientConnected(uint32_t session, const QString &username, const QString &certHash);
+	/// Forward a client-connected event to the plugin host.  `userId` is the
+	/// registered account id (>= 0), or -1 for an unregistered guest.
+	void onClientConnected(uint32_t session, const QString &username, const QString &certHash,
+						   int userId);
 
 	/// Forward a client-disconnected event to the plugin host.
 	void onClientDisconnected(uint32_t session);

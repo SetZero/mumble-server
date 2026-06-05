@@ -125,12 +125,47 @@ async fn put_revision(
     if body.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    match state.documents.put(&validated, &body) {
+    // The sibling plugin may identify the document's creator; recorded only on
+    // the first revision (see `DocumentsStore::put`).  The name is base64 so it
+    // can carry non-ASCII display names through an HTTP header.
+    let owner_name = header_b64(&headers, "x-doc-owner-name");
+    let owner_cert = header_str(&headers, "x-doc-owner-cert");
+    match state
+        .documents
+        .put(&validated, &body, owner_name.as_deref(), owner_cert.as_deref())
+    {
         Ok(rev_seq) => Ok(Json(PutAccepted { rev_seq })),
         Err(err) => {
             tracing::warn!(?err, "admin put_revision failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
+    }
+}
+
+/// Read a header as a trimmed, non-empty owned string, or `None`.
+fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Read a base64-encoded header and decode it to a trimmed, non-empty UTF-8
+/// string, or `None` (carries non-ASCII display names safely).
+fn header_b64(headers: &HeaderMap, name: &str) -> Option<String> {
+    use base64::Engine as _;
+    let raw = headers.get(name).and_then(|v| v.to_str().ok())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw.trim())
+        .ok()?;
+    let decoded = String::from_utf8(bytes).ok()?;
+    let trimmed = decoded.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
     }
 }
 

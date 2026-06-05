@@ -23,6 +23,7 @@ pub mod documents;
 pub mod emotes;
 pub mod host_facade;
 pub mod http;
+pub mod private_store;
 pub mod rate_limit;
 pub mod server;
 pub mod session;
@@ -136,7 +137,10 @@ impl MumblePlugin for FileServerPlugin {
         let session_id: SessionId = info.session_id;
         let cert_hash: String = info.cert_hash.into_string();
         let username: String = info.username.into_string();
-        if let Err(e) = announce_to_client(running, server_id, session_id, &cert_hash) {
+        let user_id: i32 = info.user_id;
+        if let Err(e) =
+            announce_to_client(running, server_id, session_id, &cert_hash, &username, user_id)
+        {
             tracing::warn!(
                 session = session_id,
                 user = %username,
@@ -230,12 +234,16 @@ fn build_running_state(facade: Arc<dyn HostFacade>) -> Result<RunningState, Plug
     let documents = documents::DocumentsStore::open(&cfg.storage_path)
         .map_err(|e| PluginError::Other(format!("documents: {e}").into()))?;
 
+    let private = private_store::PrivateStore::open(&cfg.storage_path)
+        .map_err(|e| PluginError::Other(format!("private storage: {e}").into()))?;
+
     let signing_secret = load_or_create_signing_secret(&cfg.storage_path)
         .map_err(|e| PluginError::Other(format!("signing secret: {e}").into()))?;
 
     let app_state = AppState {
         storage: Arc::new(storage),
         documents: Arc::new(documents),
+        private: Arc::new(private),
         tickets: Arc::new(TicketStore::new()),
         sessions: Arc::new(SessionMap::new()),
         auth_rate_limiter: Arc::new(RateLimiter::new()),
@@ -266,11 +274,23 @@ fn announce_to_client(
     server_id: ServerId,
     session_id: SessionId,
     cert_hash: &str,
+    username: &str,
+    user_id: i32,
 ) -> Result<(), String> {
     let upload_token = generate_token_hex();
+    // Only *registered* users (user_id >= 0) get persistent per-user storage -
+    // a certificate is not required (so a password-authenticated SuperUser
+    // works), but an unregistered guest gets none.  The scope is qualified by
+    // the virtual-server id so accounts can't collide across servers.
+    let storage_scope: String = if user_id >= 0 {
+        format!("{server_id}:{user_id}")
+    } else {
+        String::new()
+    };
     let session_jwt = issue_session_jwt(
         running.state.signing_secret.as_ref(),
         cert_hash,
+        &storage_scope,
         session_id,
         server_id,
         SESSION_JWT_TTL_SECS,
@@ -282,6 +302,7 @@ fn announce_to_client(
         SessionInfo {
             cert_hash: cert_hash.to_owned(),
             upload_token: upload_token.clone(),
+            username: username.to_owned(),
         },
     );
 
@@ -291,6 +312,10 @@ fn announce_to_client(
         "session_id": session_id,
         "upload_token": upload_token,
         "session_jwt": session_jwt,
+        // Only registered accounts get persistent per-user storage (the
+        // live-doc sidebar index).  Unregistered guests see a warning and the
+        // client never persists or loads the sidebar for them.
+        "registered": user_id >= 0,
         "max_file_size_bytes": running.state.config.max_file_size_bytes,
         "delete_on_ttl": running.state.config.delete_on_ttl,
         "ttl_seconds": running.state.config.ttl.as_secs(),

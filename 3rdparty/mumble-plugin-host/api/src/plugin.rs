@@ -1,4 +1,12 @@
 //! ABI-stable plugin and host context traits.
+// `#[sabi_trait]` generates a trait-object forwarder for `PluginContext` that
+// calls the now-deprecated `send_plugin_data`, producing an unavoidable
+// in-crate deprecation warning. Allow it here so the deprecation remains a
+// signal for external callers without dirtying our own build.
+#![allow(
+    deprecated,
+    reason = "sabi_trait's generated PluginContext forwarder calls the deprecated send_plugin_data; deprecation targets external callers"
+)]
 
 use abi_stable::{
     sabi_trait,
@@ -62,6 +70,16 @@ pub struct PluginMessageOut {
 pub trait PluginContext: Send + Sync + 'static {
     /// Send a `PluginDataTransmission` message to a single connected
     /// client session.  `data` is opaque application bytes.
+    ///
+    /// # Deprecated
+    ///
+    /// `PluginDataTransmission` (Mumble wire ID 26) is deprecated in favour of
+    /// the generic `PluginMessage` envelope (wire ID 200). Use
+    /// [`send_plugin_message`](Self::send_plugin_message) instead.
+    #[deprecated(
+        since = "0.2.0",
+        note = "PluginDataTransmission is deprecated; use `send_plugin_message` (PluginMessage) instead"
+    )]
     fn send_plugin_data(
         &self,
         server_id: ServerId,

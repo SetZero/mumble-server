@@ -3,7 +3,7 @@
 #ifndef MUMBLE_PLUGIN_HOST_H
 #define MUMBLE_PLUGIN_HOST_H
 
-/* Generated with cbindgen:0.29.3 */
+/* Generated with cbindgen:0.29.2 */
 
 /* This file is auto-generated. Do not modify. */
 
@@ -41,6 +41,11 @@ typedef struct PluginHostCallbacks {
   /**
    * Send a `PluginDataTransmission` to a single connected session.
    * Returns 0 on success, non-zero on error.
+   *
+   * **Deprecated:** `PluginDataTransmission` (Mumble wire ID 26) is
+   * superseded by the generic `PluginMessage` envelope (wire ID 200).
+   * New integrations should provide and use `send_plugin_message` instead;
+   * this callback is retained only for backward compatibility.
    */
   int (*send_plugin_data)(void *user_data,
                           uint32_t server_id,
@@ -180,14 +185,16 @@ extern "C" {
  *
  * # Safety
  * `handle` must be valid; `username` and `cert_hash` must be NUL-terminated
- * UTF-8 strings (or NULL, which is treated as the empty string).
+ * UTF-8 strings (or NULL, which is treated as the empty string).  `user_id`
+ * is the registered account id (>= 0) or `-1` for an unregistered guest.
  */
 
 void plugin_host_on_client_connected(struct PluginHostHandle *handle,
                                      uint32_t server_id,
                                      uint32_t session,
                                      const char *username,
-                                     const char *cert_hash);
+                                     const char *cert_hash,
+                                     int32_t user_id);
 
 /**
  * Notify the host of a disconnected client.

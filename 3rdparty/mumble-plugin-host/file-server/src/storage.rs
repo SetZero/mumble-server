@@ -80,6 +80,9 @@ pub struct FileRecord {
     pub downloaded_at: Option<i64>,
     /// Cert hash of the uploader at upload time.
     pub uploader_cert_hash: Option<String>,
+    /// Display name of the uploader at upload time.  Persisted so the admin
+    /// dashboard can show the owner even after the uploader disconnects.
+    pub uploader_name: Option<String>,
 }
 
 /// Access mode chosen by the uploader.
@@ -161,11 +164,22 @@ impl Storage {
                 expires_at INTEGER,
                 downloaded_at INTEGER,
                 uploader_cert_hash TEXT,
+                uploader_name TEXT,
                 CHECK (access_mode != 'password' OR password_hash IS NOT NULL)
             );
             CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files(expires_at);
             CREATE INDEX IF NOT EXISTS idx_files_session_id ON files(session_id);",
-        )
+        )?;
+        // Additive migration for databases created before `uploader_name`
+        // existed.  `ADD COLUMN` errors with "duplicate column name" when it
+        // is already present, which is the expected no-op path.
+        if let Err(e) = conn.execute("ALTER TABLE files ADD COLUMN uploader_name TEXT", []) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column name") {
+                return Err(e);
+            }
+        }
+        Ok(())
     }
 
     /// Path on disk where the blob for `file_id` should be written.
@@ -215,8 +229,8 @@ impl Storage {
             "INSERT INTO files
               (id, session_id, channel_id, server_id, filename, mime_type, size_bytes,
                url_nonce, url_expiry, access_mode, password_hash, uploaded_at,
-               expires_at, downloaded_at, uploader_cert_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+               expires_at, downloaded_at, uploader_cert_hash, uploader_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 record.id,
                 record.session_id,
@@ -233,6 +247,7 @@ impl Storage {
                 record.expires_at.map(|v| v as i64),
                 record.downloaded_at,
                 record.uploader_cert_hash,
+                record.uploader_name,
             ],
         )?;
         Ok(())
@@ -244,7 +259,7 @@ impl Storage {
         conn.query_row(
             "SELECT id, session_id, channel_id, server_id, filename, mime_type, size_bytes,
                     url_nonce, url_expiry, access_mode, password_hash, uploaded_at,
-                    expires_at, downloaded_at, uploader_cert_hash
+                    expires_at, downloaded_at, uploader_cert_hash, uploader_name
              FROM files WHERE id = ?1",
             params![file_id],
             row_to_record,
@@ -291,6 +306,31 @@ impl Storage {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// Return every stored file record, newest upload first.  Used by the
+    /// admin dashboard to enumerate all files on the server.
+    pub fn list_all(&self) -> Result<Vec<FileRecord>, StorageError> {
+        let conn = self.db.lock().map_err(|_| poisoned_db())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, channel_id, server_id, filename, mime_type, size_bytes,
+                    url_nonce, url_expiry, access_mode, password_hash, uploaded_at,
+                    expires_at, downloaded_at, uploader_cert_hash, uploader_name
+             FROM files ORDER BY uploaded_at DESC",
+        )?;
+        let rows = stmt.query_map([], row_to_record)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// The configured total-storage cap in bytes (mirrors the value advertised
+    /// in `/capabilities`).
+    #[must_use]
+    pub fn cap_bytes(&self) -> u64 {
+        self.cap_bytes
     }
 
     /// Return ids of records uploaded by the given session.
@@ -382,6 +422,7 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> Result<FileRecord, rusqlite::Error>
         expires_at: row.get::<_, Option<i64>>(12)?.map(|v| v as u64),
         downloaded_at: row.get(13)?,
         uploader_cert_hash: row.get(14)?,
+        uploader_name: row.get(15)?,
     })
 }
 
@@ -411,6 +452,7 @@ mod tests {
             expires_at: None,
             downloaded_at: None,
             uploader_cert_hash: None,
+            uploader_name: Some("alice".into()),
         }
     }
 
@@ -478,5 +520,19 @@ mod tests {
         let mut out = store.list_for_session(7).expect("ok");
         out.sort();
         assert_eq!(out, vec!["a".to_owned()]);
+    }
+
+    #[test]
+    fn list_all_returns_every_record() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Storage::open(dir.path(), 1_000_000).expect("open");
+        store.insert(&sample_record("a", 10)).expect("ok");
+        store.insert(&sample_record("b", 20)).expect("ok");
+        let all = store.list_all().expect("list");
+        assert_eq!(all.len(), 2);
+        let mut ids: Vec<_> = all.iter().map(|r| r.id.clone()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a".to_owned(), "b".to_owned()]);
+        assert_eq!(store.cap_bytes(), 1_000_000);
     }
 }

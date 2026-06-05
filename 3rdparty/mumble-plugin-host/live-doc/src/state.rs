@@ -20,6 +20,17 @@ pub struct AppState {
     inner: Arc<AppStateInner>,
 }
 
+/// Stable identity of a connected client, cached from the Mumble
+/// `on_client_connected` hook so the plugin can attribute a document to
+/// its creator without a host round-trip.
+#[derive(Debug, Clone)]
+pub struct ClientIdentity {
+    /// Display name at connect time.
+    pub username: String,
+    /// Hex-encoded certificate hash (stable per user), or empty.
+    pub cert_hash: String,
+}
+
 #[derive(Debug)]
 struct AppStateInner {
     cfg: Arc<LiveDocConfig>,
@@ -30,6 +41,9 @@ struct AppStateInner {
     /// file-server can't wedge the live-doc state machine.
     http_client: reqwest::Client,
     rooms: Mutex<HashMap<DocKey, RoomEntry>>,
+    /// Connected clients by `(server, session)`, used to attribute a new
+    /// document to the session that first opened it.
+    clients: std::sync::Mutex<HashMap<(ServerId, SessionId), ClientIdentity>>,
 }
 
 #[derive(Debug)]
@@ -38,6 +52,9 @@ struct RoomEntry {
     /// Sessions currently editing this doc.  Cleared when the WS
     /// drops or the client disconnects from Mumble.
     sessions: Vec<SessionId>,
+    /// Identity of the first session to open the room - persisted as the
+    /// document owner on its first revision.
+    creator: Option<ClientIdentity>,
     /// Background teardown task scheduled when the last subscriber
     /// left.  Reset to `None` if someone re-joins inside the grace
     /// window.
@@ -73,8 +90,44 @@ impl AppState {
                 jwt_secret,
                 http_client,
                 rooms: Mutex::new(HashMap::new()),
+                clients: std::sync::Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    /// Cache a connected client's identity (from `on_client_connected`).
+    pub fn record_client(
+        &self,
+        server_id: ServerId,
+        session: SessionId,
+        username: String,
+        cert_hash: String,
+    ) {
+        if let Ok(mut clients) = self.inner.clients.lock() {
+            let _ = clients.insert(
+                (server_id, session),
+                ClientIdentity {
+                    username,
+                    cert_hash,
+                },
+            );
+        }
+    }
+
+    /// Forget a disconnected client's identity (from `on_client_disconnected`).
+    pub fn forget_client(&self, server_id: ServerId, session: SessionId) {
+        if let Ok(mut clients) = self.inner.clients.lock() {
+            let _ = clients.remove(&(server_id, session));
+        }
+    }
+
+    fn lookup_client(&self, server_id: ServerId, session: SessionId) -> Option<ClientIdentity> {
+        self.inner
+            .clients
+            .lock()
+            .ok()?
+            .get(&(server_id, session))
+            .cloned()
     }
 
     /// Configuration handle.
@@ -115,6 +168,7 @@ impl AppState {
                     RoomEntry {
                         room: room.clone(),
                         sessions: Vec::new(),
+                        creator: None,
                         teardown_task: None,
                     },
                 );
@@ -129,12 +183,19 @@ impl AppState {
 
     /// Mark a session as actively subscribed to a room.  Idempotent.
     pub async fn register_session(&self, key: &DocKey, session: SessionId) {
+        // Resolve identity before taking the rooms lock so we never hold the
+        // clients and rooms locks at the same time.
+        let identity = self.lookup_client(key.server_id, session);
         let mut rooms = self.inner.rooms.lock().await;
         let Some(entry) = rooms.get_mut(key) else {
             return;
         };
         if !entry.sessions.contains(&session) {
             entry.sessions.push(session);
+        }
+        // The first session to open the room is recorded as its creator.
+        if entry.creator.is_none() {
+            entry.creator = identity;
         }
         if let Some(t) = entry.teardown_task.take() {
             t.abort();
@@ -200,11 +261,17 @@ impl AppState {
     /// unload.
     pub async fn shutdown(&self) {
         let mut rooms = self.inner.rooms.lock().await;
-        let to_persist: Vec<Arc<DocRoom>> = rooms.values().map(|e| e.room.clone()).collect();
+        let to_persist: Vec<(Arc<DocRoom>, Option<ClientIdentity>)> = rooms
+            .values()
+            .map(|e| (e.room.clone(), e.creator.clone()))
+            .collect();
         rooms.clear();
         drop(rooms);
-        for room in to_persist {
-            persist_room(&self.inner.cfg, &self.inner.http_client, &room).await;
+        for (room, creator) in to_persist {
+            let owner = creator
+                .as_ref()
+                .map(|c| (c.username.as_str(), c.cert_hash.as_str()));
+            persist_room(&self.inner.cfg, &self.inner.http_client, &room, owner).await;
         }
     }
 
@@ -218,7 +285,7 @@ impl AppState {
     }
 
     async fn teardown_room(&self, key: &DocKey) {
-        let room = {
+        let captured = {
             let mut rooms = self.inner.rooms.lock().await;
             let Some(entry) = rooms.get(key) else {
                 return;
@@ -226,10 +293,13 @@ impl AppState {
             if !entry.sessions.is_empty() {
                 return;
             }
-            rooms.remove(key).map(|e| e.room)
+            rooms.remove(key).map(|e| (e.room, e.creator))
         };
-        if let Some(room) = room {
-            persist_room(&self.inner.cfg, &self.inner.http_client, &room).await;
+        if let Some((room, creator)) = captured {
+            let owner = creator
+                .as_ref()
+                .map(|c| (c.username.as_str(), c.cert_hash.as_str()));
+            persist_room(&self.inner.cfg, &self.inner.http_client, &room, owner).await;
             tracing::info!(?key, "live-doc room torn down");
         }
     }

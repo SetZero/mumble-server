@@ -16,6 +16,8 @@ pub mod capabilities;
 pub mod common;
 pub mod download;
 pub mod emotes;
+pub mod files_admin;
+pub mod me;
 pub mod upload;
 
 /// Small fixed overhead (boundary, headers, text fields) added on top of
@@ -93,6 +95,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/emotes/{shortcode}", axum::routing::delete(emotes::delete))
         .route("/capabilities", get(capabilities::get))
         .merge(admin_router)
+        .merge(files_admin::router())
+        .merge(me::router())
         .layer(middleware::from_fn(request_log))
         .layer(middleware::from_fn(cross_origin_resource_policy))
         .layer(cors)
@@ -150,5 +154,17 @@ mod tests {
             "https://chat.example.com".to_owned(),
             "https://admin.example.com".to_owned(),
         ]);
+    }
+
+    #[test]
+    fn merge_same_path_disjoint_methods_does_not_panic() {
+        use axum::routing::{delete, get};
+        // The sibling-plugin (admin_token) GET/PUT and the dashboard
+        // (session-JWT) DELETE both live at `/admin/documents/{name}` but in
+        // separate routers; axum must merge the disjoint methods, not panic.
+        let a =
+            Router::<()>::new().route("/admin/documents/{name}", get(|| async {}).put(|| async {}));
+        let b = Router::<()>::new().route("/admin/documents/{name}", delete(|| async {}));
+        let _merged = a.merge(b);
     }
 }

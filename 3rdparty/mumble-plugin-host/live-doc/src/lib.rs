@@ -152,10 +152,23 @@ impl MumblePlugin for LiveDocPlugin {
     fn on_client_connected(
         &self,
         _ctx: &PluginContext_TO<RArc<()>>,
-        _info: ClientInfo,
+        info: ClientInfo,
     ) -> PluginResult<()> {
-        // Configuration is advertised via `fancy-plugin-info` (info_json),
-        // so there is nothing to send out per-client here.
+        // Configuration is advertised via `fancy-plugin-info` (info_json), so
+        // there is nothing to send out per-client here.  We do cache the
+        // client's identity so a document can be attributed to its creator.
+        let Ok(guard) = self.inner.lock() else {
+            return ROk(());
+        };
+        let Some(running) = guard.as_ref() else {
+            return ROk(());
+        };
+        running.state.record_client(
+            info.server_id,
+            info.session_id,
+            info.username.into_string(),
+            info.cert_hash.into_string(),
+        );
         ROk(())
     }
 
@@ -171,6 +184,7 @@ impl MumblePlugin for LiveDocPlugin {
         let Some(running) = guard.as_ref() else {
             return ROk(());
         };
+        running.state.forget_client(server_id, session);
         let state = running.state.clone();
         running
             .runtime
@@ -257,6 +271,10 @@ fn build_running_state(facade: Arc<dyn HostFacade>) -> Result<RunningState, Plug
     let cfg = LiveDocConfig::from_context(facade.as_ref())
         .map_err(|e| PluginError::Config(e.to_string().into()))?;
     let cfg = Arc::new(cfg);
+
+    // Make a "documents don't persist" surprise impossible to miss: warn once
+    // at start-up if the file-server-backed persistence is not configured.
+    persistence::warn_if_persistence_disabled(&cfg);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

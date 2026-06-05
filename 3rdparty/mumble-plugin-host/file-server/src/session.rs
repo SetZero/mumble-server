@@ -18,6 +18,9 @@ pub struct SessionInfo {
     pub cert_hash: String,
     /// Opaque random token authorizing uploads from this session.
     pub upload_token: String,
+    /// Display name of the connected user (captured at connect time so an
+    /// uploaded file's owner can be shown in the admin dashboard).
+    pub username: String,
 }
 
 /// Thread-safe map of session id -> info.
@@ -92,6 +95,7 @@ mod tests {
         SessionInfo {
             cert_hash: "hash".into(),
             upload_token: token.into(),
+            username: "tester".into(),
         }
     }
 

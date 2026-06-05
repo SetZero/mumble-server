@@ -54,14 +54,15 @@ PluginHostManager::~PluginHostManager() {
 }
 
 void PluginHostManager::onClientConnected(uint32_t session, const QString &username,
-                                          const QString &certHash) {
+                                          const QString &certHash, int userId) {
 	if (!m_handle) {
 		return;
 	}
 	const QByteArray usernameUtf8 = username.toUtf8();
 	const QByteArray certUtf8     = certHash.toUtf8();
 	plugin_host_on_client_connected(m_handle, static_cast< uint32_t >(m_server->iServerNum), session,
-	                                usernameUtf8.constData(), certUtf8.constData());
+	                                usernameUtf8.constData(), certUtf8.constData(),
+	                                static_cast< int32_t >(userId));
 }
 
 void PluginHostManager::onClientDisconnected(uint32_t session) {
@@ -148,6 +149,11 @@ int PluginHostManager::sendPluginDataTrampoline(void *userData, uint32_t /*serve
 	if (!target) {
 		return -2;
 	}
+	// PluginDataTransmission is deprecated in favour of PluginMessage, but this legacy host
+	// callback still emits it for backward compatibility with older clients. Suppress the
+	// deprecation warnings for this bridge only - new code must use PluginMessage instead.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 	MumbleProto::PluginDataTransmission msg;
 	msg.set_sendersession(0); // server-originated
 	msg.add_receiversessions(targetSession);
@@ -155,6 +161,7 @@ int PluginHostManager::sendPluginDataTrampoline(void *userData, uint32_t /*serve
 	if (data && dataLen > 0) {
 		msg.set_data(data, dataLen);
 	}
+#pragma GCC diagnostic pop
 	self->m_server->sendMessage(target, msg);
 	return 0;
 }
@@ -276,11 +283,20 @@ char *PluginHostManager::getConfigTrampoline(void *userData, const char *key) {
 		return nullptr;
 	}
 
-	// Synthetic "__host_*" keys are answered directly from compile-time
-	// constants and never hit the server config table.
-	if (std::strncmp(key, "__host_", 7) == 0) {
-		return resolveHostKey(key);
-	}
+	// This is an `extern "C"` callback invoked from the Rust plugin host,
+	// frequently on a plugin worker thread.  A C++ exception must NEVER unwind
+	// across that FFI boundary - it would std::terminate the whole process -
+	// and `DBWrapper` below is thread-affine and throws a "Database error" when
+	// touched off the server's DB thread.  The entire body is therefore guarded.
+	try {
+		// Synthetic "__host_*" keys are answered directly from compile-time
+		// constants and must never reach the (thread-affine) config DB.  The key
+		// arrives plugin-prefixed (e.g.
+		// "plugin.fancy-file-server.__host_mumble_version"), so locate the marker
+		// anywhere in the key rather than only at the start.
+		if (const char *hostKey = std::strstr(key, "__host_")) {
+			return resolveHostKey(hostKey);
+		}
 
         // Plugins provide fully qualified keys (e.g. "plugin.fancy-live-doc.enabled")
         // so we look them up verbatim in the server configuration table.
@@ -307,6 +323,13 @@ char *PluginHostManager::getConfigTrampoline(void *userData, const char *key) {
         }
         const QByteArray utf8 = value.toUtf8();
         return dupToMalloc(std::string(utf8.constData(), static_cast< size_t >(utf8.size())));
+	} catch (const std::exception &e) {
+		qWarning("plugin host getConfig(\"%s\") failed: %s", key, e.what());
+		return nullptr;
+	} catch (...) {
+		qWarning("plugin host getConfig(\"%s\") failed (unknown exception)", key);
+		return nullptr;
+	}
 }
 
 void PluginHostManager::freeStringTrampoline(void * /*userData*/, char *ptr) {
@@ -428,15 +451,23 @@ int PluginHostManager::setConfigTrampoline(void *userData, const char *key, cons
         if (!self || !self->m_server || !key) {
                 return -1;
         }
-        const std::string keyStr(key);
-        const std::string valueStr(value ? value : "");
-        self->m_server->m_dbWrapper.setConfiguration(
-                static_cast< unsigned int >(self->m_server->iServerNum), keyStr, valueStr);
-        if (Meta::mp && Meta::mp->qsSettings) {
-                Meta::mp->qsSettings->setValue(QString::fromStdString(keyStr),
-                                               QString::fromStdString(valueStr));
+        // Never let a (thread-affine) DB exception unwind across the FFI boundary.
+        try {
+                const std::string keyStr(key);
+                const std::string valueStr(value ? value : "");
+                self->m_server->m_dbWrapper.setConfiguration(
+                        static_cast< unsigned int >(self->m_server->iServerNum), keyStr, valueStr);
+                if (Meta::mp && Meta::mp->qsSettings) {
+                        Meta::mp->qsSettings->setValue(QString::fromStdString(keyStr),
+                                                       QString::fromStdString(valueStr));
+                }
+                return 0;
+        } catch (const std::exception &e) {
+                qWarning("plugin host setConfig(\"%s\") failed: %s", key, e.what());
+                return -1;
+        } catch (...) {
+                return -1;
         }
-        return 0;
 }
 
 int PluginHostManager::deleteConfigPrefixTrampoline(void *userData, const char *prefix) {
@@ -444,18 +475,26 @@ int PluginHostManager::deleteConfigPrefixTrampoline(void *userData, const char *
         if (!self || !self->m_server || !prefix) {
                 return -1;
         }
-        const std::string prefixStr(prefix);
-        const auto serverId = static_cast< unsigned int >(self->m_server->iServerNum);
-        const auto all      = self->m_server->m_dbWrapper.getAllConfigurations(serverId);
-        for (const auto &entry : all) {
-                if (entry.first.rfind(prefixStr, 0) == 0) {
-                        self->m_server->m_dbWrapper.clearConfiguration(serverId, entry.first);
-                        if (Meta::mp && Meta::mp->qsSettings) {
-                                Meta::mp->qsSettings->remove(QString::fromStdString(entry.first));
+        // Never let a (thread-affine) DB exception unwind across the FFI boundary.
+        try {
+                const std::string prefixStr(prefix);
+                const auto serverId = static_cast< unsigned int >(self->m_server->iServerNum);
+                const auto all      = self->m_server->m_dbWrapper.getAllConfigurations(serverId);
+                for (const auto &entry : all) {
+                        if (entry.first.rfind(prefixStr, 0) == 0) {
+                                self->m_server->m_dbWrapper.clearConfiguration(serverId, entry.first);
+                                if (Meta::mp && Meta::mp->qsSettings) {
+                                        Meta::mp->qsSettings->remove(QString::fromStdString(entry.first));
+                                }
                         }
                 }
+                return 0;
+        } catch (const std::exception &e) {
+                qWarning("plugin host deleteConfigPrefix(\"%s\") failed: %s", prefix, e.what());
+                return -1;
+        } catch (...) {
+                return -1;
         }
-        return 0;
 }
 
 namespace {

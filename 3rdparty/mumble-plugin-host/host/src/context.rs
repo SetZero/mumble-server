@@ -25,6 +25,11 @@ pub struct PluginHostCallbacks {
 
     /// Send a `PluginDataTransmission` to a single connected session.
     /// Returns 0 on success, non-zero on error.
+    ///
+    /// **Deprecated:** `PluginDataTransmission` (Mumble wire ID 26) is
+    /// superseded by the generic `PluginMessage` envelope (wire ID 200).
+    /// New integrations should provide and use `send_plugin_message` instead;
+    /// this callback is retained only for backward compatibility.
     pub send_plugin_data: Option<
         unsafe extern "C" fn(
             user_data: *mut c_void,
@@ -224,6 +229,74 @@ impl HostContext {
         } else {
             PluginResult::RErr(PluginError::Other(
                 format!("send_plugin_data returned {rc}").into(),
+            ))
+        }
+    }
+
+    /// Direct C-callback bridge for `send_plugin_message` (wire ID 200).
+    /// Used by the host itself (not a plugin context) to broadcast
+    /// plugin-lifecycle status (enable/disable) to connected clients.
+    /// `target_sessions` are the explicit recipients; channel routing is
+    /// not used (`channel_id_present = false`).
+    pub(crate) fn send_plugin_message_raw(
+        &self,
+        server_id: ServerId,
+        plugin_name: &str,
+        payload_type: &str,
+        payload: &[u8],
+        target_sessions: &[SessionId],
+    ) -> PluginResult<()> {
+        let func = match self.callbacks.send_plugin_message {
+            Some(f) => f,
+            None => {
+                return PluginResult::RErr(PluginError::Other(
+                    "send_plugin_message callback missing".into(),
+                ))
+            }
+        };
+        let name_c = match CString::new(plugin_name) {
+            Ok(c) => c,
+            Err(_) => {
+                return PluginResult::RErr(PluginError::Other("plugin_name contains NUL".into()))
+            }
+        };
+        let type_c = match CString::new(payload_type) {
+            Ok(c) => c,
+            Err(_) => {
+                return PluginResult::RErr(PluginError::Other("payload_type contains NUL".into()))
+            }
+        };
+        let payload_ptr = if payload.is_empty() {
+            ptr::null()
+        } else {
+            payload.as_ptr()
+        };
+        let targets_ptr = if target_sessions.is_empty() {
+            ptr::null()
+        } else {
+            target_sessions.as_ptr()
+        };
+        // SAFETY: callback non-null; CStrings + slices live until the call
+        // returns; pointers are either NULL or backed by valid memory.
+        let rc = unsafe {
+            func(
+                self.callbacks.user_data,
+                server_id,
+                name_c.as_ptr(),
+                type_c.as_ptr(),
+                payload_ptr,
+                payload.len(),
+                targets_ptr,
+                target_sessions.len(),
+                false,
+                0,
+            )
+        };
+        if rc == 0 {
+            PluginResult::ROk(())
+        } else {
+            PluginResult::RErr(PluginError::Other(
+                format!("send_plugin_message returned {rc}").into(),
             ))
         }
     }

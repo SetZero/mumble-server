@@ -709,7 +709,9 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 	emit userConnected(uSource);
 
 	if (m_pluginHost) {
-		m_pluginHost->onClientConnected(uSource->uiSession, uSource->qsName, uSource->qsHash);
+		// iId is the registered account id (>= 0), or -1 for an unregistered guest.
+		m_pluginHost->onClientConnected(uSource->uiSession, uSource->qsName, uSource->qsHash,
+										uSource->iId);
 	}
 }
 
@@ -2853,7 +2855,13 @@ void Server::msgSuggestConfig(ServerUser *, MumbleProto::SuggestConfig &) {
 void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDataTransmission &msg) {
 	ZoneScoped;
 
-	// A client's plugin has sent us a message that we shall delegate to its receivers
+	// A client's plugin has sent us a message that we shall delegate to its receivers.
+	//
+	// PluginDataTransmission is deprecated in favour of PluginMessage, but the server must keep
+	// relaying it for backward compatibility with older clients/plugins. Suppress the deprecation
+	// warnings for this legacy bridge only - new code must use PluginMessage instead.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 	if (sender->m_pluginMessageBucket.ratelimit(1)) {
 		qWarning("Dropping plugin message sent from \"%s\" (%d)", qUtf8Printable(sender->qsName), sender->uiSession);
@@ -2917,6 +2925,8 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 			sender->uiSession, QString::fromStdString(msg.dataid()),
 			QByteArray(msg.data().data(), static_cast< int >(msg.data().size())));
 	}
+
+#pragma GCC diagnostic pop
 }
 
 // ---------------------------------------------------------------------------

@@ -80,7 +80,9 @@ pub async fn upload(
         tracing::warn!(session = q.session, "upload: invalid token");
         return Err(ApiError::unauthorized("invalid upload token"));
     }
-    let cert_hash = state.sessions.get(q.session).map(|s| s.cert_hash);
+    let session_info = state.sessions.get(q.session);
+    let cert_hash = session_info.as_ref().map(|s| s.cert_hash.clone());
+    let uploader_name = session_info.as_ref().map(|s| s.username.clone());
     tracing::info!(session = q.session, "upload: auth ok, parsing multipart");
 
     let parsed = parse_multipart(&state, multipart, state.config.max_file_size_bytes).await?;
@@ -96,7 +98,7 @@ pub async fn upload(
         filename = %parsed.filename,
         "upload: multipart parsed, inserting record"
     );
-    let result = insert_record(&state, q.session, cert_hash, parsed).await;
+    let result = insert_record(&state, q.session, cert_hash, uploader_name, parsed).await;
     tracing::info!(session = q.session, ok = result.is_ok(), "upload: complete");
     result
 }
@@ -322,6 +324,7 @@ async fn insert_record(
     state: &AppState,
     session_id: u32,
     cert_hash: Option<String>,
+    uploader_name: Option<String>,
     parsed: ParsedUpload,
 ) -> Result<Json<UploadResponse>, ApiError> {
     let file_id = parsed.file_id;
@@ -362,6 +365,7 @@ async fn insert_record(
         },
         downloaded_at: None,
         uploader_cert_hash: cert_hash,
+        uploader_name,
     };
 
     if let Err(e) = state.storage.insert(&record) {

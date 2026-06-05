@@ -23,42 +23,101 @@ use crate::doc::DocRoom;
 const YJS_MARKER_PREFIX: &str = "<!--YJS-STATE:";
 const YJS_MARKER_SUFFIX: &str = "-->";
 
+/// Returns `Some((url, token))` only when persistence is **fully**
+/// configured.  A half-configured setup (URL without token, or vice
+/// versa) is a misconfiguration the operator almost certainly didn't
+/// intend, so it is reported loudly rather than silently skipped.
+fn persistence_target(cfg: &LiveDocConfig) -> Option<(&str, &str)> {
+    match (
+        cfg.file_server_url.as_deref(),
+        cfg.file_server_admin_token.as_deref(),
+    ) {
+        (Some(url), Some(token)) => Some((url, token)),
+        (Some(_), None) => {
+            tracing::error!(
+                "live-doc persistence is HALF-configured: \
+                 plugin.fancy-live-doc.file_server_url is set but \
+                 plugin.fancy-live-doc.file_server_admin_token is missing - documents will \
+                 NOT be saved. Set the token to match the file server's admin_token."
+            );
+            None
+        }
+        (None, Some(_)) => {
+            tracing::error!(
+                "live-doc persistence is HALF-configured: \
+                 plugin.fancy-live-doc.file_server_admin_token is set but \
+                 plugin.fancy-live-doc.file_server_url is missing - documents will NOT be saved."
+            );
+            None
+        }
+        // Fully unconfigured: persistence is intentionally disabled. The
+        // operator is warned once at startup (see `warn_if_persistence_disabled`),
+        // so per-room paths stay quiet to avoid log spam.
+        (None, None) => None,
+    }
+}
+
+/// Log a single, prominent warning at plugin start-up when document
+/// persistence is not configured, so a "my doc vanished" surprise is
+/// never a silent surprise.
+pub fn warn_if_persistence_disabled(cfg: &LiveDocConfig) {
+    if cfg.file_server_url.is_none() && cfg.file_server_admin_token.is_none() {
+        tracing::warn!(
+            "live-doc persistence is DISABLED: neither \
+             plugin.fancy-live-doc.file_server_url nor \
+             plugin.fancy-live-doc.file_server_admin_token is set. Documents will live only in \
+             memory and are LOST when the room is torn down. Set both keys (the token must match \
+             plugin.fancy-file-server.admin_token) to persist documents to the file server."
+        );
+    }
+}
+
 /// Try to seed a freshly-created room from the file-server, if a
-/// previous snapshot exists.  Failure is logged and ignored - a
-/// missing snapshot is a normal "first open" condition.
+/// previous snapshot exists.  A missing snapshot is a normal "first
+/// open" condition; a *fetch failure* on a configured store is loud
+/// because it means a saved document silently opened blank.
 pub async fn try_seed_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: &DocRoom) {
-    let Some(url) = cfg.file_server_url.as_deref() else {
+    let Some((url, token)) = persistence_target(cfg) else {
         return;
     };
     let filename = room.key().as_filename();
-    match fetch_file(
-        client,
-        url,
-        cfg.file_server_admin_token.as_deref(),
-        &filename,
-    )
-    .await
-    {
+    match fetch_file(client, url, token, &filename).await {
         Ok(Some(contents)) => {
             if let Some(snapshot) = extract_snapshot(&contents) {
                 if let Err(err) = room.seed_from_snapshot(&snapshot).await {
-                    tracing::warn!(?err, ?filename, "live-doc seed failed");
+                    tracing::error!(
+                        ?err,
+                        %filename,
+                        "live-doc seed FAILED - room opened EMPTY despite a saved revision"
+                    );
                 }
             }
         }
         Ok(None) => {}
         Err(err) => {
-            tracing::warn!(?err, ?filename, "live-doc seed fetch failed");
+            tracing::error!(
+                ?err,
+                %filename,
+                "live-doc seed fetch FAILED - room opened EMPTY; previously saved content not loaded"
+            );
         }
     }
 }
 
 /// Persist the current state of a room to the file-server.
 ///
-/// Returns silently on any failure - persistence is best-effort and
-/// must not block teardown.
-pub async fn persist_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: &DocRoom) {
-    let Some(url) = cfg.file_server_url.as_deref() else {
+/// Persistence is best-effort and must not block teardown, but a
+/// failure is **always** surfaced at `error` level so a lost save is
+/// never silent.
+/// `owner` is `(display_name, cert_hash)` of the document's creator, recorded
+/// by the file server only on the first revision.
+pub async fn persist_room(
+    cfg: &LiveDocConfig,
+    client: &reqwest::Client,
+    room: &DocRoom,
+    owner: Option<(&str, &str)>,
+) {
+    let Some((url, token)) = persistence_target(cfg) else {
         return;
     };
     let filename = room.key().as_filename();
@@ -75,16 +134,13 @@ pub async fn persist_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: &
         B64.encode(&snapshot),
     );
 
-    if let Err(err) = put_file(
-        client,
-        url,
-        cfg.file_server_admin_token.as_deref(),
-        &filename,
-        body,
-    )
-    .await
-    {
-        tracing::warn!(?err, ?filename, "live-doc persist failed");
+    match put_file(client, url, token, &filename, body, owner).await {
+        Ok(()) => tracing::debug!(%filename, "live-doc document persisted"),
+        Err(err) => tracing::error!(
+            ?err,
+            %filename,
+            "live-doc persist FAILED - document changes were NOT saved to the file server"
+        ),
     }
 }
 
@@ -101,12 +157,9 @@ fn extract_snapshot(body: &str) -> Option<Vec<u8>> {
 async fn fetch_file(
     client: &reqwest::Client,
     base_url: &str,
-    admin_token: Option<&str>,
+    token: &str,
     filename: &str,
 ) -> Result<Option<String>, reqwest::Error> {
-    let Some(token) = admin_token else {
-        return Ok(None);
-    };
     let url = format!(
         "{}/admin/documents/{}",
         base_url.trim_end_matches('/'),
@@ -123,26 +176,28 @@ async fn fetch_file(
 async fn put_file(
     client: &reqwest::Client,
     base_url: &str,
-    admin_token: Option<&str>,
+    token: &str,
     filename: &str,
     body: String,
+    owner: Option<(&str, &str)>,
 ) -> Result<(), reqwest::Error> {
-    let Some(token) = admin_token else {
-        return Ok(());
-    };
     let url = format!(
         "{}/admin/documents/{}",
         base_url.trim_end_matches('/'),
         filename
     );
-    let _response = client
+    let mut req = client
         .put(&url)
         .bearer_auth(token)
-        .header("content-type", "text/markdown")
-        .body(body)
-        .send()
-        .await?
-        .error_for_status()?;
+        .header("content-type", "text/markdown");
+    if let Some((name, cert)) = owner {
+        // The display name may contain non-ASCII bytes, which are not valid in
+        // an HTTP header value; base64 it so the header is always well-formed.
+        req = req
+            .header("x-doc-owner-name", B64.encode(name))
+            .header("x-doc-owner-cert", cert);
+    }
+    let _response = req.body(body).send().await?.error_for_status()?;
     Ok(())
 }
 

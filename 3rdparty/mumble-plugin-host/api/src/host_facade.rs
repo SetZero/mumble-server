@@ -218,6 +218,21 @@ impl<'a> Host<'a> {
     // ---- Raw plugin data / message --------------------------------
 
     /// Send a `PluginDataTransmission` to a single connected session.
+    ///
+    /// # Deprecated
+    ///
+    /// `PluginDataTransmission` (Mumble wire ID 26) is deprecated in favour of
+    /// the generic `PluginMessage` envelope (wire ID 200). Use
+    /// [`send_plugin_message`](Self::send_plugin_message) or
+    /// [`send_to_sessions`](Self::send_to_sessions) instead.
+    #[deprecated(
+        since = "0.2.0",
+        note = "PluginDataTransmission is deprecated; use `send_plugin_message`/`send_to_sessions` (PluginMessage) instead"
+    )]
+    #[allow(
+        deprecated,
+        reason = "this wrapper is itself deprecated and must delegate to the deprecated primitive"
+    )]
     pub fn send_plugin_data(
         &self,
         server_id: ServerId,

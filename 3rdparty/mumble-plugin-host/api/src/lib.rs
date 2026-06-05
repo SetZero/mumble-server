@@ -119,6 +119,9 @@ pub struct ClientInfo {
     /// Hex-encoded SHA-1 hash of the client's TLS certificate, or empty
     /// string if the client did not present one.
     pub cert_hash: RString,
+    /// Registered Mumble account id (>= 0), or `-1` for an unregistered guest.
+    /// Only registered users get persistent per-user storage.
+    pub user_id: i32,
 }
 
 /// Errors that may be returned from plugin lifecycle and event hooks.

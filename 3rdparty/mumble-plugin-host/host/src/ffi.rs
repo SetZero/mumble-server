@@ -87,7 +87,8 @@ pub unsafe extern "C" fn plugin_host_destroy(handle: *mut PluginHostHandle) {
 ///
 /// # Safety
 /// `handle` must be valid; `username` and `cert_hash` must be NUL-terminated
-/// UTF-8 strings (or NULL, which is treated as the empty string).
+/// UTF-8 strings (or NULL, which is treated as the empty string).  `user_id`
+/// is the registered account id (>= 0) or `-1` for an unregistered guest.
 #[no_mangle]
 pub unsafe extern "C" fn plugin_host_on_client_connected(
     handle: *mut PluginHostHandle,
@@ -95,6 +96,7 @@ pub unsafe extern "C" fn plugin_host_on_client_connected(
     session: u32,
     username: *const c_char,
     cert_hash: *const c_char,
+    user_id: i32,
 ) {
     ffi_guard("plugin_host_on_client_connected", (), || {
         let Some(host) = (unsafe { handle_lock(handle) }) else {
@@ -107,6 +109,7 @@ pub unsafe extern "C" fn plugin_host_on_client_connected(
             username: abi_stable::std_types::RString::from(unsafe { cstr_to_string(username) }),
             // SAFETY: same contract.
             cert_hash: abi_stable::std_types::RString::from(unsafe { cstr_to_string(cert_hash) }),
+            user_id,
         };
         host.on_client_connected(info);
     })

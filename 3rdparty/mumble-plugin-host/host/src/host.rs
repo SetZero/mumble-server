@@ -3,9 +3,10 @@
 //! per-plugin `fancy-plugin-info` envelope to every newly connected
 //! client.
 
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use abi_stable::std_types::{RArc, RNone, RSlice, RSome, RStr, RVec};
 use mumble_plugin_api::{
@@ -32,6 +33,14 @@ const CONFIG_KEY_PLUGINS_DIR: &str = "plugins_dir";
 /// before invoking [`mumble_plugin_api::MumblePlugin::on_load`] so
 /// individual plugins do not need to perform the check themselves.
 const CONFIG_KEY_ENABLED: &str = "enabled";
+
+/// `PluginMessage.payload_type` values the host broadcasts when a plugin's
+/// loaded state changes at runtime, so connected clients can drop (or restore)
+/// that plugin's UI gracefully.  Kept as plain strings on the wire — the
+/// generic `payload_type` field is intentionally plugin/agnostic (see
+/// `Mumble.proto`); the client mirrors these in its `PluginPayloadType` enum.
+const PAYLOAD_TYPE_PLUGIN_ACTIVATED: &str = "PluginActivated";
+const PAYLOAD_TYPE_PLUGIN_DEACTIVATED: &str = "PluginDeactivated";
 
 /// Per-plugin key persisting the marketplace ID the plugin was
 /// installed from (set by the marketplace install flow).
@@ -201,6 +210,12 @@ pub struct Host {
     /// for marketplace downloads.  None if neither configured nor
     /// supplied via `MUMBLE_PLUGIN_DIRS`.
     install_dir: Option<PathBuf>,
+    /// Currently-connected client sessions (keyed by `(server, session)`,
+    /// valued by the full `ClientInfo`), so a runtime plugin enable/disable can
+    /// be broadcast to every one of them - and a re-enabled plugin can be
+    /// re-announced (its `on_client_connected` re-run).  Mutated from `&self`
+    /// callbacks (connect/disconnect), hence the interior `Mutex`.
+    sessions: Mutex<HashMap<(ServerId, SessionId), ClientInfo>>,
 }
 
 impl Host {
@@ -294,12 +309,16 @@ impl Host {
             plugins,
             failed_plugins,
             install_dir,
+            sessions: Mutex::new(HashMap::new()),
         })
     }
 
     /// Dispatch a client-connected event to every loaded plugin, then
     /// ship each plugin's `fancy-plugin-info` envelope to the session.
     pub(crate) fn on_client_connected(&self, info: ClientInfo) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            let _ = sessions.insert((info.server_id, info.session_id), info.clone());
+        }
         for entry in self.plugins.iter().filter(|e| e.loaded) {
             let Some(ctx) = entry.ctx.as_ref() else {
                 continue;
@@ -326,6 +345,9 @@ impl Host {
 
     /// Dispatch a client-disconnected event.
     pub(crate) fn on_client_disconnected(&self, server_id: ServerId, session: SessionId) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            let _ = sessions.remove(&(server_id, session));
+        }
         for entry in self.plugins.iter().filter(|e| e.loaded) {
             let Some(ctx) = entry.ctx.as_ref() else {
                 continue;
@@ -513,7 +535,82 @@ impl Host {
                 return Err(format!("on_unload failed: {e}"));
             }
         }
+        // The `entry` borrow has ended; tell every connected client so they can
+        // drop (or restore) this plugin's UI gracefully.  On enable, re-announce
+        // the plugin first so its per-plugin config (e.g. the file-server
+        // config) re-flows to already-connected sessions.
+        if enabled {
+            self.reannounce_plugin(idx);
+        }
+        self.broadcast_plugin_status(name, enabled);
         Ok(())
+    }
+
+    /// Broadcast a plugin enable/disable `PluginMessage` (wire ID 200) to every
+    /// connected session, grouped by virtual server.  The `payload_type`
+    /// carries the new state; the payload is empty.
+    fn broadcast_plugin_status(&self, name: &str, active: bool) {
+        let payload_type = if active {
+            PAYLOAD_TYPE_PLUGIN_ACTIVATED
+        } else {
+            PAYLOAD_TYPE_PLUGIN_DEACTIVATED
+        };
+        let mut by_server: HashMap<ServerId, Vec<SessionId>> = HashMap::new();
+        match self.sessions.lock() {
+            Ok(sessions) => {
+                for (server_id, session) in sessions.keys() {
+                    by_server.entry(*server_id).or_default().push(*session);
+                }
+            }
+            Err(_) => return,
+        }
+        for (server_id, targets) in by_server {
+            if let abi_stable::std_types::RResult::RErr(e) = self
+                .base_context
+                .send_plugin_message_raw(server_id, name, payload_type, &[], &targets)
+            {
+                tracing::warn!(plugin = %name, error = %e, "plugin-status broadcast failed");
+            }
+        }
+    }
+
+    /// Re-deliver a single plugin's connect announcement (its
+    /// `on_client_connected` callback + `fancy-plugin-info` envelope) to every
+    /// currently-connected session.  Used when a plugin is re-enabled at
+    /// runtime so it re-announces its per-plugin config to already-connected
+    /// clients (which the normal connect path would otherwise only do for new
+    /// connections).
+    fn reannounce_plugin(&self, idx: usize) {
+        let infos: Vec<ClientInfo> = match self.sessions.lock() {
+            Ok(sessions) => sessions.values().cloned().collect(),
+            Err(_) => return,
+        };
+        let Some(entry) = self.plugins.get(idx) else {
+            return;
+        };
+        if !entry.loaded {
+            return;
+        }
+        let Some(ctx) = entry.ctx.as_ref() else {
+            return;
+        };
+        for info in infos {
+            if let abi_stable::std_types::RResult::RErr(e) =
+                entry.plugin.plugin.on_client_connected(ctx, info.clone())
+            {
+                tracing::warn!(plugin = %entry.name, error = %e, "re-announce on_client_connected failed");
+            }
+            if let Some(envelope) = &entry.info_envelope {
+                if let abi_stable::std_types::RResult::RErr(e) = self.base_context.send_plugin_data_raw(
+                    info.server_id,
+                    info.session_id,
+                    PLUGIN_INFO_DATA_ID,
+                    envelope,
+                ) {
+                    tracing::warn!(plugin = %entry.name, error = %e, "re-announce info delivery failed");
+                }
+            }
+        }
     }
 
     /// Plugin-admin: download a plugin from the marketplace, persist
