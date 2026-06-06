@@ -39,6 +39,21 @@ pub struct DocumentSummary {
     pub owner_cert_hash: Option<String>,
 }
 
+/// One entry in a document's shared-with list.  Generic ACL row: the
+/// file-server stores who a stable-named document was shared with, with
+/// no knowledge of what the document represents.
+#[derive(Debug, Clone, Serialize)]
+pub struct SharedWithEntry {
+    /// Stable hex-encoded SHA-1 of the recipient's TLS cert.
+    pub cert_hash: String,
+    /// Registered Mumble user id, or `-1` for a guest.
+    pub user_id: i64,
+    /// Display name captured when the grant was recorded.
+    pub display_name: String,
+    /// Unix-millis time the grant was recorded.
+    pub added_at: i64,
+}
+
 /// One revision entry returned by `list_revisions`.
 #[derive(Debug, Clone, Serialize)]
 pub struct RevisionMeta {
@@ -242,6 +257,60 @@ impl DocumentsStore {
         }
         Ok(out)
     }
+
+    /// Record (idempotently) that `name` has been shared with the given
+    /// user.  Updates the display name + timestamp if the row exists.
+    pub fn add_shared_with(
+        &self,
+        name: &str,
+        cert_hash: &str,
+        user_id: i64,
+        display_name: &str,
+    ) -> Result<(), StorageError> {
+        let now = unix_millis_now();
+        let conn = self.db.lock().map_err(|_| poisoned_mutex_err())?;
+        let _ = conn.execute(
+            "INSERT INTO document_acl(doc_name, cert_hash, user_id, display_name, added_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT(doc_name, cert_hash) DO UPDATE SET \
+                 user_id = excluded.user_id, display_name = excluded.display_name",
+            params![name, cert_hash, user_id, display_name, now],
+        )?;
+        Ok(())
+    }
+
+    /// List everyone a document has been shared with, oldest grant first.
+    pub fn list_shared_with(&self, name: &str) -> Result<Vec<SharedWithEntry>, StorageError> {
+        let conn = self.db.lock().map_err(|_| poisoned_mutex_err())?;
+        let mut stmt = conn.prepare(
+            "SELECT cert_hash, user_id, display_name, added_at \
+             FROM document_acl WHERE doc_name = ?1 ORDER BY added_at ASC",
+        )?;
+        let rows = stmt.query_map(params![name], |row| {
+            Ok(SharedWithEntry {
+                cert_hash: row.get(0)?,
+                user_id: row.get(1)?,
+                display_name: row.get(2)?,
+                added_at: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Revoke a single user's access to a document.  Returns `true` if a
+    /// grant was removed.
+    pub fn remove_shared_with(&self, name: &str, cert_hash: &str) -> Result<bool, StorageError> {
+        let conn = self.db.lock().map_err(|_| poisoned_mutex_err())?;
+        let n = conn.execute(
+            "DELETE FROM document_acl WHERE doc_name = ?1 AND cert_hash = ?2",
+            params![name, cert_hash],
+        )?;
+        Ok(n > 0)
+    }
 }
 
 fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -262,7 +331,15 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             created_at INTEGER NOT NULL,
             UNIQUE(doc_name, rev_seq)
         );
-        CREATE INDEX IF NOT EXISTS idx_doc_revisions_name ON document_revisions(doc_name);",
+        CREATE INDEX IF NOT EXISTS idx_doc_revisions_name ON document_revisions(doc_name);
+        CREATE TABLE IF NOT EXISTS document_acl (
+            doc_name TEXT NOT NULL,
+            cert_hash TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            display_name TEXT NOT NULL,
+            added_at INTEGER NOT NULL,
+            PRIMARY KEY (doc_name, cert_hash)
+        );",
     )?;
     // Tolerant migration for DBs created before owner tracking: ADD COLUMN
     // errors with "duplicate column name" once the columns exist, which is the
@@ -359,5 +436,24 @@ mod tests {
         assert_eq!(d.owner_name.as_deref(), Some("Alice"));
         assert_eq!(d.owner_cert_hash.as_deref(), Some("certA"));
         assert_eq!(d.revision_count, 2);
+    }
+
+    #[test]
+    fn shared_with_add_list_remove() {
+        let (_dir, store) = open_store();
+        store.add_shared_with("doc", "hash-a", 7, "Alice").unwrap();
+        store.add_shared_with("doc", "hash-b", -1, "Bob").unwrap();
+        // Idempotent: re-adding updates the display name, no duplicate row.
+        store.add_shared_with("doc", "hash-a", 7, "Alice Cooper").unwrap();
+
+        let list = store.list_shared_with("doc").unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].cert_hash, "hash-a");
+        assert_eq!(list[0].display_name, "Alice Cooper");
+        assert_eq!(list[1].user_id, -1);
+
+        assert!(store.remove_shared_with("doc", "hash-a").unwrap());
+        assert!(!store.remove_shared_with("doc", "hash-a").unwrap());
+        assert_eq!(store.list_shared_with("doc").unwrap().len(), 1);
     }
 }

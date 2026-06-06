@@ -1,7 +1,7 @@
 //! Process-global state shared by the WS server and the plugin
 //! lifecycle hooks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,25 +10,30 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::config::LiveDocConfig;
-use crate::doc::{DocKey, DocRoom};
+use crate::doc::{DocKey, DocMeta, DocRoom};
 use crate::host_facade::HostFacade;
-use crate::persistence::{persist_room, try_seed_room};
+use crate::persistence::{
+    fetch_shared_with_members, persist_room, record_shared_with, try_seed_room, SharedMember,
+};
+
+/// Stable identity of a connected session, captured from `ClientInfo`
+/// at connect time so the document layer can attribute ownership and
+/// shares without a per-call host round-trip.
+#[derive(Debug, Clone, Default)]
+pub struct Identity {
+    /// Stable hex-encoded SHA-1 of the client's TLS cert (may be empty
+    /// for a guest with no certificate).
+    pub cert_hash: String,
+    /// Registered Mumble user id, or `-1` for a guest.
+    pub user_id: i64,
+    /// Display name at connect time.
+    pub name: String,
+}
 
 /// Wallclock state shared across the plugin.
 #[derive(Debug, Clone)]
 pub struct AppState {
     inner: Arc<AppStateInner>,
-}
-
-/// Stable identity of a connected client, cached from the Mumble
-/// `on_client_connected` hook so the plugin can attribute a document to
-/// its creator without a host round-trip.
-#[derive(Debug, Clone)]
-pub struct ClientIdentity {
-    /// Display name at connect time.
-    pub username: String,
-    /// Hex-encoded certificate hash (stable per user), or empty.
-    pub cert_hash: String,
 }
 
 #[derive(Debug)]
@@ -41,9 +46,27 @@ struct AppStateInner {
     /// file-server can't wedge the live-doc state machine.
     http_client: reqwest::Client,
     rooms: Mutex<HashMap<DocKey, RoomEntry>>,
-    /// Connected clients by `(server, session)`, used to attribute a new
-    /// document to the session that first opened it.
-    clients: std::sync::Mutex<HashMap<(ServerId, SessionId), ClientIdentity>>,
+    /// Connected-session identities captured from `ClientInfo`.
+    identities: Mutex<HashMap<(ServerId, SessionId), Identity>>,
+    /// Access-control metadata cached independently of the live room, so
+    /// a teardown (which frees the CRDT room) never drops *who* may
+    /// reconnect.  Without this, a recreated room could only recover the
+    /// owner / share list from the file-server; if that persistence is
+    /// not configured the legitimate owner would be locked out and the
+    /// client would retry the handshake forever.  Keyed by [`DocKey`].
+    acls: Mutex<HashMap<DocKey, CachedAcl>>,
+}
+
+/// Cached access-control state for a document, retained across room
+/// teardown so the owner and recorded share recipients can always
+/// reconnect within the process lifetime.
+#[derive(Debug, Clone)]
+struct CachedAcl {
+    /// Document metadata (owner, title, channel binding, visibility) as
+    /// of the last time the room was torn down.
+    meta: DocMeta,
+    /// Cert hashes the document had been shared with (besides the owner).
+    shared_with: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -52,9 +75,6 @@ struct RoomEntry {
     /// Sessions currently editing this doc.  Cleared when the WS
     /// drops or the client disconnects from Mumble.
     sessions: Vec<SessionId>,
-    /// Identity of the first session to open the room - persisted as the
-    /// document owner on its first revision.
-    creator: Option<ClientIdentity>,
     /// Background teardown task scheduled when the last subscriber
     /// left.  Reset to `None` if someone re-joins inside the grace
     /// window.
@@ -90,45 +110,33 @@ impl AppState {
                 jwt_secret,
                 http_client,
                 rooms: Mutex::new(HashMap::new()),
-                clients: std::sync::Mutex::new(HashMap::new()),
+                identities: Mutex::new(HashMap::new()),
+                acls: Mutex::new(HashMap::new()),
             }),
         }
     }
 
-    /// Cache a connected client's identity (from `on_client_connected`).
-    pub fn record_client(
-        &self,
-        server_id: ServerId,
-        session: SessionId,
-        username: String,
-        cert_hash: String,
-    ) {
-        if let Ok(mut clients) = self.inner.clients.lock() {
-            let _ = clients.insert(
-                (server_id, session),
-                ClientIdentity {
-                    username,
-                    cert_hash,
-                },
-            );
-        }
-    }
-
-    /// Forget a disconnected client's identity (from `on_client_disconnected`).
-    pub fn forget_client(&self, server_id: ServerId, session: SessionId) {
-        if let Ok(mut clients) = self.inner.clients.lock() {
-            let _ = clients.remove(&(server_id, session));
-        }
-    }
-
-    fn lookup_client(&self, server_id: ServerId, session: SessionId) -> Option<ClientIdentity> {
-        self.inner
-            .clients
+    /// Record a connected session's identity (called from the Mumble
+    /// `on_client_connected` hook).
+    pub async fn set_identity(&self, server_id: ServerId, session: SessionId, identity: Identity) {
+        let _ = self
+            .inner
+            .identities
             .lock()
-            .ok()?
+            .await
+            .insert((server_id, session), identity);
+    }
+
+    /// Look up a connected session's identity.
+    pub async fn identity(&self, server_id: ServerId, session: SessionId) -> Option<Identity> {
+        self.inner
+            .identities
+            .lock()
+            .await
             .get(&(server_id, session))
             .cloned()
     }
+
 
     /// Configuration handle.
     pub fn cfg(&self) -> &LiveDocConfig {
@@ -168,7 +176,6 @@ impl AppState {
                     RoomEntry {
                         room: room.clone(),
                         sessions: Vec::new(),
-                        creator: None,
                         teardown_task: None,
                     },
                 );
@@ -177,25 +184,61 @@ impl AppState {
         };
         if needs_seed {
             try_seed_room(&self.inner.cfg, &self.inner.http_client, &room).await;
+            // Overlay the cached ACL so an owner / share grant established
+            // earlier this process survives a teardown even when the
+            // file-server persistence used by `try_seed_room` is absent.
+            self.restore_acl(&room).await;
         }
         room
     }
 
+    /// Re-apply a previously cached ACL onto a freshly-created room.
+    ///
+    /// The cached metadata only fills in the owner when seeding produced
+    /// none (file-server unavailable or first open), so an authoritative
+    /// file-server record always wins.  Share recipients are unioned in,
+    /// never dropped.
+    async fn restore_acl(&self, room: &DocRoom) {
+        let cached = {
+            let acls = self.inner.acls.lock().await;
+            acls.get(room.key()).cloned()
+        };
+        let Some(cached) = cached else {
+            return;
+        };
+        if room.meta().await.owner_cert_hash.is_empty() {
+            room.set_meta(cached.meta).await;
+        }
+        for cert in cached.shared_with {
+            room.add_member(cert).await;
+        }
+    }
+
+    /// Snapshot a room's current access-control state into the cache so it
+    /// outlives the room.  Rooms with no claimed owner carry no grant
+    /// worth preserving and are skipped.
+    async fn remember_acl(&self, key: &DocKey, room: &DocRoom) {
+        let meta = room.meta().await;
+        if meta.owner_cert_hash.is_empty() {
+            return;
+        }
+        let shared_with = room.members().await;
+        let _ = self
+            .inner
+            .acls
+            .lock()
+            .await
+            .insert(key.clone(), CachedAcl { meta, shared_with });
+    }
+
     /// Mark a session as actively subscribed to a room.  Idempotent.
     pub async fn register_session(&self, key: &DocKey, session: SessionId) {
-        // Resolve identity before taking the rooms lock so we never hold the
-        // clients and rooms locks at the same time.
-        let identity = self.lookup_client(key.server_id, session);
         let mut rooms = self.inner.rooms.lock().await;
         let Some(entry) = rooms.get_mut(key) else {
             return;
         };
         if !entry.sessions.contains(&session) {
             entry.sessions.push(session);
-        }
-        // The first session to open the room is recorded as its creator.
-        if entry.creator.is_none() {
-            entry.creator = identity;
         }
         if let Some(t) = entry.teardown_task.take() {
             t.abort();
@@ -219,6 +262,12 @@ impl AppState {
     /// Drop sessions belonging to a disconnected client across every
     /// room.  Called from the Mumble `on_client_disconnected` hook.
     pub async fn handle_client_gone(&self, server_id: ServerId, session: SessionId) {
+        let _ = self
+            .inner
+            .identities
+            .lock()
+            .await
+            .remove(&(server_id, session));
         let mut to_teardown: Vec<DocKey> = Vec::new();
         let mut rooms = self.inner.rooms.lock().await;
         for (key, entry) in rooms.iter_mut() {
@@ -239,8 +288,10 @@ impl AppState {
         }
     }
 
-    /// Returns `true` if the session is allowed to access the doc.
-    pub fn session_can_access(
+    /// Returns `true` if the session is active and holds enter +
+    /// text-message permission on `channel_id`.  Used at *open* time to
+    /// decide whether a channel grants access to a published document.
+    pub fn has_channel_permission(
         &self,
         server_id: ServerId,
         session: SessionId,
@@ -257,21 +308,80 @@ impl AppState {
             )
     }
 
+    /// Returns `true` if the session may *connect* to the document's WS:
+    /// the session is active and its identity is the owner or a recorded
+    /// share recipient.  Re-checked live at every connect so a revoked
+    /// grant cannot ride an unexpired token.
+    pub async fn session_can_connect(
+        &self,
+        server_id: ServerId,
+        session: SessionId,
+        key: &DocKey,
+    ) -> bool {
+        if !self.inner.ctx.is_session_active(server_id, session) {
+            return false;
+        }
+        let Some(identity) = self.identity(server_id, session).await else {
+            return false;
+        };
+        let room = {
+            let rooms = self.inner.rooms.lock().await;
+            rooms.get(key).map(|e| e.room.clone())
+        };
+        match room {
+            Some(room) => room.is_member(&identity.cert_hash).await,
+            None => false,
+        }
+    }
+
+    /// Record a share recipient for a document (persists to the
+    /// file-server ACL and updates the room's in-memory set).
+    pub async fn record_shared_with(&self, room: &DocRoom, identity: &Identity) {
+        record_shared_with(
+            &self.inner.cfg,
+            &self.inner.http_client,
+            room,
+            &identity.cert_hash,
+            identity.user_id,
+            &identity.name,
+        )
+        .await;
+    }
+
+    /// Persist a single room immediately (used after a metadata change).
+    pub async fn persist_room_now(&self, room: &DocRoom) {
+        persist_room(&self.inner.cfg, &self.inner.http_client, room).await;
+    }
+
+    /// Fetch the document's shared-with member list (with display names)
+    /// for surfacing to clients.
+    pub async fn shared_with_members(&self, room: &DocRoom) -> Vec<SharedMember> {
+        fetch_shared_with_members(&self.inner.cfg, &self.inner.http_client, room).await
+    }
+
+    /// Persist every room that has changed since its last flush.  Driven
+    /// by the autosave loop.
+    pub async fn persist_dirty_rooms(&self) {
+        let rooms: Vec<Arc<DocRoom>> = {
+            let guard = self.inner.rooms.lock().await;
+            guard.values().map(|e| e.room.clone()).collect()
+        };
+        for room in rooms {
+            if room.needs_persist().await {
+                persist_room(&self.inner.cfg, &self.inner.http_client, &room).await;
+            }
+        }
+    }
+
     /// Persist every active room and forget them.  Called on plugin
     /// unload.
     pub async fn shutdown(&self) {
         let mut rooms = self.inner.rooms.lock().await;
-        let to_persist: Vec<(Arc<DocRoom>, Option<ClientIdentity>)> = rooms
-            .values()
-            .map(|e| (e.room.clone(), e.creator.clone()))
-            .collect();
+        let to_persist: Vec<Arc<DocRoom>> = rooms.values().map(|e| e.room.clone()).collect();
         rooms.clear();
         drop(rooms);
-        for (room, creator) in to_persist {
-            let owner = creator
-                .as_ref()
-                .map(|c| (c.username.as_str(), c.cert_hash.as_str()));
-            persist_room(&self.inner.cfg, &self.inner.http_client, &room, owner).await;
+        for room in to_persist {
+            persist_room(&self.inner.cfg, &self.inner.http_client, &room).await;
         }
     }
 
@@ -284,25 +394,8 @@ impl AppState {
         })
     }
 
-    /// Persist a single room on demand (the user pressed "Save") without
-    /// evicting it.  No-op when the room isn't currently open.  Like teardown
-    /// persistence, a misconfigured/disabled store surfaces a loud error in
-    /// `persist_room` rather than failing silently.
-    pub async fn persist_now(&self, key: &DocKey) {
-        let captured = {
-            let rooms = self.inner.rooms.lock().await;
-            rooms.get(key).map(|e| (e.room.clone(), e.creator.clone()))
-        };
-        if let Some((room, creator)) = captured {
-            let owner = creator
-                .as_ref()
-                .map(|c| (c.username.as_str(), c.cert_hash.as_str()));
-            persist_room(&self.inner.cfg, &self.inner.http_client, &room, owner).await;
-        }
-    }
-
     async fn teardown_room(&self, key: &DocKey) {
-        let captured = {
+        let room = {
             let mut rooms = self.inner.rooms.lock().await;
             let Some(entry) = rooms.get(key) else {
                 return;
@@ -310,13 +403,14 @@ impl AppState {
             if !entry.sessions.is_empty() {
                 return;
             }
-            rooms.remove(key).map(|e| (e.room, e.creator))
+            rooms.remove(key).map(|e| e.room)
         };
-        if let Some((room, creator)) = captured {
-            let owner = creator
-                .as_ref()
-                .map(|c| (c.username.as_str(), c.cert_hash.as_str()));
-            persist_room(&self.inner.cfg, &self.inner.http_client, &room, owner).await;
+        if let Some(room) = room {
+            // Preserve the access grant before the room (and its ACL) is
+            // dropped, so the owner / share recipients can reconnect and
+            // recreate the room without relying on the file-server.
+            self.remember_acl(key, &room).await;
+            persist_room(&self.inner.cfg, &self.inner.http_client, &room).await;
             tracing::info!(?key, "live-doc room torn down");
         }
     }
@@ -327,4 +421,124 @@ fn generate_secret() -> Vec<u8> {
     let mut buf = vec![0u8; 32];
     rand::thread_rng().fill_bytes(&mut buf);
     buf
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test assertions")]
+    use super::*;
+    use crate::doc::{DocMeta, Visibility};
+    use crate::host_facade::{FacadeResult, HostFacade, PluginMessageArgs};
+    use mumble_plugin_api::Permissions;
+    use std::net::SocketAddr;
+
+    /// Host stub that treats every session as active and authorised; the
+    /// ACL itself is what these tests exercise.
+    #[derive(Debug)]
+    struct AllowCtx;
+
+    impl HostFacade for AllowCtx {
+        fn send_plugin_data(&self, _: u32, _: u32, _: &str, _: &[u8]) -> FacadeResult<()> {
+            Ok(())
+        }
+        fn is_session_active(&self, _: u32, _: u32) -> bool {
+            true
+        }
+        fn user_has_channel_access(&self, _: u32, _: u32, _: u32) -> bool {
+            true
+        }
+        fn has_permission(&self, _: u32, _: u32, _: u32, _: Permissions) -> bool {
+            true
+        }
+        fn get_config(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn send_plugin_message(&self, _: PluginMessageArgs<'_>) -> FacadeResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Build state with the file-server intentionally *unconfigured*, so
+    /// the tests prove access survives a teardown without it.
+    fn test_state() -> AppState {
+        let cfg = LiveDocConfig {
+            bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            public_url: None,
+            jwt_secret: Some("test-secret-0123456789abcdef0123456789".to_owned()),
+            state_path: std::env::temp_dir(),
+            max_update_bytes: 4 * 1024 * 1024,
+            snapshot_idle_secs: 60,
+            teardown_grace_secs: 30,
+            file_server_url: None,
+            file_server_admin_token: None,
+            port: 0,
+        };
+        AppState::new(Arc::new(cfg), Arc::new(AllowCtx))
+    }
+
+    fn ident(cert: &str, session: i64) -> Identity {
+        Identity {
+            cert_hash: cert.to_owned(),
+            user_id: session,
+            name: format!("user-{session}"),
+        }
+    }
+
+    /// The reported bug: an owner edits a doc, the room is torn down after
+    /// the WS drops, and every reconnect is rejected as "not owner or
+    /// share recipient" because the in-memory ACL died with the room and
+    /// no file-server was available to rehydrate it.  The cached ACL must
+    /// keep the owner and recorded share recipients connectable after a
+    /// teardown.
+    #[tokio::test]
+    async fn owner_and_member_reconnect_after_teardown_without_file_server() {
+        let state = test_state();
+        let server_id = 1u32;
+        state.set_identity(server_id, 2, ident("owner-cert", 2)).await;
+        state.set_identity(server_id, 3, ident("friend-cert", 3)).await;
+        state.set_identity(server_id, 4, ident("stranger-cert", 4)).await;
+
+        let key = DocKey {
+            server_id,
+            slug: "my-document".into(),
+        };
+
+        // Owner opens the doc; a friend is recorded as a share recipient.
+        let room = state.ensure_room(key.clone()).await;
+        room.set_meta(DocMeta {
+            owner_cert_hash: "owner-cert".into(),
+            title: "My Document".into(),
+            bound_channel: None,
+            visibility: Visibility::Private,
+        })
+        .await;
+        room.add_member("friend-cert".into()).await;
+        drop(room);
+
+        assert!(state.session_can_connect(server_id, 2, &key).await, "owner before teardown");
+        assert!(state.session_can_connect(server_id, 3, &key).await, "friend before teardown");
+
+        // The viewer leaves and the grace teardown fires (invoked directly
+        // here instead of waiting out the grace timer).
+        state.register_session(&key, 2).await;
+        state.unregister_session(&key, 2).await;
+        state.teardown_room(&key).await;
+
+        // A reconnect recreates the room from scratch (no file-server) and
+        // must still admit the owner and the recorded share recipient,
+        // while continuing to reject a stranger.
+        let _ = state.ensure_room(key.clone()).await;
+        assert!(
+            state.session_can_connect(server_id, 2, &key).await,
+            "owner must reconnect after teardown"
+        );
+        assert!(
+            state.session_can_connect(server_id, 3, &key).await,
+            "share recipient must reconnect after teardown"
+        );
+        assert!(
+            !state.session_can_connect(server_id, 4, &key).await,
+            "stranger must still be rejected after teardown"
+        );
+    }
 }

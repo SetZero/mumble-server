@@ -111,10 +111,31 @@ interface ui-types {
         content: string,
     }
 
+    /// Single-line vs multi-line text entry.
+    enum text-input-style {
+        short,
+        paragraph,
+    }
+
+    /// Free-text entry field.  Only meaningful inside a modal; the entered
+    /// value is echoed back in the `modal-submit` interaction keyed by
+    /// `custom-id`.  `max-length` / `min-length` of `0` mean "unbounded".
+    record text-input {
+        custom-id: string,
+        label: string,
+        value: option<string>,
+        placeholder: option<string>,
+        style: text-input-style,
+        required: bool,
+        max-length: u32,
+        min-length: u32,
+    }
+
     /// A single component, in any supported shape.
     variant component {
         button(button),
         text-display(text-display),
+        text-input(text-input),
     }
 
     /// Horizontal row of components.

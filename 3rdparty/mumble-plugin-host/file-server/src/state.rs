@@ -19,8 +19,9 @@ pub struct AppState {
     /// Stable-named documents with revision history.  Used by sibling
     /// plugins via the `/admin/documents/...` endpoints.
     pub documents: Arc<DocumentsStore>,
-    /// Per-user opaque key/value storage exposed at `/me/storage/{key}`.
-    pub private: Arc<PrivateStore>,
+    /// Per-user private key/value storage (registered users only),
+    /// reachable via the `/me/storage/...` endpoints.
+    pub private_store: Arc<PrivateStore>,
     /// In-memory single-use ticket map.
     pub tickets: Arc<TicketStore>,
     /// Active session table.

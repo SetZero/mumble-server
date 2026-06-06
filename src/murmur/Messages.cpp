@@ -711,13 +711,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 	log(uSource, "Authenticated");
 
-	emit userConnected(uSource);
-
-	if (m_pluginHost) {
-		// iId is the registered account id (>= 0), or -1 for an unregistered guest.
-		m_pluginHost->onClientConnected(uSource->uiSession, uSource->qsName, uSource->qsHash,
-										uSource->iId);
-	}
+	m_events.userConnected(uSource);
 }
 
 void Server::msgBanList(ServerUser *uSource, MumbleProto::BanList &msg) {
@@ -1286,7 +1280,7 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 		}
 	}
 
-	emit userStateChanged(pDstServerUser);
+	m_events.userStateChanged(pDstServerUser);
 }
 
 void Server::msgUserRemove(ServerUser *uSource, MumbleProto::UserRemove &msg) {
@@ -1493,7 +1487,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 
 		msg.set_channel_id(c->iId);
 		log(uSource, QString("Added channel %1 under %2").arg(QString(*c), QString(*p)));
-		emit channelCreated(c);
+		m_events.channelCreated(c);
 
 		if (c->isPersistentChat() && m_pchatManager) {
 			m_pchatManager->onPersistentChannelCreated(
@@ -1514,7 +1508,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			mpus.set_channel_id(c->iId);
 			userEnterChannel(uSource, c, mpus);
 			sendAll(mpus);
-			emit userStateChanged(uSource);
+			m_events.userStateChanged(uSource);
 		}
 	} else {
 		// The message is related to an existing channel c so check if the user is allowed to modify it
@@ -1680,7 +1674,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		if (!c->bTemporary) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
 		}
-		emit channelStateChanged(c);
+		m_events.channelStateChanged(c);
 
 		sendAll(msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
 		if (msg.has_description() && !c->qbaDescHash.isEmpty()) {
@@ -1958,7 +1952,7 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	}
 
 	// Emit the signal for RPC consumers
-	emit userTextMessage(uSource, tm);
+	m_events.userTextMessage(uSource, tm);
 
 	// Collect target channel IDs from the message.
 	std::set< uint32_t > targetChannels;
@@ -2471,7 +2465,7 @@ void Server::msgContextAction(ServerUser *uSource, MumbleProto::ContextAction &m
 		return;
 	if ((id >= 0) && !qhChannels.contains(static_cast< unsigned int >(id)))
 		return;
-	emit contextAction(uSource, u8(msg.action()), session, id);
+	m_events.contextAction(uSource, u8(msg.action()), session, id);
 }
 
 /// @param str The std::string to convert
@@ -2925,11 +2919,12 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 	// Also expose the message to server-side Rust plugins (e.g. file-server
 	// auth tickets). The plugin host runs out-of-band and never blocks the
 	// client-to-client delivery above.
-	if (m_pluginHost) {
-		m_pluginHost->onPluginData(
-			sender->uiSession, QString::fromStdString(msg.dataid()),
-			QByteArray(msg.data().data(), static_cast< int >(msg.data().size())));
-	}
+	PluginInbound in;
+	in.kind          = PluginInbound::Kind::DataTransmission;
+	in.senderSession = sender->uiSession;
+	in.dataId        = QString::fromStdString(msg.dataid());
+	in.data          = QByteArray(msg.data().data(), static_cast< int >(msg.data().size()));
+	m_events.pluginMessage(in);
 
 #pragma GCC diagnostic pop
 }
@@ -4174,9 +4169,12 @@ void Server::msgPluginMessage(ServerUser *uSource, MumbleProto::PluginMessage &m
 	msg.set_sender_session(uSource->uiSession);
 	msg.set_sender_name(uSource->qsName.toStdString());
 
-	if (m_pluginHost && m_pluginHost->isLoaded()) {
-		m_pluginHost->onPluginMessage(uSource->uiSession, uSource->qsName, msg);
-	}
+	PluginInbound in;
+	in.kind          = PluginInbound::Kind::Message;
+	in.senderSession = uSource->uiSession;
+	in.senderName    = uSource->qsName;
+	in.message       = &msg;
+	m_events.pluginMessage(in);
 
 	// Optional client-side relay: deliver to explicit target_sessions
 	// and/or every member of channel_id when set.  Clients use this

@@ -18,7 +18,7 @@ pub mod download;
 pub mod emotes;
 pub mod files_admin;
 pub mod files_me;
-pub mod me;
+pub mod private;
 pub mod upload;
 
 /// Small fixed overhead (boundary, headers, text fields) added on top of
@@ -95,10 +95,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/emotes", get(emotes::list).post(emotes::upload))
         .route("/emotes/{shortcode}", axum::routing::delete(emotes::delete))
         .route("/capabilities", get(capabilities::get))
+        .merge(private::router())
         .merge(admin_router)
         .merge(files_admin::router())
         .merge(files_me::router())
-        .merge(me::router())
         .layer(middleware::from_fn(request_log))
         .layer(middleware::from_fn(cross_origin_resource_policy))
         .layer(cors)
@@ -116,6 +116,7 @@ fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
+            axum::http::Method::PUT,
             axum::http::Method::DELETE,
         ])
         .allow_headers([

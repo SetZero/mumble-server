@@ -64,6 +64,9 @@ add_library(mumble_server_object_lib OBJECT
 	"PluginHostManager.cpp"
 	"PluginHostManager.h"
 
+	"ServerEventDistributor.cpp"
+	"ServerEventDistributor.h"
+
 
 	"${SHARED_SOURCE_DIR}/ACL.cpp"
 	"${SHARED_SOURCE_DIR}/ACL.h"

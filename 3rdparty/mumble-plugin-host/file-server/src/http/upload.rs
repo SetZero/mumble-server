@@ -89,7 +89,7 @@ pub async fn upload(
     // leaves the column NULL so unregistered guests fall back to the cert hash.
     let uploader_user_id: Option<i64> = session_info
         .as_ref()
-        .and_then(|s| (s.user_id >= 0).then(|| i64::from(s.user_id)));
+        .and_then(|s| (s.user_id >= 0).then_some(s.user_id));
     tracing::info!(session = q.session, "upload: auth ok, parsing multipart");
 
     let parsed = parse_multipart(&state, multipart, state.config.max_file_size_bytes).await?;

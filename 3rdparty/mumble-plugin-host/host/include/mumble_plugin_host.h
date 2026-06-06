@@ -183,6 +183,9 @@ extern "C" {
 /**
  * Notify the host of a newly connected client.
  *
+ * `user_id` is the registered Mumble user id, or `-1` for an
+ * unregistered guest.
+ *
  * # Safety
  * `handle` must be valid; `username` and `cert_hash` must be NUL-terminated
  * UTF-8 strings (or NULL, which is treated as the empty string).  `user_id`
@@ -194,7 +197,7 @@ void plugin_host_on_client_connected(struct PluginHostHandle *handle,
                                      uint32_t session,
                                      const char *username,
                                      const char *cert_hash,
-                                     int32_t user_id);
+                                     int64_t user_id);
 
 /**
  * Notify the host of a disconnected client.

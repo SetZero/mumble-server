@@ -85,6 +85,9 @@ pub unsafe extern "C" fn plugin_host_destroy(handle: *mut PluginHostHandle) {
 
 /// Notify the host of a newly connected client.
 ///
+/// `user_id` is the registered Mumble user id, or `-1` for an
+/// unregistered guest.
+///
 /// # Safety
 /// `handle` must be valid; `username` and `cert_hash` must be NUL-terminated
 /// UTF-8 strings (or NULL, which is treated as the empty string).  `user_id`
@@ -96,7 +99,7 @@ pub unsafe extern "C" fn plugin_host_on_client_connected(
     session: u32,
     username: *const c_char,
     cert_hash: *const c_char,
-    user_id: i32,
+    user_id: i64,
 ) {
     ffi_guard("plugin_host_on_client_connected", (), || {
         let Some(host) = (unsafe { handle_lock(handle) }) else {

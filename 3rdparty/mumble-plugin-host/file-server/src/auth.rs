@@ -22,27 +22,28 @@ pub struct SessionClaims {
     pub sid: u32,
     /// Mumble virtual server id.
     pub srv: u32,
-    /// Per-user private-storage scope: the cert hash when the client presents
-    /// one, otherwise the username - so cert-less registered users (e.g. a
-    /// password-authenticated `SuperUser`) still get a stable, unique key.
+    /// Per-user private-storage scope: a durable `"<server_id>:<user_id>"`
+    /// key for registered users (empty for guests).  Unlike `sub` (the cert
+    /// hash) it survives certificate regeneration across reconnects.
     /// `#[serde(default)]` keeps older tokens (without the claim) decodable.
     #[serde(default)]
     pub scope: String,
-    /// Registered user id (`>= 0`), or `-1` for unregistered guests.  The
-    /// durable ownership key for shared files: unlike `sub` (the cert hash) it
-    /// survives certificate regeneration across reconnects.  `#[serde(default)]`
-    /// keeps older tokens (without the claim) decodable, defaulting to `-1`.
+    /// Registered Mumble user id, or `-1` for an unregistered guest.
     #[serde(default = "default_uid")]
-    pub uid: i32,
+    pub uid: i64,
+    /// Whether the subject is a registered (non-guest) Mumble user.
+    /// Gates access to per-user private storage.
+    #[serde(default)]
+    pub reg: bool,
     /// Issued-at (unix seconds).
     pub iat: u64,
     /// Expiry (unix seconds).
     pub exp: u64,
 }
 
-/// Default `uid` for tokens issued before the claim existed: treat as an
-/// unregistered guest so ownership falls back to the cert hash.
-fn default_uid() -> i32 {
+/// `serde` default for [`SessionClaims::uid`] on tokens minted before the
+/// field existed: treat them as unregistered guests.
+fn default_uid() -> i64 {
     -1
 }
 
@@ -99,7 +100,7 @@ pub fn issue_session_jwt(
     scope: &str,
     session_id: u32,
     server_id: u32,
-    user_id: i32,
+    user_id: i64,
     ttl_seconds: u64,
 ) -> Result<String, AuthError> {
     use jsonwebtoken::{encode, EncodingKey, Header};
@@ -110,6 +111,7 @@ pub fn issue_session_jwt(
         srv: server_id,
         scope: scope.to_owned(),
         uid: user_id,
+        reg: user_id >= 0,
         iat: now,
         exp: now.saturating_add(ttl_seconds),
     };
@@ -160,6 +162,7 @@ mod tests {
         assert_eq!(claims.sid, 42);
         assert_eq!(claims.srv, 1);
         assert_eq!(claims.uid, 5);
+        assert!(claims.reg, "user_id >= 0 must be registered");
     }
 
     #[test]
@@ -171,6 +174,16 @@ mod tests {
         assert_eq!(claims.sub, "");
         assert_eq!(claims.scope, "SuperUser");
         assert_eq!(claims.uid, 0);
+        assert!(claims.reg, "user_id >= 0 must be registered");
+    }
+
+    #[test]
+    fn jwt_guest_is_not_registered() {
+        let secret = b"super-secret-key-32-bytes-x-x-x";
+        let token = issue_session_jwt(secret, "guest", "", 1, 1, -1, 3600).expect("issues");
+        let claims = verify_session_jwt(secret, &token).expect("verifies");
+        assert_eq!(claims.uid, -1);
+        assert!(!claims.reg, "guest must not be registered");
     }
 
     #[test]

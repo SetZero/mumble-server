@@ -247,6 +247,23 @@ impl Host {
             dirs = ?dirs,
             "plugin host initialising"
         );
+
+        // Bridge the live-doc persistence to the file-server *before* any
+        // plugin loads, so both read the wired-up config in their
+        // `on_load`.  Without this the operator would have to manually
+        // share an admin token between the two namespaces and live
+        // documents would silently never persist.
+        provision_live_doc_bridge(
+            |key| read_config_plain(&base_context, key),
+            |key, value| match base_context.set_config(key, value) {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!(%err, key, "live-doc bridge: set_config failed");
+                    false
+                }
+            },
+        );
+
         let mut plugins = Vec::new();
         let mut failed_plugins: Vec<FailedPlugin> = Vec::new();
         for dir in &dirs {
@@ -819,6 +836,86 @@ fn read_config_plain(ctx: &Arc<HostContext>, key: &str) -> Option<String> {
     read_config_string(ctx, &cstr)
 }
 
+/// Config namespace of the file-server plugin.
+const FILE_SERVER_PREFIX: &str = "plugin.fancy-file-server";
+/// Config namespace of the live-doc plugin.
+const LIVE_DOC_PREFIX: &str = "plugin.fancy-live-doc";
+/// Default port the file-server binds to (mirrors its own config default).
+const DEFAULT_FILE_SERVER_PORT: u16 = 64739;
+
+/// Generate a 256-bit random bearer token, hex-encoded (64 chars).
+fn generate_admin_token() -> String {
+    use rand::RngCore;
+    let mut buf = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut buf);
+    let mut out = String::with_capacity(buf.len() * 2);
+    for b in buf {
+        use std::fmt::Write as _;
+        // Hex formatting into a String never fails.
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Wire the live-doc plugin's document persistence to the file-server.
+///
+/// Live documents are stored as opaque blobs through the file-server's
+/// token-gated `/admin/*` API.  Because every plugin only sees its own
+/// `plugin.<name>.*` config namespace, the two plugins cannot discover
+/// each other's settings; the host is the only component that can read
+/// and write across namespaces, so it bridges them here:
+///
+///  1. ensure the file-server has an `admin_token` (generate a strong one
+///     and persist it when the operator did not configure one),
+///  2. point live-doc's `file_server_url` at the local file-server, and
+///  3. copy the admin token into live-doc's `file_server_admin_token`.
+///
+/// Existing operator-provided values are never overwritten, and the work
+/// is idempotent across restarts (after the first run every key is set).
+/// Generic over config get/set so the logic is unit-testable without the
+/// C FFI layer.
+fn provision_live_doc_bridge(
+    get: impl Fn(&str) -> Option<String>,
+    mut set: impl FnMut(&str, &str) -> bool,
+) {
+    let nonempty = |v: Option<String>| v.filter(|s| !s.is_empty());
+
+    // 1. Shared admin token (generate + persist if absent).
+    let admin_token = match nonempty(get(&format!("{FILE_SERVER_PREFIX}.admin_token"))) {
+        Some(tok) => tok,
+        None => {
+            let tok = generate_admin_token();
+            if !set(&format!("{FILE_SERVER_PREFIX}.admin_token"), &tok) {
+                tracing::warn!(
+                    "could not provision file-server admin token; live documents will not persist"
+                );
+                return;
+            }
+            tracing::info!("generated shared file-server admin token for live-doc persistence");
+            tok
+        }
+    };
+
+    // 2. live-doc -> file-server URL (default to the local file-server).
+    if nonempty(get(&format!("{LIVE_DOC_PREFIX}.file_server_url"))).is_none() {
+        let port = nonempty(get(&format!("{FILE_SERVER_PREFIX}.port")))
+            .and_then(|p| p.trim().parse::<u16>().ok())
+            .unwrap_or(DEFAULT_FILE_SERVER_PORT);
+        let _ = set(
+            &format!("{LIVE_DOC_PREFIX}.file_server_url"),
+            &format!("http://127.0.0.1:{port}"),
+        );
+    }
+
+    // 3. Share the admin token with live-doc.
+    if nonempty(get(&format!("{LIVE_DOC_PREFIX}.file_server_admin_token"))).is_none() {
+        let _ = set(
+            &format!("{LIVE_DOC_PREFIX}.file_server_admin_token"),
+            &admin_token,
+        );
+    }
+}
+
 fn build_entry(
     base_context: &Arc<HostContext>,
     loaded: LoadedPlugin,
@@ -904,7 +1001,12 @@ fn is_truthy_enabled_value(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_truthy_enabled_value;
+    use super::{
+        generate_admin_token, is_truthy_enabled_value, provision_live_doc_bridge,
+        DEFAULT_FILE_SERVER_PORT,
+    };
+    use std::cell::RefCell;
+    use std::collections::HashMap;
 
     #[test]
     fn enabled_truthy_variants() {
@@ -918,6 +1020,89 @@ mod tests {
         for v in ["", " ", "false", "0", "no", "off", "disabled", "maybe"] {
             assert!(!is_truthy_enabled_value(v), "expected {v:?} falsy");
         }
+    }
+
+    #[test]
+    fn admin_token_is_64_hex_chars() {
+        let tok = generate_admin_token();
+        assert_eq!(tok.len(), 64);
+        assert!(tok.bytes().all(|b| b.is_ascii_hexdigit()));
+        // Two draws must differ (overwhelmingly likely for 256 bits).
+        assert_ne!(tok, generate_admin_token());
+    }
+
+    /// Helper running the bridge against an in-memory config store.
+    fn run_bridge(initial: &[(&str, &str)]) -> HashMap<String, String> {
+        let store = RefCell::new(
+            initial
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect::<HashMap<String, String>>(),
+        );
+        provision_live_doc_bridge(
+            |k| store.borrow().get(k).cloned(),
+            |k, v| {
+                let _ = store.borrow_mut().insert(k.to_owned(), v.to_owned());
+                true
+            },
+        );
+        store.into_inner()
+    }
+
+    #[test]
+    fn bridge_generates_token_and_wires_both_plugins() {
+        let cfg = run_bridge(&[]);
+        let token = cfg
+            .get("plugin.fancy-file-server.admin_token")
+            .expect("admin token generated");
+        assert_eq!(token.len(), 64);
+        assert_eq!(
+            cfg.get("plugin.fancy-live-doc.file_server_url").map(String::as_str),
+            Some(format!("http://127.0.0.1:{DEFAULT_FILE_SERVER_PORT}").as_str())
+        );
+        // live-doc must receive the same token the file-server uses.
+        assert_eq!(
+            cfg.get("plugin.fancy-live-doc.file_server_admin_token"),
+            Some(token)
+        );
+    }
+
+    #[test]
+    fn bridge_reuses_existing_admin_token_and_honours_port() {
+        let cfg = run_bridge(&[
+            ("plugin.fancy-file-server.admin_token", "operator-token"),
+            ("plugin.fancy-file-server.port", "9000"),
+        ]);
+        // Existing token reused, not regenerated.
+        assert_eq!(
+            cfg.get("plugin.fancy-file-server.admin_token").map(String::as_str),
+            Some("operator-token")
+        );
+        assert_eq!(
+            cfg.get("plugin.fancy-live-doc.file_server_url").map(String::as_str),
+            Some("http://127.0.0.1:9000")
+        );
+        assert_eq!(
+            cfg.get("plugin.fancy-live-doc.file_server_admin_token").map(String::as_str),
+            Some("operator-token")
+        );
+    }
+
+    #[test]
+    fn bridge_never_overwrites_operator_overrides() {
+        let cfg = run_bridge(&[
+            ("plugin.fancy-file-server.admin_token", "tok"),
+            ("plugin.fancy-live-doc.file_server_url", "http://files.example:7000"),
+            ("plugin.fancy-live-doc.file_server_admin_token", "custom"),
+        ]);
+        assert_eq!(
+            cfg.get("plugin.fancy-live-doc.file_server_url").map(String::as_str),
+            Some("http://files.example:7000")
+        );
+        assert_eq!(
+            cfg.get("plugin.fancy-live-doc.file_server_admin_token").map(String::as_str),
+            Some("custom")
+        );
     }
 }
 

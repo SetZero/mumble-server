@@ -48,21 +48,41 @@ PluginHostManager::PluginHostManager(Server *server, QObject *parent)
 }
 
 PluginHostManager::~PluginHostManager() {
+	// Detach from the distributor while it is still alive (it is declared before
+	// this object in Server, so it outlives us).
+	if (m_server) {
+		m_server->events().unregisterSubscriber(this);
+	}
 	if (m_handle) {
 		plugin_host_destroy(m_handle);
 	}
 }
 
+void PluginHostManager::onUserConnected(Server &, const User *user) {
+	onClientConnected(user->uiSession, user->qsName, user->qsHash, static_cast< int64_t >(user->iId));
+}
+
+void PluginHostManager::onUserDisconnected(Server &, const User *user) {
+	onClientDisconnected(user->uiSession);
+}
+
+void PluginHostManager::onPluginMessage(Server &, const PluginInbound &in) {
+	if (in.kind == PluginInbound::Kind::DataTransmission) {
+		onPluginData(in.senderSession, in.dataId, in.data);
+	} else if (in.message) {
+		onPluginMessage(in.senderSession, in.senderName, *in.message);
+	}
+}
+
 void PluginHostManager::onClientConnected(uint32_t session, const QString &username,
-                                          const QString &certHash, int userId) {
+                                          const QString &certHash, int64_t userId) {
 	if (!m_handle) {
 		return;
 	}
 	const QByteArray usernameUtf8 = username.toUtf8();
 	const QByteArray certUtf8     = certHash.toUtf8();
 	plugin_host_on_client_connected(m_handle, static_cast< uint32_t >(m_server->iServerNum), session,
-	                                usernameUtf8.constData(), certUtf8.constData(),
-	                                static_cast< int32_t >(userId));
+	                                usernameUtf8.constData(), certUtf8.constData(), userId);
 }
 
 void PluginHostManager::onClientDisconnected(uint32_t session) {

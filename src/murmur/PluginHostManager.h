@@ -13,6 +13,7 @@
 
 #include <cstdint>
 
+#include "ServerEventDistributor.h"
 #include "mumble_plugin_host.h"
 
 namespace MumbleProto {
@@ -21,6 +22,7 @@ class PluginRegistry;
 }
 
 class Server;
+class User;
 
 /// Owns the Rust plugin-host cdylib and bridges Mumble server events
 /// (client connect/disconnect, plugin data) to it. Also implements the
@@ -32,7 +34,7 @@ class Server;
 /// destruction unloads it. All public methods must be called from the
 /// server's main event-loop thread (the cdylib internally hops onto its
 /// own runtime thread pool).
-class PluginHostManager : public QObject {
+class PluginHostManager : public QObject, public EventSubscriber {
 	Q_OBJECT
 	Q_DISABLE_COPY(PluginHostManager)
 
@@ -40,24 +42,12 @@ public:
 	explicit PluginHostManager(Server *server, QObject *parent = nullptr);
 	~PluginHostManager() override;
 
-	/// Forward a client-connected event to the plugin host.  `userId` is the
-	/// registered account id (>= 0), or -1 for an unregistered guest.
-	void onClientConnected(uint32_t session, const QString &username, const QString &certHash,
-						   int userId);
-
-	/// Forward a client-disconnected event to the plugin host.
-	void onClientDisconnected(uint32_t session);
-
-	/// Forward an inbound PluginDataTransmission to the plugin host.
-	void onPluginData(uint32_t senderSession, const QString &dataId, const QByteArray &data);
-
-        /// Forward an inbound generic PluginMessage (wire ID 200) to the
-        /// plugin host.  The host dispatches to the single plugin whose
-        /// name matches msg.plugin_name(); unknown names are dropped.
-        /// `senderName` is stamped server-side from the user's display
-        /// name at the time of receipt.
-        void onPluginMessage(uint32_t senderSession, const QString &senderName,
-                             const ::MumbleProto::PluginMessage &msg);
+	// ---- EventSubscriber fan-out entry points ----
+	// The plugin host consumes the unified connect/disconnect events (it pulls
+	// session/name/hash out of the User) and the unified inbound-plugin event.
+	void onUserConnected(Server &, const User *user) override;
+	void onUserDisconnected(Server &, const User *user) override;
+	void onPluginMessage(Server &, const PluginInbound &in) override;
 
         /// Build the PluginRegistry message for the currently loaded
         /// set of plugins.  The server sends this right after ServerSync.
@@ -90,6 +80,13 @@ public:
         QByteArray uninstallPlugin(const QString &pluginName);
 
 private:
+        // -- Forwarders to the Rust plugin host (invoked from the overrides above) --
+        void onClientConnected(uint32_t session, const QString &username, const QString &certHash, int64_t userId);
+        void onClientDisconnected(uint32_t session);
+        void onPluginData(uint32_t senderSession, const QString &dataId, const QByteArray &data);
+        void onPluginMessage(uint32_t senderSession, const QString &senderName,
+                             const ::MumbleProto::PluginMessage &msg);
+
         // -- C callback trampolines (called from the Rust runtime) --
         static int sendPluginDataTrampoline(void *userData, uint32_t serverId, uint32_t targetSession,
                                             const char *dataId, const uint8_t *data, size_t dataLen);

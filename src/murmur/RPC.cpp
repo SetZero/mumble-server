@@ -88,7 +88,7 @@ void Server::setUserState(User *pUser, Channel *cChannel, bool mute, bool deaf, 
 		}
 		sendAll(mpus, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
 
-		emit userStateChanged(pUser);
+		m_events.userStateChanged(pUser);
 	}
 }
 
@@ -176,7 +176,7 @@ bool Server::setChannelState(Channel *cChannel, Channel *cParent, const QString 
 			mpcs.set_description_hash(blob(cChannel->qbaDescHash));
 		}
 		sendAll(mpcs, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
-		emit channelStateChanged(cChannel);
+		m_events.channelStateChanged(cChannel);
 	}
 
 	return true;
@@ -330,28 +330,6 @@ void Server::disconnectAuthenticator(QObject *obj) {
 	disconnect(this, SIGNAL(idToTextureSig(QByteArray &, int)), obj, SLOT(idToTextureSlot(QByteArray &, int)));
 }
 
-void Server::connectListener(QObject *obj) {
-	connect(this, SIGNAL(userStateChanged(const User *)), obj, SLOT(userStateChanged(const User *)));
-	connect(this, SIGNAL(userTextMessage(const User *, const TextMessage &)), obj,
-			SLOT(userTextMessage(const User *, const TextMessage &)));
-	connect(this, SIGNAL(userConnected(const User *)), obj, SLOT(userConnected(const User *)));
-	connect(this, SIGNAL(userDisconnected(const User *)), obj, SLOT(userDisconnected(const User *)));
-	connect(this, SIGNAL(channelStateChanged(const Channel *)), obj, SLOT(channelStateChanged(const Channel *)));
-	connect(this, SIGNAL(channelCreated(const Channel *)), obj, SLOT(channelCreated(const Channel *)));
-	connect(this, SIGNAL(channelRemoved(const Channel *)), obj, SLOT(channelRemoved(const Channel *)));
-}
-
-void Server::disconnectListener(QObject *obj) {
-	disconnect(this, SIGNAL(userStateChanged(const User *)), obj, SLOT(userStateChanged(const User *)));
-	disconnect(this, SIGNAL(userTextMessage(const User *, const TextMessage &)), obj,
-			   SLOT(userTextMessage(const User *, const TextMessage &)));
-	disconnect(this, SIGNAL(userConnected(const User *)), obj, SLOT(userConnected(const User *)));
-	disconnect(this, SIGNAL(userDisconnected(const User *)), obj, SLOT(userDisconnected(const User *)));
-	disconnect(this, SIGNAL(channelStateChanged(const Channel *)), obj, SLOT(channelStateChanged(const Channel *)));
-	disconnect(this, SIGNAL(channelCreated(const Channel *)), obj, SLOT(channelCreated(const Channel *)));
-	disconnect(this, SIGNAL(channelRemoved(const Channel *)), obj, SLOT(channelRemoved(const Channel *)));
-}
-
 void Server::startListeningToChannel(ServerUser *user, Channel *cChannel) {
 	if (m_channelListenerManager.isListening(user->uiSession, cChannel->iId)) {
 		// The user is already listening to this channel
@@ -424,11 +402,6 @@ void Server::sendWelcomeMessageTo(ServerUser *user) {
 	mpsc.set_welcome_text(qsWelcomeText.toUtf8().data());
 
 	sendMessage(user, mpsc);
-}
-
-void Meta::connectListener(QObject *obj) {
-	connect(this, SIGNAL(started(Server *)), obj, SLOT(started(Server *)));
-	connect(this, SIGNAL(stopped(Server *)), obj, SLOT(stopped(Server *)));
 }
 
 void Meta::getVersion(Version::component_t &major, Version::component_t &minor, Version::component_t &patch,

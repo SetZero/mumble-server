@@ -27,12 +27,14 @@
 #	include "MumbleServerI.h"
 #endif
 
+#include "ServerEventDistributor.h"
+
 class Channel;
 class Server;
 class User;
 struct TextMessage;
 
-class MumbleServerIce : public QObject {
+class MumbleServerIce : public QObject, public EventSubscriber, public MetaEventSubscriber {
 	friend class MurmurLocker;
 	Q_OBJECT
 
@@ -75,10 +77,23 @@ public:
 	const ::MumbleServer::ServerUpdatingAuthenticatorPrx getServerUpdatingAuthenticator(const ::Server *server) const;
 	void removeServerUpdatingAuthenticator(const ::Server *server);
 
-public slots:
-	void started(Server *);
-	void stopped(Server *);
+	// MetaEventSubscriber: virtual-server lifecycle (registered with meta->events()).
+	void onServerStarted(Server &) override;
+	void onServerStopped(Server &) override;
 
+	// EventSubscriber: per-server control-plane events (registered with s.events()).
+	// Each handler snapshots to Ice value types on the Server thread, then
+	// re-posts the proxy fan-out onto this object's (Ice) thread via ExecEvent.
+	void onUserConnected(Server &, const User *p) override;
+	void onUserDisconnected(Server &, const User *p) override;
+	void onUserStateChanged(Server &, const User *p) override;
+	void onUserTextMessage(Server &, const User *p, const TextMessage &) override;
+	void onChannelCreated(Server &, const Channel *c) override;
+	void onChannelRemoved(Server &, const Channel *c) override;
+	void onChannelStateChanged(Server &, const Channel *c) override;
+	void onContextAction(Server &, const User *, const QString &, unsigned int, int) override;
+
+public slots:
 	void authenticateSlot(int &res, QString &uname, int sessionId, const QList< QSslCertificate > &certlist,
 						  const QString &certhash, bool certstrong, const QString &pw);
 	void registerUserSlot(int &res, const QMap< int, QString > &);
@@ -90,16 +105,5 @@ public slots:
 	void nameToIdSlot(int &res, const QString &name);
 	void idToNameSlot(QString &res, int id);
 	void idToTextureSlot(QByteArray &res, int id);
-
-	void userStateChanged(const User *p);
-	void userTextMessage(const User *p, const TextMessage &);
-	void userConnected(const User *p);
-	void userDisconnected(const User *p);
-
-	void channelStateChanged(const Channel *c);
-	void channelCreated(const Channel *c);
-	void channelRemoved(const Channel *c);
-
-	void contextAction(const User *, const QString &, unsigned int, int);
 };
 #endif

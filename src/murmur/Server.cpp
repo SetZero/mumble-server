@@ -293,8 +293,10 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	// Initialize link preview manager
 	m_linkPreviewManager = std::make_unique< LinkPreviewManager >(this, this);
 
-	// Initialize Rust plugin host (loads mumble_plugin_host cdylib).
+	// Initialize Rust plugin host (loads mumble_plugin_host cdylib) and register
+	// it as an event distributor so it receives the fan-out of server events.
 	m_pluginHost = std::make_unique< PluginHostManager >(this, this);
+	m_events.registerSubscriber(m_pluginHost.get());
 
 
 	// Initialize WebRTC SFU manager
@@ -1817,11 +1819,7 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 			m_pchatManager->onUserDisconnected(u->uiSession, u->qsHash.toStdString());
 		}
 
-		emit userDisconnected(u);
-
-		if (m_pluginHost) {
-			m_pluginHost->onClientDisconnected(u->uiSession);
-		}
+		m_events.userDisconnected(u);
 	}
 
 	Channel *old = u->cChannel;
@@ -2090,7 +2088,7 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 		mpus.set_channel_id(target->iId);
 		userEnterChannel(p, target, mpus);
 		sendAll(mpus);
-		emit userStateChanged(p);
+		m_events.userStateChanged(p);
 	}
 
 	for (unsigned int userSession : m_channelListenerManager.getListenersForChannel(chan->iId)) {
@@ -2121,7 +2119,7 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 		m_dbWrapper.deleteChannel(iServerNum, static_cast< unsigned int >(chan->iId));
 	}
 
-	emit channelRemoved(chan);
+	m_events.channelRemoved(chan);
 
 	{
 		QWriteLocker wl(&qrwlVoiceThread);

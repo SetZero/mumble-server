@@ -24,7 +24,7 @@ pub struct SessionInfo {
     /// Registered user id (`>= 0`), or `-1` for unregistered guests.  Captured
     /// at connect so uploads can be stamped with a stable ownership key that
     /// survives certificate regeneration across sessions.
-    pub user_id: i32,
+    pub user_id: i64,
 }
 
 /// Thread-safe map of session id -> info.
