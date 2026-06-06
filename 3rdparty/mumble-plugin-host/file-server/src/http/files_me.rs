@@ -93,8 +93,12 @@ fn owned_file(
         .get(file_id)
         .map_err(|e| ApiError::internal(format!("storage: {e}")))?
         .filter(|r| {
-            (uid.is_some() && r.uploader_user_id == uid)
-                || r.uploader_cert_hash.as_deref() == Some(cert_hash)
+            mumble_plugin_api::identity_owns(
+                uid.unwrap_or(-1),
+                cert_hash,
+                r.uploader_user_id,
+                r.uploader_cert_hash.as_deref().unwrap_or(""),
+            )
         })
         .ok_or_else(|| ApiError::not_found("file not found"))
 }

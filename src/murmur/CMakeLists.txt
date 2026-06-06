@@ -48,21 +48,10 @@ add_library(mumble_server_object_lib OBJECT
 	"WebRtcSfuManager.cpp"
 	"WebRtcSfuManager.h"
 
-	"LinkPreviewManager.cpp"
-	"LinkPreviewManager.h"
-	"LinkPreviewPlugin.cpp"
-	"LinkPreviewPlugin.h"
-	"OEmbedPlugin.cpp"
-	"OEmbedPlugin.h"
-	"OpenGraphPlugin.cpp"
-	"OpenGraphPlugin.h"
-	"DirectMediaPlugin.cpp"
-	"DirectMediaPlugin.h"
-	"MediaPreviewBuilder.cpp"
-	"MediaPreviewBuilder.h"
-
 	"PluginHostManager.cpp"
 	"PluginHostManager.h"
+	"LinkPreviewBridge.cpp"
+	"LinkPreviewBridge.h"
 
 	"ServerEventDistributor.cpp"
 	"ServerEventDistributor.h"
@@ -121,12 +110,8 @@ target_include_directories(mumble_server_object_lib
 )
 
 find_pkg(Qt6 COMPONENTS Network REQUIRED)
-# QImage / QImageReader / QImageWriter (used by MediaPreviewBuilder for
-# server-side downscaling of link-preview hero images).  Headless
-# servers don't need a QGuiApplication for image decoding/encoding.
-find_pkg(Qt6 COMPONENTS Gui REQUIRED)
 
-target_link_libraries(mumble_server_object_lib PUBLIC shared Qt6::Sql Qt6::Network Qt6::Gui nlohmann_json::nlohmann_json)
+target_link_libraries(mumble_server_object_lib PUBLIC shared Qt6::Sql Qt6::Network nlohmann_json::nlohmann_json)
 
 # Qt6 internal headers (e.g. qhash.h) trigger -Walloc-size-larger-than= on GCC
 # because of allocation expressions that GCC's static analysis cannot bound.

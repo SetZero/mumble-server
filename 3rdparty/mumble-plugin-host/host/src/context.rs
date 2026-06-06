@@ -167,6 +167,25 @@ pub struct PluginHostCallbacks {
     /// [`Self::sessions_in_channel`] or [`Self::all_sessions`].
     pub free_sessions:
         Option<unsafe extern "C" fn(user_data: *mut c_void, ptr: *mut u32, count: usize)>,
+
+    /// Deliver a typed response for a server-originated request back to the
+    /// host (the return leg of the generalized request/response bridge).  The
+    /// host routes by `response_type` (e.g. `"link-preview"`) to the C++
+    /// handler that issued the request, correlating via `request_id` and
+    /// addressing `target_session`.  `payload` is opaque bytes whose encoding
+    /// is defined per `response_type` (JSON for link preview).  Returns 0 on
+    /// success, non-zero on error.
+    pub send_request_response: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            server_id: u32,
+            response_type: *const c_char,
+            request_id: *const c_char,
+            target_session: u32,
+            payload: *const u8,
+            payload_len: usize,
+        ) -> c_int,
+    >,
 }
 
 // SAFETY: callbacks are documented as thread-safe; user_data is owned
@@ -571,6 +590,62 @@ impl PluginContext for ScopedContext {
             RSome(out)
         } else {
             RNone
+        }
+    }
+
+    fn send_request_response(
+        &self,
+        server_id: ServerId,
+        response_type: RStr<'_>,
+        request_id: RStr<'_>,
+        target_session: SessionId,
+        payload: RSlice<'_, u8>,
+    ) -> PluginResult<()> {
+        let func = match self.inner.callbacks.send_request_response {
+            Some(f) => f,
+            None => {
+                return PluginResult::RErr(PluginError::Other(
+                    "send_request_response callback missing".into(),
+                ))
+            }
+        };
+        let type_c = match CString::new(response_type.as_str()) {
+            Ok(c) => c,
+            Err(_) => {
+                return PluginResult::RErr(PluginError::Other("response_type contains NUL".into()))
+            }
+        };
+        let id_c = match CString::new(request_id.as_str()) {
+            Ok(c) => c,
+            Err(_) => {
+                return PluginResult::RErr(PluginError::Other("request_id contains NUL".into()))
+            }
+        };
+        let payload_slice = payload.as_slice();
+        let payload_ptr = if payload_slice.is_empty() {
+            ptr::null()
+        } else {
+            payload_slice.as_ptr()
+        };
+        // SAFETY: callback non-null; CStrings + slice live until the call
+        // returns; payload pointer is NULL or backed by `payload_slice`.
+        let rc = unsafe {
+            func(
+                self.inner.callbacks.user_data,
+                server_id,
+                type_c.as_ptr(),
+                id_c.as_ptr(),
+                target_session,
+                payload_ptr,
+                payload_slice.len(),
+            )
+        };
+        if rc == 0 {
+            PluginResult::ROk(())
+        } else {
+            PluginResult::RErr(PluginError::Other(
+                format!("send_request_response returned {rc}").into(),
+            ))
         }
     }
 }

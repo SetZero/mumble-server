@@ -308,6 +308,17 @@ impl AppState {
             )
     }
 
+    /// Returns `true` if the session is a server administrator (holds `Write`
+    /// on the root channel).  Admins may open any document - consistent with
+    /// the admin file-server documents dashboard, which can already list,
+    /// preview and delete every document.
+    pub fn is_server_admin(&self, server_id: ServerId, session: SessionId) -> bool {
+        use mumble_plugin_api::Permissions;
+        let ctx = &self.inner.ctx;
+        ctx.is_session_active(server_id, session)
+            && ctx.has_permission(server_id, session, 0, Permissions::WRITE)
+    }
+
     /// Returns `true` if the session may *connect* to the document's WS:
     /// the session is active and its identity is the owner or a recorded
     /// share recipient.  Re-checked live at every connect so a revoked
@@ -329,7 +340,20 @@ impl AppState {
             rooms.get(key).map(|e| e.room.clone())
         };
         match room {
-            Some(room) => room.is_member(&identity.cert_hash).await,
+            Some(room) => {
+                let meta = room.meta().await;
+                // Same ownership resolution as the open path (and the
+                // file-server): stable user id, cert hash, recorded share, or
+                // server admin - so a uid-owner whose cert rotated can still
+                // connect to their own document's WS.
+                mumble_plugin_api::identity_owns(
+                    identity.user_id,
+                    &identity.cert_hash,
+                    meta.owner_user_id,
+                    &meta.owner_cert_hash,
+                ) || room.is_member(&identity.cert_hash).await
+                    || self.is_server_admin(server_id, session)
+            }
             None => false,
         }
     }
@@ -447,8 +471,10 @@ mod tests {
         fn user_has_channel_access(&self, _: u32, _: u32, _: u32) -> bool {
             true
         }
-        fn has_permission(&self, _: u32, _: u32, _: u32, _: Permissions) -> bool {
-            true
+        fn has_permission(&self, _: u32, _: u32, _: u32, perm: Permissions) -> bool {
+            // Grant ordinary channel permissions, but not admin (root Write),
+            // so the ACL under test isn't masked by the admin-override path.
+            !perm.intersects(Permissions::WRITE)
         }
         fn get_config(&self, _: &str) -> Option<String> {
             None
@@ -507,6 +533,7 @@ mod tests {
         let room = state.ensure_room(key.clone()).await;
         room.set_meta(DocMeta {
             owner_cert_hash: "owner-cert".into(),
+            owner_user_id: None,
             title: "My Document".into(),
             bound_channel: None,
             visibility: Visibility::Private,

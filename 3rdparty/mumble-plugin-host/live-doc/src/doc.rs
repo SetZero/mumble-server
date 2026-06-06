@@ -65,6 +65,11 @@ pub struct DocMeta {
     /// opener claims ownership.
     #[serde(default)]
     pub owner_cert_hash: String,
+    /// Stable registered user id of the owner (`>= 0`), or `None`.  Unlike the
+    /// cert hash - which rotates between sessions for password/regenerated-cert
+    /// users - this survives reconnects, so it is the durable ownership key.
+    #[serde(default)]
+    pub owner_user_id: Option<i64>,
     /// Human-readable title.
     #[serde(default)]
     pub title: String,
@@ -84,6 +89,7 @@ impl Default for DocMeta {
     fn default() -> Self {
         Self {
             owner_cert_hash: String::new(),
+            owner_user_id: None,
             title: String::new(),
             bound_channel: None,
             visibility: Visibility::Private,

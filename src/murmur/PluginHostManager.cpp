@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 
 PluginHostManager::PluginHostManager(Server *server, QObject *parent)
 	: QObject(parent), m_server(server), m_handle(nullptr) {
@@ -44,6 +45,7 @@ PluginHostManager::PluginHostManager(Server *server, QObject *parent)
         cb.all_sessions           = &PluginHostManager::allSessionsTrampoline;
         cb.find_session_by_name   = &PluginHostManager::findSessionByNameTrampoline;
         cb.free_sessions          = &PluginHostManager::freeSessionsTrampoline;
+        cb.send_request_response  = &PluginHostManager::sendRequestResponseTrampoline;
 	m_handle = plugin_host_create(&cb);
 }
 
@@ -612,4 +614,54 @@ void PluginHostManager::freeSessionsTrampoline(void * /*userData*/, uint32_t *pt
         if (ptr) {
                 std::free(ptr);
         }
+}
+
+// ---------------------------------------------------------------------------
+// Generic request/response bridge
+//
+// PluginHostManager provides only a feature-agnostic transport: forward a
+// request to a plugin, and dispatch a plugin's response to a handler registered
+// by `response_type`.  Feature-specific glue (e.g. link previews) lives in its
+// own bridge that registers a handler via `registerResponseHandler`; this class
+// has no knowledge of any specific feature.
+// ---------------------------------------------------------------------------
+
+void PluginHostManager::sendPluginRequest(const QString &pluginName, const QString &payloadType,
+                                          uint32_t senderSession, const QByteArray &payload) {
+        if (!m_handle) {
+                return;
+        }
+        const QByteArray pluginNameUtf8  = pluginName.toUtf8();
+        const QByteArray payloadTypeUtf8 = payloadType.toUtf8();
+        plugin_host_on_plugin_message(
+                m_handle, static_cast< uint32_t >(m_server->iServerNum), senderSession,
+                /*sender_name*/ "", pluginNameUtf8.constData(), payloadTypeUtf8.constData(),
+                payload.isEmpty() ? nullptr
+                                  : reinterpret_cast< const uint8_t * >(payload.constData()),
+                static_cast< size_t >(payload.size()),
+                /*target_sessions*/ nullptr, /*target_len*/ 0,
+                /*channel_id_present*/ false, /*channel_id*/ 0);
+}
+
+void PluginHostManager::registerResponseHandler(const QString &responseType,
+                                                RequestResponseHandler handler) {
+        m_responseHandlers.insert(responseType, std::move(handler));
+}
+
+int PluginHostManager::sendRequestResponseTrampoline(void *userData, uint32_t /*serverId*/,
+                                                     const char *responseType, const char *requestId,
+                                                     uint32_t targetSession, const uint8_t *payload,
+                                                     size_t payloadLen) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server || !responseType) {
+                return -1;
+        }
+        const auto it = self->m_responseHandlers.constFind(QString::fromUtf8(responseType));
+        if (it == self->m_responseHandlers.constEnd()) {
+                return -2; // no handler registered for this response type
+        }
+        const QByteArray data(reinterpret_cast< const char * >(payload),
+                              payloadLen ? static_cast< int >(payloadLen) : 0);
+        it.value()(targetSession, QString::fromUtf8(requestId ? requestId : ""), data);
+        return 0;
 }

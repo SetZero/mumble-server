@@ -92,7 +92,43 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (cert_hash, key)
         );",
+    )?;
+    // Legacy installs created this table with the value column named `value`,
+    // typed TEXT.  `CREATE TABLE IF NOT EXISTS` above is a no-op when the table
+    // already exists, so the old column and its TEXT-typed rows remain - and
+    // every `SELECT blob ...` then fails with "no such column: blob".  Rebuild
+    // the table under the new schema, converting the stored TEXT to BLOB (the
+    // byte-oriented reads only accept BLOB).  Done atomically so a failure
+    // leaves the original table untouched; data is preserved.
+    if !column_exists(conn, "blob")? && column_exists(conn, "value")? {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(
+            "ALTER TABLE private_storage RENAME TO private_storage_legacy;
+             CREATE TABLE private_storage (
+                 cert_hash TEXT NOT NULL,
+                 key TEXT NOT NULL,
+                 blob BLOB NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 PRIMARY KEY (cert_hash, key)
+             );
+             INSERT INTO private_storage(cert_hash, key, blob, updated_at)
+                 SELECT cert_hash, key, CAST(value AS BLOB), updated_at
+                 FROM private_storage_legacy;
+             DROP TABLE private_storage_legacy;",
+        )?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+/// Whether `private_storage` currently has a column named `column`.
+fn column_exists(conn: &Connection, column: &str) -> Result<bool, rusqlite::Error> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('private_storage') WHERE name = ?1",
+        params![column],
+        |row| row.get::<_, i64>(0),
     )
+    .map(|n| n > 0)
 }
 
 fn unix_millis_now() -> i64 {
@@ -144,6 +180,44 @@ mod tests {
         store.put("user-b", "k", b"b-data").unwrap();
         assert_eq!(store.get("user-a", "k").unwrap().unwrap(), b"a-data");
         assert_eq!(store.get("user-b", "k").unwrap().unwrap(), b"b-data");
+    }
+
+    #[test]
+    fn migrates_legacy_value_column_to_blob() {
+        let dir = TempDir::new().unwrap();
+        // Simulate a pre-rename install: the table exists with the old `value`
+        // column and a stored row.
+        {
+            let conn = Connection::open(dir.path().join(METADATA_DB_FILE)).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE private_storage (
+                    cert_hash TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (cert_hash, key)
+                );",
+            )
+            .unwrap();
+            let _ = conn
+                .execute(
+                    "INSERT INTO private_storage(cert_hash, key, value, updated_at) \
+                     VALUES ('u', 'sidebar', '{\"v\":1}', 0)",
+                    [],
+                )
+                .unwrap();
+        }
+        // Opening the store runs migrations, renaming `value` -> `blob`.
+        let store = PrivateStore::open(dir.path()).unwrap();
+        // The pre-existing row survives and is readable as bytes.
+        assert_eq!(store.get("u", "sidebar").unwrap().unwrap(), b"{\"v\":1}");
+        // New writes/reads work against the migrated column.
+        store.put("u", "sidebar", b"updated").unwrap();
+        assert_eq!(store.get("u", "sidebar").unwrap().unwrap(), b"updated");
+        // Re-opening is idempotent (column already named `blob`).
+        drop(store);
+        let store = PrivateStore::open(dir.path()).unwrap();
+        assert_eq!(store.get("u", "sidebar").unwrap().unwrap(), b"updated");
     }
 
     #[test]

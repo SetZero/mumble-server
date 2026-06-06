@@ -295,6 +295,34 @@ impl<'a> Host<'a> {
         self.send_to_sessions(msg.server_id, &[msg.sender_session], payload_type, payload)
     }
 
+    // ---- Server-originated request/response bridge --------------------
+
+    /// Deliver a typed response for a server-originated request back to the
+    /// host (the return leg of [`PluginContext::send_request_response`]).
+    ///
+    /// Unlike [`send_to_sessions`](Self::send_to_sessions), this does **not**
+    /// reach the client directly: the host routes the `payload` by
+    /// `response_type` to the server-side handler that issued the request
+    /// (e.g. `"link-preview"`, which packs the JSON into a
+    /// `FancyLinkPreviewResponse`), correlating by `request_id` and addressing
+    /// `target_session`.
+    pub fn send_request_response(
+        &self,
+        server_id: ServerId,
+        response_type: &str,
+        request_id: &str,
+        target_session: SessionId,
+        payload: &[u8],
+    ) -> Result<(), PluginError> {
+        result_to_std(self.ctx.send_request_response(
+            server_id,
+            RStr::from_str(response_type),
+            RStr::from_str(request_id),
+            target_session,
+            RSlice::from_slice(payload),
+        ))
+    }
+
     // ---- Interaction responses ------------------------------------
 
     /// Ship an [`InteractionResponse`] back to the originating

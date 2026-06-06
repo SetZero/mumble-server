@@ -70,12 +70,33 @@ pub use mumble_plugin_api_derive::{
     command, component, fancy_plugin, field, handler_id, modal, show_modal,
 };
 
-/// Magic constant identifying the on-wire shape of [`MumblePlugin`] and
-/// [`PluginContext`].  Bumped whenever method signatures change.
+/// Magic constant identifying the on-wire shape of the **native** (`abi_stable`
+/// cdylib) [`MumblePlugin`] / [`PluginContext`] interface.  Bumped whenever the
+/// native struct layouts or method signatures change (e.g. adding a field to
+/// [`ClientInfo`]).
 ///
 /// The host refuses to load any cdylib that exposes a different value
 /// from its [`FancyPluginMod::abi_version`] field.
-pub const PLUGIN_ABI_VERSION: u32 = 2;
+pub const PLUGIN_ABI_VERSION: u32 = 3;
+
+/// ABI version of the **WebAssembly** plugin contract, defined by the shared
+/// WIT package in `wit/` (`world.wit` *and* `ui.wit` - both belong to
+/// `mumble:plugin@0.1.0`).  This is a *separate* contract from the native
+/// [`PLUGIN_ABI_VERSION`] and bumps independently - only when something in
+/// `wit/` changes - so a native-only change (like adding `user_id` to the
+/// native `ClientInfo`, which the WIT does not expose) does not invalidate
+/// compiled WASM components.
+///
+/// IMPORTANT: bump this on *any* breaking `wit/` change (e.g. adding a case to
+/// a `variant`), otherwise stale components slip past this cheap `abi-version`
+/// gate and only fail later - cryptically - at component instantiation.
+///
+/// The host's WASM loader checks a component's `abi-version` export against
+/// this value.  It is mirrored guest-side by `mumble-plugin-api-wasm` (which
+/// generates its bindings from this same `wit/`) and the JS / Python / Go
+/// authoring SDKs, which cannot depend on this crate (`abi_stable` is not
+/// `wasm32`-buildable); keep all of them in lockstep with `wit/`.
+pub const WASM_ABI_VERSION: u32 = 2;
 
 /// Name of the plain C-ABI function every plugin cdylib exports via
 /// [`fancy_export_plugin!`].  The host reads this *before* performing any
@@ -130,6 +151,25 @@ impl ClientInfo {
     pub fn is_registered(&self) -> bool {
         self.user_id >= 0
     }
+}
+
+/// Whether the connected identity `(user_id, cert_hash)` owns a resource
+/// stamped with `(owner_user_id, owner_cert_hash)`.
+///
+/// Prefers the stable registered user id - which, unlike the certificate hash,
+/// survives a session's certificate rotating between reconnects (password
+/// logins, regenerated client certs) - and falls back to the cert hash for
+/// unregistered or legacy resources.  Shared by the file-server and live-doc
+/// plugins so resource ownership resolves identically across both.
+#[must_use]
+pub fn identity_owns(
+    user_id: i64,
+    cert_hash: &str,
+    owner_user_id: Option<i64>,
+    owner_cert_hash: &str,
+) -> bool {
+    (user_id >= 0 && owner_user_id == Some(user_id))
+        || (!cert_hash.is_empty() && cert_hash == owner_cert_hash)
 }
 
 /// Errors that may be returned from plugin lifecycle and event hooks.
@@ -351,6 +391,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn identity_owns_matches_stable_user_id_across_cert_rotation() {
+        // Registered owner reopening with a *rotated* cert still matches by uid.
+        assert!(identity_owns(0, "new-cert", Some(0), "old-cert"));
+        // ...and by cert hash when the uid is absent (legacy resource).
+        assert!(identity_owns(0, "same-cert", None, "same-cert"));
+        // A different registered user never matches.
+        assert!(!identity_owns(5, "x", Some(0), "old-cert"));
+        // Guests (uid < 0) only match by a non-empty cert hash.
+        assert!(identity_owns(-1, "c", None, "c"));
+        assert!(!identity_owns(-1, "", None, ""));
+        assert!(!identity_owns(-1, "c", Some(0), "other"));
+    }
+
+    #[test]
     fn plugin_info_json_roundtrip() {
         let info = PluginInfo {
             description: "test".into(),
@@ -430,8 +484,9 @@ mod tests {
     }
 
     #[test]
-    fn abi_version_is_two() {
-        assert_eq!(PLUGIN_ABI_VERSION, 2);
+    fn abi_version_is_current() {
+        // Bumped to 3 when `PluginContext::send_request_response` was added.
+        assert_eq!(PLUGIN_ABI_VERSION, 3);
     }
 
     #[test]

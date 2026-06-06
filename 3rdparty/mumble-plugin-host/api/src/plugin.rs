@@ -150,6 +150,33 @@ pub trait PluginContext: Send + Sync + 'static {
         let _ = (server_id, name);
         abi_stable::std_types::RNone
     }
+
+    /// Deliver a typed response for an in-flight, server-originated request
+    /// back to the **host** (not to a client).
+    ///
+    /// This is the return leg of a generalized request/response bridge: the
+    /// server hands a unit of work to a plugin (today via an `on_plugin_message`
+    /// envelope) and the plugin, once its async work completes, calls this to
+    /// hand the result back. The host routes by `response_type` to the
+    /// server-side handler that owns that request kind (e.g. `"link-preview"`,
+    /// which packs the JSON `payload` into a `FancyLinkPreviewResponse`),
+    /// correlating via `request_id` and addressing `target_session`.
+    ///
+    /// `payload` is opaque bytes; each `response_type` defines its own encoding
+    /// (the link-preview handler expects JSON `{ "embeds": [...] }`).
+    ///
+    /// The default returns `ROk(())` (no-op); the real host always overrides it.
+    fn send_request_response(
+        &self,
+        server_id: ServerId,
+        response_type: RStr<'_>,
+        request_id: RStr<'_>,
+        target_session: SessionId,
+        payload: RSlice<'_, u8>,
+    ) -> PluginResult<()> {
+        let _ = (server_id, response_type, request_id, target_session, payload);
+        ROk(())
+    }
 }
 
 /// FFI-safe shape of every loadable plugin.

@@ -15,6 +15,7 @@
 #include "QtUtils.h"
 #include "Server.h"
 #include "PluginHostManager.h"
+#include "LinkPreviewBridge.h"
 #include "ServerUser.h"
 #include "User.h"
 #include "Version.h"
@@ -3438,7 +3439,7 @@ void Server::msgFancyLinkPreviewRequest(ServerUser *uSource, MumbleProto::FancyL
 	MSG_SETUP(ServerUser::Authenticated);
 	RATELIMIT(uSource);
 
-	if (!m_linkPreviewManager)
+	if (!m_linkPreviewBridge)
 		return;
 
 	QStringList urls;
@@ -3449,7 +3450,9 @@ void Server::msgFancyLinkPreviewRequest(ServerUser *uSource, MumbleProto::FancyL
 
 	QString requestId = QString::fromStdString(msg.request_id());
 
-	m_linkPreviewManager->handlePreviewRequest(uSource->uiSession, urls, requestId);
+	// Link previews are produced by the `fancy-link-preview` plugin; the bridge
+	// forwards the request and later delivers a FancyLinkPreviewResponse back.
+	m_linkPreviewBridge->requestPreviews(uSource->uiSession, urls, requestId);
 }
 
 void Server::msgFancyLinkPreviewResponse(ServerUser *, MumbleProto::FancyLinkPreviewResponse &) {
@@ -3698,14 +3701,56 @@ bool isCoreSettingKey(const QString &key) {
 	return false;
 }
 
+// Murmur's compiled-in default for a core setting, used when the value is set
+// neither in the server DB nor murmur.ini.  Without this the panel shows an
+// empty/false box for unset settings even though the live server uses a real
+// default (e.g. `allowrecording` defaults to true).  Mirrors the
+// `Meta::mp->X` fallbacks in Server::setLiveConf / Server::readParams.
+//
+// Most settings come straight from murmur's own computed defaults map
+// (`MetaParams::qmConfig`, populated in MetaParams::read()).  A handful of
+// per-server-only settings are absent from that map, so they are read from the
+// corresponding MetaParams member explicitly.  Unknown keys (plugin settings,
+// or settings with no compiled default such as `serverpassword`) return empty.
+QString coreSettingDefault(const QString &key) {
+	if (!Meta::mp) {
+		return QString();
+	}
+	if (key == QLatin1String("usersperchannel")) {
+		return QString::number(Meta::mp->iMaxUsersPerChannel);
+	}
+	if (key == QLatin1String("imagemessagelength")) {
+		return QString::number(Meta::mp->iMaxImageMessageLength);
+	}
+	if (key == QLatin1String("messagelimit")) {
+		return QString::number(Meta::mp->iMessageLimit);
+	}
+	if (key == QLatin1String("messageburst")) {
+		return QString::number(Meta::mp->iMessageBurst);
+	}
+	if (key == QLatin1String("allowping")) {
+		return Meta::mp->bAllowPing ? QStringLiteral("true") : QStringLiteral("false");
+	}
+	if (key == QLatin1String("allowrecording")) {
+		return Meta::mp->allowRecording ? QStringLiteral("true") : QStringLiteral("false");
+	}
+	return Meta::mp->qmConfig.value(key);
+}
+
 // Read a config value with the same DB -> murmur.ini fallback the plugin host
 // applies, so the panel shows the effective current value rather than an empty
-// box for settings that were configured via the ini file.
+// box for settings that were configured via the ini file.  When neither source
+// has the key, fall back to murmur's compiled-in default so unset settings show
+// the value the server actually uses (a core setting only - plugin keys have no
+// such default and stay empty).
 QString readConfigEffective(Server *server, const std::string &key) {
 	QString value;
 	server->m_dbWrapper.getConfigurationTo(server->iServerNum, key, value);
 	if (value.isEmpty() && Meta::mp && Meta::mp->qsSettings) {
 		value = Meta::mp->qsSettings->value(QString::fromStdString(key)).toString();
+	}
+	if (value.isEmpty()) {
+		value = coreSettingDefault(QString::fromStdString(key));
 	}
 	return value;
 }

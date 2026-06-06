@@ -23,10 +23,10 @@
 #include "pchat/TokenBucketRateLimiter.h"
 #include "push/PushNotificationDispatcher.h"
 #include "WebRtcSfuManager.h"
-#include "LinkPreviewManager.h"
 #include "ServerEventDistributor.h"
 
 class PluginHostManager;
+class LinkPreviewBridge;
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
 #include "QtUtils.h"
@@ -135,6 +135,7 @@ private:
 	Q_DISABLE_COPY(Server)
 
 	friend class PluginHostManager;
+	friend class LinkPreviewBridge;
 
 protected:
 	bool bRunning;
@@ -376,13 +377,16 @@ public:
 
 	std::unique_ptr< WebRtcSfuManager > m_sfuManager;
 
-	std::unique_ptr< LinkPreviewManager > m_linkPreviewManager;
-
 	/// Central event registry/dispatcher. Distributors (the internal plugin
 	/// host, ZeroC Ice, future gRPC, …) register here and the Server fans every
 	/// control-plane event out to all of them. Declared before m_pluginHost so
 	/// the host (a subscriber) is destroyed while the distributor is still alive.
 	ServerEventDistributor m_events{ *this };
+
+	// Link-preview glue over the generic plugin host.  Declared before
+	// m_pluginHost so the host (whose plugin runtime delivers the responses this
+	// bridge handles) is destroyed first, while this bridge is still alive.
+	std::unique_ptr< LinkPreviewBridge > m_linkPreviewBridge;
 
 	std::unique_ptr< PluginHostManager > m_pluginHost;
 

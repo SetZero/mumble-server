@@ -38,7 +38,7 @@ use abi_stable::std_types::{RArc, RErr, ROk, ROption, RResult, RSlice, RStr, RSt
 use mumble_plugin_api::client_manifest as ncm;
 use mumble_plugin_api::{
     ClientInfo, MumblePlugin, MumblePlugin_TO, PluginContext_TO, PluginError, PluginMessageIn,
-    PluginMessageOut, PluginResult, ServerId, SessionId, PLUGIN_ABI_VERSION,
+    PluginMessageOut, PluginResult, ServerId, SessionId, WASM_ABI_VERSION,
 };
 use mumble_plugin_api::{INTERACTION_PAYLOAD_TYPE, INTERACTION_RESPONSE_PAYLOAD_TYPE};
 use wasmtime::component::{Component, Linker};
@@ -457,11 +457,11 @@ pub fn load_wasm_plugin(path: &Path) -> Result<LoadedPlugin, LoadError> {
             path: path.to_path_buf(),
             message: format!("abi-version export trapped: {e}"),
         })?;
-    if abi != PLUGIN_ABI_VERSION {
+    if abi != WASM_ABI_VERSION {
         return Err(LoadError::AbiMismatch {
             path: path.to_path_buf(),
             found: abi,
-            expected: PLUGIN_ABI_VERSION,
+            expected: WASM_ABI_VERSION,
         });
     }
 

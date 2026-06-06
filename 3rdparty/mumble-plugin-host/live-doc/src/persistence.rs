@@ -358,6 +358,7 @@ mod tests {
     fn meta_round_trip_through_document() {
         let meta = DocMeta {
             owner_cert_hash: "abc123".into(),
+            owner_user_id: None,
             title: "Design --> Notes".into(),
             bound_channel: Some(7),
             visibility: Visibility::Published,
@@ -530,6 +531,7 @@ mod tests {
     async fn existing_document_seeds_safe_and_persists_content() {
         let meta = DocMeta {
             owner_cert_hash: "owner-cert".into(),
+            owner_user_id: None,
             title: "Saved".into(),
             bound_channel: None,
             visibility: Visibility::Private,

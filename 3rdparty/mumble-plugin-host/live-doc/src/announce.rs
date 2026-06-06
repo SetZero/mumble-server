@@ -12,7 +12,7 @@
 //!    `PluginMessage` envelope (`payload_type = "Announce"`) that
 //!    the server relays to channel peers.
 
-use mumble_plugin_api::{ChannelId, ServerId, SessionId};
+use mumble_plugin_api::{identity_owns, ChannelId, ServerId, SessionId};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -101,6 +101,7 @@ pub async fn handle_open_request_typed(
             return;
         }
         meta.owner_cert_hash = identity.cert_hash.clone();
+        meta.owner_user_id = (identity.user_id >= 0).then_some(identity.user_id);
         meta.title = title.to_owned();
         if mode == "publish" {
             meta.bound_channel = Some(channel_id);
@@ -116,6 +117,18 @@ pub async fn handle_open_request_typed(
     if !resolve_access(state, server_id, sender, &room, &meta, &identity).await {
         tracing::debug!(sender, slug = %slug, "rejecting open: not permitted");
         return;
+    }
+
+    // Backfill the durable owner id for a legacy document the cert-owner just
+    // reopened, so their ownership survives a future certificate rotation.
+    if meta.owner_user_id.is_none()
+        && identity.user_id >= 0
+        && !identity.cert_hash.is_empty()
+        && meta.owner_cert_hash == identity.cert_hash
+    {
+        meta.owner_user_id = Some(identity.user_id);
+        room.set_meta(meta.clone()).await;
+        state.persist_room_now(&room).await;
     }
 
     let ws_url = build_ws_url(state, server_id, &slug);
@@ -163,7 +176,24 @@ async fn resolve_access(
     meta: &crate::doc::DocMeta,
     identity: &crate::state::Identity,
 ) -> bool {
+    // Owner - matched by the stable user id (surviving cert rotation between
+    // sessions) or the cert hash.  Shared with the file-server via
+    // `identity_owns` so ownership resolves identically across both plugins.
+    if identity_owns(
+        identity.user_id,
+        &identity.cert_hash,
+        meta.owner_user_id,
+        &meta.owner_cert_hash,
+    ) {
+        return true;
+    }
+    // A recorded share recipient (cert-based).
     if room.is_member(&identity.cert_hash).await {
+        return true;
+    }
+    // Server administrators (Write on the root channel) may open any document,
+    // matching the admin file-server documents dashboard.
+    if state.is_server_admin(server_id, sender) {
         return true;
     }
     let Some(channel) = meta.bound_channel else {
@@ -488,6 +518,7 @@ mod tests {
         let room = state.ensure_room(key.clone()).await;
         room.set_meta(DocMeta {
             owner_cert_hash: "owner-cert".into(),
+            owner_user_id: None,
             title: "Old Title".into(),
             bound_channel: None,
             visibility: DocVisibility::Private,

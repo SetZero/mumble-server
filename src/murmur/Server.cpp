@@ -22,8 +22,8 @@
 #include "ProtoUtils.h"
 #include "QtUtils.h"
 #include "ServerUser.h"
-#include "LinkPreviewManager.h"
 #include "PluginHostManager.h"
+#include "LinkPreviewBridge.h"
 #include "User.h"
 #include "Version.h"
 
@@ -290,13 +290,14 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 		}
 	}
 
-	// Initialize link preview manager
-	m_linkPreviewManager = std::make_unique< LinkPreviewManager >(this, this);
-
 	// Initialize Rust plugin host (loads mumble_plugin_host cdylib) and register
 	// it as an event distributor so it receives the fan-out of server events.
 	m_pluginHost = std::make_unique< PluginHostManager >(this, this);
 	m_events.registerSubscriber(m_pluginHost.get());
+
+	// Link-preview bridge: registers a response handler with the (generic)
+	// plugin host and forwards client link-preview requests to the plugin.
+	m_linkPreviewBridge = std::make_unique< LinkPreviewBridge >(this, m_pluginHost.get());
 
 
 	// Initialize WebRTC SFU manager

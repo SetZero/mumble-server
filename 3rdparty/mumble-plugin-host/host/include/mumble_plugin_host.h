@@ -153,6 +153,22 @@ typedef struct PluginHostCallbacks {
    * [`Self::sessions_in_channel`] or [`Self::all_sessions`].
    */
   void (*free_sessions)(void *user_data, uint32_t *ptr, uintptr_t count);
+  /**
+   * Deliver a typed response for a server-originated request back to the
+   * host (the return leg of the generalized request/response bridge).  The
+   * host routes by `response_type` (e.g. `"link-preview"`) to the C++
+   * handler that issued the request, correlating via `request_id` and
+   * addressing `target_session`.  `payload` is opaque bytes whose encoding
+   * is defined per `response_type` (JSON for link preview).  Returns 0 on
+   * success, non-zero on error.
+   */
+  int (*send_request_response)(void *user_data,
+                               uint32_t server_id,
+                               const char *response_type,
+                               const char *request_id,
+                               uint32_t target_session,
+                               const uint8_t *payload,
+                               uintptr_t payload_len);
 } PluginHostCallbacks;
 
 #ifdef __cplusplus

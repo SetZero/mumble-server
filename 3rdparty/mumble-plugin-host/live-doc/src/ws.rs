@@ -365,8 +365,10 @@ mod tests {
         fn user_has_channel_access(&self, _: u32, _: u32, _: u32) -> bool {
             true
         }
-        fn has_permission(&self, _: u32, _: u32, _: u32, _: Permissions) -> bool {
-            true
+        fn has_permission(&self, _: u32, _: u32, _: u32, perm: Permissions) -> bool {
+            // Grant ordinary channel permissions, but not admin (root Write),
+            // so the ACL under test isn't masked by the admin-override path.
+            !perm.intersects(Permissions::WRITE)
         }
         fn get_config(&self, _: &str) -> Option<String> {
             None
@@ -443,6 +445,7 @@ mod tests {
         let room = state.ensure_room(key.clone()).await;
         room.set_meta(DocMeta {
             owner_cert_hash: "owner-cert".into(),
+            owner_user_id: None,
             title: "Notes".into(),
             bound_channel: None,
             visibility: crate::doc::Visibility::Private,
@@ -534,6 +537,7 @@ mod tests {
         let room = state.ensure_room(key.clone()).await;
         room.set_meta(DocMeta {
             owner_cert_hash: "owner-cert".into(),
+            owner_user_id: None,
             title: "Doc".into(),
             bound_channel: None,
             visibility: Visibility::Private,

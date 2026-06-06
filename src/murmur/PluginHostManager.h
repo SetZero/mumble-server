@@ -7,11 +7,13 @@
 #define PLUGIN_HOST_MANAGER_H_
 
 #include <QByteArray>
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QVector>
 
 #include <cstdint>
+#include <functional>
 
 #include "ServerEventDistributor.h"
 #include "mumble_plugin_host.h"
@@ -79,7 +81,27 @@ public:
         /// `plugin.<name>.*` settings.  Returns the FFI's JSON envelope.
         QByteArray uninstallPlugin(const QString &pluginName);
 
+        // ---- Generic request/response bridge (feature-agnostic) ----
+
+        /// Forward a generic request to `pluginName` as a `PluginMessage`
+        /// (`payload_type` + opaque `payload`).  The plugin may later deliver a
+        /// typed response through the host's `send_request_response` callback;
+        /// register a handler for it with `registerResponseHandler`.  This class
+        /// has no knowledge of any specific feature's payloads.
+        void sendPluginRequest(const QString &pluginName, const QString &payloadType,
+                               uint32_t senderSession, const QByteArray &payload);
+
+        /// Handler invoked when a plugin delivers a response of a given type.
+        using RequestResponseHandler =
+            std::function< void(uint32_t targetSession, const QString &requestId,
+                                const QByteArray &payload) >;
+
+        /// Register (or replace) the handler for `responseType`.  Handlers should
+        /// be registered at startup and remain valid for the host's lifetime.
+        void registerResponseHandler(const QString &responseType, RequestResponseHandler handler);
+
 private:
+
         // -- Forwarders to the Rust plugin host (invoked from the overrides above) --
         void onClientConnected(uint32_t session, const QString &username, const QString &certHash, int64_t userId);
         void onClientDisconnected(uint32_t session);
@@ -113,9 +135,17 @@ private:
         static bool findSessionByNameTrampoline(void *userData, uint32_t serverId,
                                                 const char *name, uint32_t *outSession);
         static void freeSessionsTrampoline(void *userData, uint32_t *ptr, size_t count);
+        static int sendRequestResponseTrampoline(void *userData, uint32_t serverId,
+                                                 const char *responseType, const char *requestId,
+                                                 uint32_t targetSession, const uint8_t *payload,
+                                                 size_t payloadLen);
 
         Server *m_server;
         PluginHostHandle *m_handle;
+        /// Response-type -> handler registry for the generic request/response
+        /// bridge.  Populated once at startup (read-only thereafter, so the
+        /// callback thread can look up without locking).
+        QHash< QString, RequestResponseHandler > m_responseHandlers;
 };
 
 #endif // PLUGIN_HOST_MANAGER_H_
