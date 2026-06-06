@@ -98,6 +98,8 @@
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminInstall, 149) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminUninstall, 150) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminAck, 151) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyServerSettings, 152) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyServerSettingsUpdate, 153) \
     PROCESS_MUMBLE_TCP_MESSAGE(PluginMessage, 200) \
     PROCESS_MUMBLE_TCP_MESSAGE(PluginRegistry, 201)
 

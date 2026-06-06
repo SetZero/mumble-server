@@ -130,10 +130,12 @@ async fn put_revision(
     // can carry non-ASCII display names through an HTTP header.
     let owner_name = header_b64(&headers, "x-doc-owner-name");
     let owner_cert = header_str(&headers, "x-doc-owner-cert");
-    match state
-        .documents
-        .put(&validated, &body, owner_name.as_deref(), owner_cert.as_deref())
-    {
+    match state.documents.put(
+        &validated,
+        &body,
+        owner_name.as_deref(),
+        owner_cert.as_deref(),
+    ) {
         Ok(rev_seq) => Ok(Json(PutAccepted { rev_seq })),
         Err(err) => {
             tracing::warn!(?err, "admin put_revision failed");

@@ -24,14 +24,26 @@ pub struct SessionClaims {
     pub srv: u32,
     /// Per-user private-storage scope: the cert hash when the client presents
     /// one, otherwise the username - so cert-less registered users (e.g. a
-    /// password-authenticated SuperUser) still get a stable, unique key.
+    /// password-authenticated `SuperUser`) still get a stable, unique key.
     /// `#[serde(default)]` keeps older tokens (without the claim) decodable.
     #[serde(default)]
     pub scope: String,
+    /// Registered user id (`>= 0`), or `-1` for unregistered guests.  The
+    /// durable ownership key for shared files: unlike `sub` (the cert hash) it
+    /// survives certificate regeneration across reconnects.  `#[serde(default)]`
+    /// keeps older tokens (without the claim) decodable, defaulting to `-1`.
+    #[serde(default = "default_uid")]
+    pub uid: i32,
     /// Issued-at (unix seconds).
     pub iat: u64,
     /// Expiry (unix seconds).
     pub exp: u64,
+}
+
+/// Default `uid` for tokens issued before the claim existed: treat as an
+/// unregistered guest so ownership falls back to the cert hash.
+fn default_uid() -> i32 {
+    -1
 }
 
 /// Reasons a credential check might fail.
@@ -87,6 +99,7 @@ pub fn issue_session_jwt(
     scope: &str,
     session_id: u32,
     server_id: u32,
+    user_id: i32,
     ttl_seconds: u64,
 ) -> Result<String, AuthError> {
     use jsonwebtoken::{encode, EncodingKey, Header};
@@ -96,6 +109,7 @@ pub fn issue_session_jwt(
         sid: session_id,
         srv: server_id,
         scope: scope.to_owned(),
+        uid: user_id,
         iat: now,
         exp: now.saturating_add(ttl_seconds),
     };
@@ -138,28 +152,30 @@ mod tests {
     #[test]
     fn jwt_roundtrip() {
         let secret = b"super-secret-key-32-bytes-x-x-x";
-        let token =
-            issue_session_jwt(secret, "cert-hash-abc", "cert-hash-abc", 42, 1, 3600).expect("issues");
+        let token = issue_session_jwt(secret, "cert-hash-abc", "cert-hash-abc", 42, 1, 5, 3600)
+            .expect("issues");
         let claims = verify_session_jwt(secret, &token).expect("verifies");
         assert_eq!(claims.sub, "cert-hash-abc");
         assert_eq!(claims.scope, "cert-hash-abc");
         assert_eq!(claims.sid, 42);
         assert_eq!(claims.srv, 1);
+        assert_eq!(claims.uid, 5);
     }
 
     #[test]
     fn jwt_scope_falls_back_to_username() {
         let secret = b"k";
         // Cert-less client: sub is empty but scope carries a stable identity.
-        let token = issue_session_jwt(secret, "", "SuperUser", 1, 0, 3600).expect("issues");
+        let token = issue_session_jwt(secret, "", "SuperUser", 1, 0, 0, 3600).expect("issues");
         let claims = verify_session_jwt(secret, &token).expect("verifies");
         assert_eq!(claims.sub, "");
         assert_eq!(claims.scope, "SuperUser");
+        assert_eq!(claims.uid, 0);
     }
 
     #[test]
     fn jwt_signed_with_other_secret_rejected() {
-        let token = issue_session_jwt(b"secret-a", "x", "x", 1, 1, 3600).expect("issues");
+        let token = issue_session_jwt(b"secret-a", "x", "x", 1, 1, -1, 3600).expect("issues");
         let err = verify_session_jwt(b"secret-b", &token).unwrap_err();
         assert!(matches!(err, AuthError::InvalidJwt(_)));
     }
@@ -169,7 +185,7 @@ mod tests {
         let secret = b"secret";
         // ttl 0 -> exp == iat == now, validation rejects it as expired
         // (jsonwebtoken default leeway is 0)
-        let token = issue_session_jwt(secret, "x", "x", 1, 1, 0).expect("issues");
+        let token = issue_session_jwt(secret, "x", "x", 1, 1, -1, 0).expect("issues");
         std::thread::sleep(std::time::Duration::from_secs(1));
         let err = verify_session_jwt(secret, &token).unwrap_err();
         assert!(matches!(err, AuthError::InvalidJwt(_)));

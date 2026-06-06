@@ -184,6 +184,10 @@ macro_rules! __client_manifest_fields {
         $m.settings_panels = ::std::vec![$($crate::__settings_panel!($p)),*];
         $crate::__client_manifest_fields!($m; $($($rest)*)?);
     };
+    ($m:ident; config_schema: [$($s:tt),* $(,)?] $(, $($rest:tt)*)?) => {
+        $m.config_schema = ::std::vec![$($crate::__config_setting!($s)),*];
+        $crate::__client_manifest_fields!($m; $($($rest)*)?);
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -338,5 +342,72 @@ macro_rules! __settings_panel_fields {
             }
         ),*];
         $crate::__settings_panel_fields!($p; $($($rest)*)?);
+    };
+}
+
+// ---------------------------------------------------------------------------
+// ConfigSetting
+// ---------------------------------------------------------------------------
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __config_setting {
+    ({ $($body:tt)* }) => {{
+        #[allow(unused_mut, reason = "mut needed when any field setter arms fire; \
+                may stay unused for an empty invocation")]
+        let mut __s = $crate::ConfigSetting {
+            key: ::std::string::String::new(),
+            label: ::std::string::String::new(),
+            setting_type: $crate::SettingType::String,
+            default: ::std::option::Option::None,
+            options: ::std::vec::Vec::new(),
+            secret: false,
+            help: ::std::option::Option::None,
+        };
+        $crate::__config_setting_fields!(__s; $($body)*);
+        __s
+    }};
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __config_setting_fields {
+    ($s:ident;) => {};
+    ($s:ident; , $($rest:tt)*) => {
+        $crate::__config_setting_fields!($s; $($rest)*);
+    };
+    ($s:ident; key: $v:expr $(, $($rest:tt)*)?) => {
+        $s.key = ::std::convert::Into::<::std::string::String>::into($v);
+        $crate::__config_setting_fields!($s; $($($rest)*)?);
+    };
+    ($s:ident; label: $v:expr $(, $($rest:tt)*)?) => {
+        $s.label = ::std::convert::Into::<::std::string::String>::into($v);
+        $crate::__config_setting_fields!($s; $($($rest)*)?);
+    };
+    ($s:ident; type: $t:ident $(, $($rest:tt)*)?) => {
+        $s.setting_type = $crate::SettingType::$t;
+        $crate::__config_setting_fields!($s; $($($rest)*)?);
+    };
+    ($s:ident; default: $v:expr $(, $($rest:tt)*)?) => {
+        $s.default = ::std::option::Option::Some(
+            ::std::convert::Into::<::std::string::String>::into($v),
+        );
+        $crate::__config_setting_fields!($s; $($($rest)*)?);
+    };
+    ($s:ident; options: [$($o:expr),* $(,)?] $(, $($rest:tt)*)?) => {
+        $s.options = ::std::vec![$(
+            ::std::convert::Into::<::std::string::String>::into($o)
+        ),*];
+        $crate::__config_setting_fields!($s; $($($rest)*)?);
+    };
+    ($s:ident; secret: $v:expr $(, $($rest:tt)*)?) => {
+        $s.secret = $v;
+        $crate::__config_setting_fields!($s; $($($rest)*)?);
+    };
+    ($s:ident; help: $v:expr $(, $($rest:tt)*)?) => {
+        $s.help = ::std::option::Option::Some(
+            ::std::convert::Into::<::std::string::String>::into($v),
+        );
+        $crate::__config_setting_fields!($s; $($($rest)*)?);
     };
 }

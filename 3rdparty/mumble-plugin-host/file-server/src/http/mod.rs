@@ -17,6 +17,7 @@ pub mod common;
 pub mod download;
 pub mod emotes;
 pub mod files_admin;
+pub mod files_me;
 pub mod me;
 pub mod upload;
 
@@ -96,6 +97,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/capabilities", get(capabilities::get))
         .merge(admin_router)
         .merge(files_admin::router())
+        .merge(files_me::router())
         .merge(me::router())
         .layer(middleware::from_fn(request_log))
         .layer(middleware::from_fn(cross_origin_resource_policy))

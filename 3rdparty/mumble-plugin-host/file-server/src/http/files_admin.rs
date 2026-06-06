@@ -63,6 +63,10 @@ pub struct AdminFileDto {
     /// Stable cert hash of the uploader, so the client can match the file to a
     /// currently-connected user and show their live profile card.
     pub uploader_cert_hash: Option<String>,
+    /// Stable registered user id of the uploader (`>= 0`), or `null`.  Preferred
+    /// over the cert hash for matching a connected user, since it survives
+    /// certificate regeneration across sessions.
+    pub uploader_user_id: Option<i64>,
     /// Whether the uploader's session is still connected (its id is cleared on
     /// disconnect), so the dashboard can show "owner online".
     pub uploader_online: bool,
@@ -97,7 +101,9 @@ pub struct AdminDocumentsResponse {
     pub documents: Vec<DocumentSummary>,
 }
 
-fn record_to_dto(r: FileRecord) -> AdminFileDto {
+/// Map a stored [`FileRecord`] to the descriptive DTO.  Shared with the
+/// per-user `/me/files` listing so both surfaces present files identically.
+pub(crate) fn record_to_dto(r: FileRecord) -> AdminFileDto {
     AdminFileDto {
         id: r.id,
         filename: r.filename,
@@ -111,6 +117,7 @@ fn record_to_dto(r: FileRecord) -> AdminFileDto {
         expires_at: r.expires_at,
         uploader_name: r.uploader_name,
         uploader_cert_hash: r.uploader_cert_hash,
+        uploader_user_id: r.uploader_user_id,
         uploader_online: r.session_id.is_some(),
     }
 }
@@ -187,7 +194,7 @@ pub async fn list(
 /// Distinct from the sibling-plugin `/admin/documents/{name}` CRUD routes
 /// (which authenticate with the shared `admin_token`): this dashboard listing
 /// is gated by the admin session JWT, like the other `/admin/files` routes, so
-/// the Fancy Mumble client can show LiveDocs without holding the server secret.
+/// the Fancy Mumble client can show `LiveDocs` without holding the server secret.
 pub async fn list_documents(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -263,6 +270,26 @@ pub async fn raw(
         .map_err(|e| ApiError::internal(format!("storage: {e}")))?
         .ok_or_else(|| ApiError::not_found("file not found"))?;
 
+    stream_blob_preview(&state, &record).await
+}
+
+/// Stream a file's blob bytes as a hardened inline preview response.  Shared by
+/// the admin `/admin/files/{id}/raw` route and the per-user
+/// `/me/files/{id}/raw` route; the *caller* is responsible for authorising
+/// access to `record` before invoking this.
+pub(crate) async fn stream_blob_preview(
+    state: &AppState,
+    record: &FileRecord,
+) -> Result<Response<Body>, ApiError> {
+    // Encrypted-at-rest (password) files cannot be decrypted without the
+    // password, so neither admins nor owners can preview them.  This is the
+    // whole point of zero-knowledge encryption - refuse rather than serve
+    // ciphertext.
+    if record.enc_salt.is_some() {
+        return Err(ApiError::forbidden(
+            "encrypted password-protected files cannot be previewed without the password",
+        ));
+    }
     if record.size_bytes > MAX_PREVIEW_BYTES {
         return Err(ApiError::too_large("file too large to preview"));
     }
@@ -323,6 +350,9 @@ mod tests {
             downloaded_at: None,
             uploader_cert_hash: Some("ab12".into()),
             uploader_name: Some("alice".into()),
+            enc_salt: None,
+            enc_nonce: None,
+            uploader_user_id: None,
         }
     }
 

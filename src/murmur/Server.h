@@ -409,6 +409,15 @@ public:
 	/// updated.
 	QHash< QString, MumbleProto::FancyOnboardingResponse > m_onboardingResponses;
 
+	/// Monotonic revision for the editable server-settings snapshot, bumped
+	/// each time an admin applies a change so clients can drop stale
+	/// broadcasts.
+	uint64_t m_serverSettingsRevision = 0;
+
+	/// Build and send the editable server-settings snapshot (core + plugin
+	/// settings) to `u`.  No-op unless `u` has Write on the root channel and
+	/// reports a Fancy version new enough to understand it.
+	void sendFancyServerSettings(ServerUser *u);
 
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,

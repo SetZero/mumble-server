@@ -83,6 +83,17 @@ pub struct FileRecord {
     /// Display name of the uploader at upload time.  Persisted so the admin
     /// dashboard can show the owner even after the uploader disconnects.
     pub uploader_name: Option<String>,
+    /// Stable registered user id of the uploader (`>= 0`), or `None` for
+    /// unregistered/guest uploads.  Unlike the cert hash - which can change
+    /// every session (a fresh self-signed cert, a password-only SuperUser) -
+    /// this survives reconnects, so it is the durable ownership key.
+    pub uploader_user_id: Option<i64>,
+    /// Hex-encoded Argon2id salt used to derive the file-encryption key from the
+    /// password.  `None` for legacy/unencrypted (public/session/plaintext) blobs.
+    pub enc_salt: Option<String>,
+    /// Hex-encoded XChaCha20-Poly1305 STREAM nonce prefix.  Present iff the blob
+    /// is encrypted at rest (see [`enc_salt`](Self::enc_salt)).
+    pub enc_nonce: Option<String>,
 }
 
 /// Access mode chosen by the uploader.
@@ -179,6 +190,24 @@ impl Storage {
                 return Err(e);
             }
         }
+        // Additive migration for the stable per-user ownership key.  NULL means
+        // the file predates this column (or an unregistered uploader).
+        if let Err(e) = conn.execute("ALTER TABLE files ADD COLUMN uploader_user_id INTEGER", []) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column name") {
+                return Err(e);
+            }
+        }
+        // Additive migration for encryption-at-rest metadata.  `None` (NULL) in
+        // these columns means the blob is stored plaintext (legacy/public).
+        for col in ["enc_salt", "enc_nonce"] {
+            if let Err(e) = conn.execute(&format!("ALTER TABLE files ADD COLUMN {col} TEXT"), []) {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column name") {
+                    return Err(e);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -229,8 +258,9 @@ impl Storage {
             "INSERT INTO files
               (id, session_id, channel_id, server_id, filename, mime_type, size_bytes,
                url_nonce, url_expiry, access_mode, password_hash, uploaded_at,
-               expires_at, downloaded_at, uploader_cert_hash, uploader_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+               expires_at, downloaded_at, uploader_cert_hash, uploader_name,
+               enc_salt, enc_nonce, uploader_user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 record.id,
                 record.session_id,
@@ -248,6 +278,9 @@ impl Storage {
                 record.downloaded_at,
                 record.uploader_cert_hash,
                 record.uploader_name,
+                record.enc_salt,
+                record.enc_nonce,
+                record.uploader_user_id,
             ],
         )?;
         Ok(())
@@ -259,7 +292,8 @@ impl Storage {
         conn.query_row(
             "SELECT id, session_id, channel_id, server_id, filename, mime_type, size_bytes,
                     url_nonce, url_expiry, access_mode, password_hash, uploaded_at,
-                    expires_at, downloaded_at, uploader_cert_hash, uploader_name
+                    expires_at, downloaded_at, uploader_cert_hash, uploader_name,
+                    enc_salt, enc_nonce, uploader_user_id
              FROM files WHERE id = ?1",
             params![file_id],
             row_to_record,
@@ -315,7 +349,8 @@ impl Storage {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, channel_id, server_id, filename, mime_type, size_bytes,
                     url_nonce, url_expiry, access_mode, password_hash, uploaded_at,
-                    expires_at, downloaded_at, uploader_cert_hash, uploader_name
+                    expires_at, downloaded_at, uploader_cert_hash, uploader_name,
+                    enc_salt, enc_nonce, uploader_user_id
              FROM files ORDER BY uploaded_at DESC",
         )?;
         let rows = stmt.query_map([], row_to_record)?;
@@ -331,6 +366,57 @@ impl Storage {
     #[must_use]
     pub fn cap_bytes(&self) -> u64 {
         self.cap_bytes
+    }
+
+    /// Return every record owned by the requester, newest first.  Powers the
+    /// per-user "my shared files" view; the caller is responsible for only ever
+    /// passing the *requester's own* identity so a user can never enumerate
+    /// another user's files.
+    ///
+    /// Ownership matches on the stable registered `user_id` when the requester
+    /// has one (so files survive certificate regeneration across sessions) and
+    /// additionally on the current `cert_hash` (so files uploaded before the
+    /// user-id column existed, or by unregistered guests, still resolve).
+    pub fn list_for_uploader(
+        &self,
+        user_id: Option<i64>,
+        cert_hash: &str,
+    ) -> Result<Vec<FileRecord>, StorageError> {
+        let conn = self.db.lock().map_err(|_| poisoned_db())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, channel_id, server_id, filename, mime_type, size_bytes,
+                    url_nonce, url_expiry, access_mode, password_hash, uploaded_at,
+                    expires_at, downloaded_at, uploader_cert_hash, uploader_name,
+                    enc_salt, enc_nonce, uploader_user_id
+             FROM files
+             WHERE (?1 IS NOT NULL AND uploader_user_id = ?1) OR uploader_cert_hash = ?2
+             ORDER BY uploaded_at DESC",
+        )?;
+        let rows = stmt.query_map(params![user_id, cert_hash], row_to_record)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Stamp the stable `uploader_user_id` onto any of this user's existing
+    /// files that are still keyed only by the given cert hash.  Lets files
+    /// uploaded before the user-id column existed converge to the durable owner
+    /// key the next time the user connects with that certificate.  Idempotent
+    /// (only touches rows still missing a user id); returns the row count.
+    pub fn backfill_uploader_user_id(
+        &self,
+        cert_hash: &str,
+        user_id: i64,
+    ) -> Result<usize, StorageError> {
+        let conn = self.db.lock().map_err(|_| poisoned_db())?;
+        let n = conn.execute(
+            "UPDATE files SET uploader_user_id = ?1
+             WHERE uploader_cert_hash = ?2 AND uploader_user_id IS NULL",
+            params![user_id, cert_hash],
+        )?;
+        Ok(n)
     }
 
     /// Return ids of records uploaded by the given session.
@@ -423,6 +509,9 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> Result<FileRecord, rusqlite::Error>
         downloaded_at: row.get(13)?,
         uploader_cert_hash: row.get(14)?,
         uploader_name: row.get(15)?,
+        enc_salt: row.get(16)?,
+        enc_nonce: row.get(17)?,
+        uploader_user_id: row.get(18)?,
     })
 }
 
@@ -453,6 +542,9 @@ mod tests {
             downloaded_at: None,
             uploader_cert_hash: None,
             uploader_name: Some("alice".into()),
+            enc_salt: None,
+            enc_nonce: None,
+            uploader_user_id: None,
         }
     }
 
@@ -520,6 +612,62 @@ mod tests {
         let mut out = store.list_for_session(7).expect("ok");
         out.sort();
         assert_eq!(out, vec!["a".to_owned()]);
+    }
+
+    #[test]
+    fn list_for_uploader_returns_only_that_uploaders_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Storage::open(dir.path(), 1_000_000).expect("open");
+        let mut a = sample_record("a", 1);
+        a.uploader_cert_hash = Some("certA".into());
+        let mut b = sample_record("b", 1);
+        b.uploader_cert_hash = Some("certB".into());
+        let mut c = sample_record("c", 1);
+        c.uploader_cert_hash = Some("certA".into());
+        store.insert(&a).expect("ok");
+        store.insert(&b).expect("ok");
+        store.insert(&c).expect("ok");
+
+        let mut ids: Vec<_> = store
+            .list_for_uploader(None, "certA")
+            .expect("query")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a".to_owned(), "c".to_owned()]);
+        assert!(store.list_for_uploader(None, "nobody").expect("query").is_empty());
+    }
+
+    #[test]
+    fn list_for_uploader_matches_stable_user_id_across_cert_hashes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Storage::open(dir.path(), 1_000_000).expect("open");
+        // Same registered user (uid 42), two different per-session cert hashes.
+        let mut a = sample_record("a", 1);
+        a.uploader_user_id = Some(42);
+        a.uploader_cert_hash = Some("certOld".into());
+        let mut b = sample_record("b", 1);
+        b.uploader_user_id = Some(42);
+        b.uploader_cert_hash = Some("certNew".into());
+        // A different user's file must never be returned.
+        let mut c = sample_record("c", 1);
+        c.uploader_user_id = Some(7);
+        c.uploader_cert_hash = Some("certOther".into());
+        store.insert(&a).expect("ok");
+        store.insert(&b).expect("ok");
+        store.insert(&c).expect("ok");
+
+        // Listing as uid 42 with the *current* cert hash returns both files,
+        // even though one was uploaded under the old hash.
+        let mut ids: Vec<_> = store
+            .list_for_uploader(Some(42), "certNew")
+            .expect("query")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a".to_owned(), "b".to_owned()]);
     }
 
     #[test]

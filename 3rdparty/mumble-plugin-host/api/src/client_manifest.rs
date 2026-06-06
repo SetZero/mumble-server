@@ -70,6 +70,11 @@ pub struct ClientManifest {
     /// Settings panels shown under `Settings > Plugins`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings_panels: Vec<SettingsPanel>,
+    /// Editable server-side configuration this plugin exposes.  Surfaced in the
+    /// admin "Server Settings" panel; the host stores each value under the
+    /// murmur config key `plugin.<plugin-name>.<key>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_schema: Vec<ConfigSetting>,
 }
 
 impl Default for ClientManifest {
@@ -79,8 +84,81 @@ impl Default for ClientManifest {
             slash_commands: Vec::new(),
             capabilities: Vec::new(),
             settings_panels: Vec::new(),
+            config_schema: Vec::new(),
         }
     }
+}
+
+/// One editable plugin configuration setting, advertised so the server can
+/// surface it in the admin "Server Settings" panel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigSetting {
+    /// Config key suffix (without the `plugin.<name>.` prefix), e.g.
+    /// `file_server_url`.
+    pub key: String,
+    /// Human-readable label shown in the settings form.
+    pub label: String,
+    /// Input type driving the client's form control.
+    #[serde(rename = "type", default)]
+    pub setting_type: SettingType,
+    /// Optional default value (string-encoded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Allowed values for [`SettingType::Enum`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// When true the value is a secret (token/password): never echoed back to
+    /// the client; only sent client->server when (re)set.
+    #[serde(default)]
+    pub secret: bool,
+    /// Optional one-line help text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
+}
+
+impl ConfigSetting {
+    /// Build a config setting with the given key, label and type.
+    #[must_use]
+    pub fn new(key: impl Into<String>, label: impl Into<String>, setting_type: SettingType) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            setting_type,
+            default: None,
+            options: Vec::new(),
+            secret: false,
+            help: None,
+        }
+    }
+
+    /// Mark this setting as secret (masked, write-only).
+    #[must_use]
+    pub fn secret(mut self) -> Self {
+        self.secret = true;
+        self
+    }
+}
+
+/// Input type for a [`ConfigSetting`], mapped by the client to a form control.
+/// The serialized lowercase names match the wire `Setting.type` vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SettingType {
+    /// Single-line string (the default).
+    #[default]
+    String,
+    /// Multi-line / code, rendered in a code editor.
+    Text,
+    /// Boolean checkbox.
+    Bool,
+    /// Integer.
+    Int,
+    /// One of `options`.
+    Enum,
+    /// ISO-3166 alpha-2 country code.
+    Country,
+    /// Secret string (masked input).
+    Password,
 }
 
 fn default_schema_version() -> u32 {
@@ -469,6 +547,7 @@ mod tests {
             }],
             capabilities: vec![Capability::SlashCommands, Capability::Modals],
             settings_panels: vec![],
+            config_schema: vec![],
         };
         let json = serde_json::to_string(&manifest).expect("encode");
         let back: ClientManifest = serde_json::from_str(&json).expect("decode");

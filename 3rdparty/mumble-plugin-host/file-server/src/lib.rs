@@ -19,6 +19,7 @@ use rand::RngCore;
 
 pub mod auth;
 pub mod config;
+pub mod crypto;
 pub mod documents;
 pub mod emotes;
 pub mod host_facade;
@@ -94,6 +95,52 @@ impl MumblePlugin for FileServerPlugin {
             author: "Fancy Mumble",
             tags: ["http", "files", "emotes"],
             debug_info: self.runtime_debug_rows(),
+            manifest: {
+                config_schema: [
+                    {
+                        key: "base_url",
+                        label: "Public base URL",
+                        type: String,
+                        help: "Public URL embedded into shareable file links.",
+                    },
+                    {
+                        key: "max_file_size_bytes",
+                        label: "Max upload size (bytes)",
+                        type: Int,
+                    },
+                    {
+                        key: "max_ttl_seconds",
+                        label: "Maximum file lifetime (seconds, 0 = unlimited)",
+                        type: Int,
+                    },
+                    {
+                        key: "ttl_seconds",
+                        label: "Default file lifetime (seconds)",
+                        type: Int,
+                    },
+                    {
+                        key: "delete_on_ttl",
+                        label: "Delete files after their lifetime",
+                        type: Bool,
+                    },
+                    {
+                        key: "delete_on_download",
+                        label: "Delete files after first download",
+                        type: Bool,
+                    },
+                    {
+                        key: "delete_on_disconnect",
+                        label: "Delete a user's files when they disconnect",
+                        type: Bool,
+                    },
+                    {
+                        key: "admin_token",
+                        label: "Admin API token",
+                        type: Password,
+                        secret: true,
+                    },
+                ],
+            },
         }
         .to_rstring()
     }
@@ -138,9 +185,9 @@ impl MumblePlugin for FileServerPlugin {
         let cert_hash: String = info.cert_hash.into_string();
         let username: String = info.username.into_string();
         let user_id: i32 = info.user_id;
-        if let Err(e) =
-            announce_to_client(running, server_id, session_id, &cert_hash, &username, user_id)
-        {
+        if let Err(e) = announce_to_client(
+            running, server_id, session_id, &cert_hash, &username, user_id,
+        ) {
             tracing::warn!(
                 session = session_id,
                 user = %username,
@@ -293,6 +340,7 @@ fn announce_to_client(
         &storage_scope,
         session_id,
         server_id,
+        user_id,
         SESSION_JWT_TTL_SECS,
     )
     .map_err(|e| format!("issue jwt: {e}"))?;
@@ -303,8 +351,27 @@ fn announce_to_client(
             cert_hash: cert_hash.to_owned(),
             upload_token: upload_token.clone(),
             username: username.to_owned(),
+            user_id,
         },
     );
+
+    // Converge any of this registered user's older files (tagged only by this
+    // cert hash) onto the stable user-id ownership key.
+    if user_id >= 0 {
+        match running
+            .state
+            .storage
+            .backfill_uploader_user_id(cert_hash, i64::from(user_id))
+        {
+            Ok(n) if n > 0 => {
+                tracing::info!(session = session_id, user_id, files = n, "file-server: backfilled uploader_user_id");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(session = session_id, error = %e, "file-server: uploader_user_id backfill failed");
+            }
+        }
+    }
 
     let payload = serde_json::json!({
         "type": "file-server-config",
@@ -319,6 +386,7 @@ fn announce_to_client(
         "max_file_size_bytes": running.state.config.max_file_size_bytes,
         "delete_on_ttl": running.state.config.delete_on_ttl,
         "ttl_seconds": running.state.config.ttl.as_secs(),
+        "max_ttl_seconds": running.state.config.max_ttl_seconds,
         "delete_on_download": running.state.config.delete_on_download,
         "delete_on_disconnect": running.state.config.delete_on_disconnect,
         "can_manage_emotes": running.state.plugin_ctx.has_permission(

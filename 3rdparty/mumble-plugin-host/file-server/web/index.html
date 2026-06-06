@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<!--
+  Password-entry page for password-protected files.
+
+  This is the Vite/React entry template. The build inlines the React + MUI app
+  (see src/) into a single self-contained file and a post-build step writes it to
+  dist/password.html, which the file-server embeds via include_str! and serves
+  verbatim (only swapping the per-response CSP nonce __CSP_NONCE__ into each
+  <script>). PURE FRONTEND: the app reads the file id + signed params from the
+  current URL, exchanges the password for a single-use ticket via
+  POST /files/{id}/auth, then redirects to the ticketed download URL.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Password required</title>
+    <!-- Critical paint colors so there is no white flash before the app mounts.
+         Allowed by the page CSP's `style-src 'unsafe-inline'`. -->
+    <style>
+      html {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        background: #0d1016;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -40,11 +40,11 @@ pub mod plugin;
 
 pub use crate::client_manifest::{
     ActionRow, Button, ButtonStyle, Capability, ChannelSelect, Checkbox, CheckboxGroup,
-    CheckboxOption, ClientManifest, Component, Container, FileComponent, FileUpload, Interaction,
+    CheckboxOption, ClientManifest, Component, ConfigSetting, Container, FileComponent, FileUpload, Interaction,
     InteractionKind, InteractionResponse, Label, MediaGallery, MediaGalleryItem, MentionableSelect,
     ModalFieldValue, OptionChoice, OptionType, OptionValue, PanelRow, RadioGroup, RadioOption,
     ResponseKind, RoleSelect, Section, SectionAccessory, SelectMenu, SelectOption, Separator,
-    SeparatorSpacing, SettingsPanel, SlashCommand, SlashCommandOption, StringSelect, TextDisplay,
+    SeparatorSpacing, SettingType, SettingsPanel, SlashCommand, SlashCommandOption, StringSelect, TextDisplay,
     TextInput, TextInputBuilder, TextInputStyle, Thumbnail, ToastLevel, UnfurledMediaItem,
     UserSelect, CLIENT_MANIFEST_SCHEMA_VERSION, INTERACTION_PAYLOAD_TYPE,
     INTERACTION_RESPONSE_PAYLOAD_TYPE,
@@ -389,6 +389,7 @@ mod tests {
             }],
             capabilities: vec![Capability::SlashCommands],
             settings_panels: vec![],
+            config_schema: vec![],
         };
         let info = PluginInfo {
             description: "with manifest".into(),
@@ -521,6 +522,7 @@ mod tests {
             slash_commands: vec![],
             capabilities: vec![Capability::Notifications],
             settings_panels: vec![],
+            config_schema: vec![],
         };
         let info = plugin_info! {
             description: "demo",

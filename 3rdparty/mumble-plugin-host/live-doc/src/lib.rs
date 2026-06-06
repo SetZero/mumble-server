@@ -30,6 +30,7 @@ pub mod ws;
 
 use crate::announce::{handle_open_request, handle_open_request_typed};
 use crate::config::LiveDocConfig;
+use crate::doc::DocKey;
 use crate::host_facade::{HostFacade, SabiHostCtx};
 use crate::state::AppState;
 use crate::ws::ServerHandle;
@@ -112,6 +113,28 @@ impl MumblePlugin for LiveDocPlugin {
             author: "Fancy Mumble",
             tags: ["http", "websocket", "live-doc"],
             debug_info: self.debug_info(),
+            manifest: {
+                config_schema: [
+                    {
+                        key: "file_server_url",
+                        label: "File server URL",
+                        type: String,
+                        help: "Base URL of the fancy-file-server used to persist documents.",
+                    },
+                    {
+                        key: "public_url",
+                        label: "Public WebSocket URL",
+                        type: String,
+                        help: "URL clients use to reach the live-doc WebSocket (behind a proxy).",
+                    },
+                    {
+                        key: "file_server_admin_token",
+                        label: "File server admin token",
+                        type: Password,
+                        secret: true,
+                    },
+                ],
+            },
         }
         .to_rstring()
     }
@@ -222,7 +245,11 @@ impl MumblePlugin for LiveDocPlugin {
         _ctx: &PluginContext_TO<RArc<()>>,
         msg: PluginMessageIn,
     ) -> PluginResult<()> {
-        if msg.payload_type.as_str() != "OpenRequest" {
+        // "OpenRequest" announces/opens a doc; "Persist" flushes the current
+        // room to the file server on demand (the user pressed "Save").  Both
+        // carry the same `{channelId, slug}` shape, so they share parsing.
+        let payload_type = msg.payload_type.as_str();
+        if payload_type != "OpenRequest" && payload_type != "Persist" {
             return ROk(());
         }
         let Ok(guard) = self.inner.lock() else {
@@ -239,9 +266,21 @@ impl MumblePlugin for LiveDocPlugin {
             return ROk(());
         };
         let _ = (msg.plugin_name, msg.channel_id, msg.sender_name);
-        running.runtime.block_on(async move {
-            handle_open_request_typed(&state, server_id, sender, channel_id, &slug, &title).await;
-        });
+        if payload_type == "Persist" {
+            let key = DocKey {
+                server_id,
+                channel_id,
+                slug,
+            };
+            running.runtime.block_on(async move {
+                state.persist_now(&key).await;
+            });
+        } else {
+            running.runtime.block_on(async move {
+                handle_open_request_typed(&state, server_id, sender, channel_id, &slug, &title)
+                    .await;
+            });
+        }
         ROk(())
     }
 }

@@ -284,6 +284,23 @@ impl AppState {
         })
     }
 
+    /// Persist a single room on demand (the user pressed "Save") without
+    /// evicting it.  No-op when the room isn't currently open.  Like teardown
+    /// persistence, a misconfigured/disabled store surfaces a loud error in
+    /// `persist_room` rather than failing silently.
+    pub async fn persist_now(&self, key: &DocKey) {
+        let captured = {
+            let rooms = self.inner.rooms.lock().await;
+            rooms.get(key).map(|e| (e.room.clone(), e.creator.clone()))
+        };
+        if let Some((room, creator)) = captured {
+            let owner = creator
+                .as_ref()
+                .map(|c| (c.username.as_str(), c.cert_hash.as_str()));
+            persist_room(&self.inner.cfg, &self.inner.http_client, &room, owner).await;
+        }
+    }
+
     async fn teardown_room(&self, key: &DocKey) {
         let captured = {
             let mut rooms = self.inner.rooms.lock().await;

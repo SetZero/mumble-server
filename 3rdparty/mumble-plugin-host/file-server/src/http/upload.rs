@@ -1,6 +1,6 @@
 //! `POST /files` - multipart upload handler.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::extract::{Multipart, Query, State};
 use axum::Json;
@@ -8,8 +8,10 @@ use mumble_plugin_api::Permissions;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
+use zeroize::Zeroizing;
 
 use crate::auth::hash_password;
+use crate::crypto::ENC_NONCE_PREFIX_BYTES;
 use crate::host_facade::HostFacade;
 use crate::http::common::ApiError;
 use crate::signing::{self, NONCE_BYTES, NO_EXPIRY};
@@ -83,6 +85,11 @@ pub async fn upload(
     let session_info = state.sessions.get(q.session);
     let cert_hash = session_info.as_ref().map(|s| s.cert_hash.clone());
     let uploader_name = session_info.as_ref().map(|s| s.username.clone());
+    // Stable ownership key: registered users (`user_id >= 0`) only.  `None`
+    // leaves the column NULL so unregistered guests fall back to the cert hash.
+    let uploader_user_id: Option<i64> = session_info
+        .as_ref()
+        .and_then(|s| (s.user_id >= 0).then(|| i64::from(s.user_id)));
     tracing::info!(session = q.session, "upload: auth ok, parsing multipart");
 
     let parsed = parse_multipart(&state, multipart, state.config.max_file_size_bytes).await?;
@@ -98,7 +105,8 @@ pub async fn upload(
         filename = %parsed.filename,
         "upload: multipart parsed, inserting record"
     );
-    let result = insert_record(&state, q.session, cert_hash, uploader_name, parsed).await;
+    let result =
+        insert_record(&state, q.session, cert_hash, uploader_name, uploader_user_id, parsed).await;
     tracing::info!(session = q.session, ok = result.is_ok(), "upload: complete");
     result
 }
@@ -186,6 +194,10 @@ struct ParsedUpload {
     channel_id: u32,
     mode: AccessMode,
     password: Option<String>,
+    /// Requested lifetime in seconds, chosen by the uploader.  `Some(0)` means
+    /// "no expiry"; `None` means "use the server default".  Clamped to
+    /// `max_ttl_seconds` at record time.
+    ttl_seconds: Option<u64>,
 }
 
 /// RAII guard that removes a partially-written blob file if the upload
@@ -221,6 +233,7 @@ async fn parse_multipart(
     let mut channel_id: u32 = 0;
     let mut mode = AccessMode::Public;
     let mut password: Option<String> = None;
+    let mut ttl_seconds: Option<u64> = None;
 
     while let Some(mut field) = multipart
         .next_field()
@@ -294,6 +307,10 @@ async fn parse_multipart(
                     password = Some(s);
                 }
             }
+            "ttl_seconds" => {
+                let s = field.text().await.unwrap_or_default();
+                ttl_seconds = s.trim().parse::<u64>().ok();
+            }
             _ => {}
         }
     }
@@ -317,6 +334,7 @@ async fn parse_multipart(
         channel_id,
         mode,
         password,
+        ttl_seconds,
     })
 }
 
@@ -325,24 +343,44 @@ async fn insert_record(
     session_id: u32,
     cert_hash: Option<String>,
     uploader_name: Option<String>,
+    uploader_user_id: Option<i64>,
     parsed: ParsedUpload,
 ) -> Result<Json<UploadResponse>, ApiError> {
     let file_id = parsed.file_id;
     let mut nonce = [0u8; NONCE_BYTES];
     rand::thread_rng().fill_bytes(&mut nonce);
     let now_s = signing::now_unix_seconds();
-    let expiry_s = if state.config.delete_on_ttl {
-        now_s.saturating_add(state.config.ttl.as_secs())
-    } else {
-        NO_EXPIRY
-    };
+    let expiry_s = compute_expiry(
+        now_s,
+        state.config.delete_on_ttl,
+        state.config.ttl.as_secs(),
+        state.config.max_ttl_seconds,
+        parsed.ttl_seconds,
+    );
     let signed = signing::sign(state.signing_secret.as_ref(), &file_id, expiry_s, nonce);
 
-    let password_hash = match (parsed.mode, parsed.password.as_deref()) {
+    // Password files are encrypted at rest: keep the Argon2id verifier for auth
+    // and, additionally, derive a file key from the password to encrypt the
+    // blob in place.  Without the password the content is unrecoverable.
+    let (password_hash, enc_salt, enc_nonce) = match (parsed.mode, parsed.password.as_deref()) {
         (AccessMode::Password, Some(pw)) => {
-            Some(hash_password(pw).map_err(|_| ApiError::internal("failed to hash password"))?)
+            let hash =
+                hash_password(pw).map_err(|_| ApiError::internal("failed to hash password"))?;
+            let salt = crate::crypto::generate_enc_salt();
+            let prefix = crate::crypto::generate_nonce_prefix();
+            let key = crate::crypto::derive_file_key(pw, &salt)
+                .map_err(|_| ApiError::internal("key derivation failed"))?;
+            if let Err(e) = encrypt_blob_in_place(&parsed.blob_path, key, prefix).await {
+                let _ = tokio::fs::remove_file(&parsed.blob_path).await;
+                return Err(e);
+            }
+            (
+                Some(hash),
+                Some(hex::encode(salt)),
+                Some(hex::encode(prefix)),
+            )
         }
-        _ => None,
+        _ => (None, None, None),
     };
 
     let record = FileRecord {
@@ -366,6 +404,9 @@ async fn insert_record(
         downloaded_at: None,
         uploader_cert_hash: cert_hash,
         uploader_name,
+        enc_salt,
+        enc_nonce,
+        uploader_user_id,
     };
 
     if let Err(e) = state.storage.insert(&record) {
@@ -406,7 +447,80 @@ fn now_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn build_download_url(base: &str, file_id: &str, p: &signing::SignedParams) -> String {
+/// Resolve a file's absolute expiry (unix seconds) from the uploader's
+/// requested lifetime, the server default, and the configured maximum.
+///
+/// * `requested == Some(0)` - no expiry, unless a maximum is configured.
+/// * `requested == Some(secs)` - `secs`, clamped to `max_ttl` (when > 0).
+/// * `requested == None` - the server default (`default_ttl` when
+///   `delete_on_ttl`, otherwise no expiry), still clamped to `max_ttl`.
+///
+/// A configured `max_ttl` (> 0) is authoritative: no file may outlive it,
+/// even one that requested (or defaults to) no expiry.
+fn compute_expiry(
+    now_s: u64,
+    delete_on_ttl: bool,
+    default_ttl: u64,
+    max_ttl: u64,
+    requested: Option<u64>,
+) -> u64 {
+    let capped = |secs: u64| {
+        now_s.saturating_add(if max_ttl == 0 {
+            secs
+        } else {
+            secs.min(max_ttl)
+        })
+    };
+    let unbounded = || {
+        if max_ttl == 0 {
+            NO_EXPIRY
+        } else {
+            now_s.saturating_add(max_ttl)
+        }
+    };
+    match requested {
+        Some(0) => unbounded(),
+        Some(secs) => capped(secs),
+        None if delete_on_ttl => capped(default_ttl),
+        None => unbounded(),
+    }
+}
+
+/// Encrypt the plaintext blob at `blob_path` in place: stream-encrypt it into a
+/// sibling temp file, then atomically replace the original with the ciphertext.
+/// The (synchronous, CPU-bound) crypto runs on a blocking thread.
+async fn encrypt_blob_in_place(
+    blob_path: &Path,
+    key: Zeroizing<[u8; 32]>,
+    nonce_prefix: [u8; ENC_NONCE_PREFIX_BYTES],
+) -> Result<(), ApiError> {
+    let plain = blob_path.to_path_buf();
+    let temp = {
+        let mut s = blob_path.as_os_str().to_owned();
+        s.push(".enc.tmp");
+        PathBuf::from(s)
+    };
+    let temp_task = temp.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::crypto::encrypt_file(&plain, &temp_task, &key, &nonce_prefix)
+    })
+    .await
+    .map_err(|_| ApiError::internal("encryption task panicked"))?;
+    if let Err(e) = result {
+        let _ = tokio::fs::remove_file(&temp).await;
+        tracing::error!(error = %e, "upload: blob encryption failed");
+        return Err(ApiError::internal("failed to encrypt file"));
+    }
+    tokio::fs::rename(&temp, blob_path)
+        .await
+        .map_err(|e| ApiError::internal(format!("finalize encrypted blob: {e}")))?;
+    Ok(())
+}
+
+/// Build the public signed download URL.  Shared with the per-user
+/// "share link" endpoint so the link a user copies matches the one issued at
+/// upload time.
+pub(crate) fn build_download_url(base: &str, file_id: &str, p: &signing::SignedParams) -> String {
     format!(
         "{}/files/{}?ex={}&is={}&hm={}",
         base, file_id, p.ex, p.is, p.hm
@@ -423,6 +537,46 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use std::sync::Mutex;
+
+    const HOUR: u64 = 3_600;
+    const DAY: u64 = 86_400;
+    const MONTH: u64 = 30 * DAY;
+
+    #[test]
+    fn expiry_default_uses_server_ttl_when_unspecified() {
+        // No per-upload choice, TTL on, no cap -> default ttl.
+        assert_eq!(compute_expiry(1_000, true, DAY, 0, None), 1_000 + DAY);
+        // TTL off, no cap -> permanent.
+        assert_eq!(compute_expiry(1_000, false, DAY, 0, None), NO_EXPIRY);
+    }
+
+    #[test]
+    fn expiry_honours_requested_duration_uncapped() {
+        // User asks for a month; no cap -> exactly a month.
+        assert_eq!(
+            compute_expiry(1_000, true, DAY, 0, Some(MONTH)),
+            1_000 + MONTH
+        );
+        // User asks for no expiry; no cap -> permanent.
+        assert_eq!(compute_expiry(1_000, true, DAY, 0, Some(0)), NO_EXPIRY);
+    }
+
+    #[test]
+    fn expiry_clamps_to_configured_maximum() {
+        // Requested month, but capped at one day -> one day.
+        assert_eq!(
+            compute_expiry(1_000, true, HOUR, DAY, Some(MONTH)),
+            1_000 + DAY
+        );
+        // A "no expiry" request cannot beat the cap.
+        assert_eq!(compute_expiry(1_000, true, HOUR, DAY, Some(0)), 1_000 + DAY);
+        // Default also clamped; a request under the cap is honoured as-is.
+        assert_eq!(compute_expiry(1_000, false, HOUR, DAY, None), 1_000 + DAY);
+        assert_eq!(
+            compute_expiry(1_000, true, HOUR, DAY, Some(HOUR)),
+            1_000 + HOUR
+        );
+    }
 
     /// Test plugin context that returns true only when every flag in
     /// the requested mask is in `granted` for the requested channel.

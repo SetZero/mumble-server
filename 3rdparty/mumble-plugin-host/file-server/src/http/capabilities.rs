@@ -116,8 +116,10 @@ pub struct Limits {
     pub max_file_size_bytes: u64,
     /// Hard cap on the total bytes stored across all files.
     pub max_total_storage_bytes: u64,
-    /// File TTL in seconds (only meaningful when `features.file_ttl`).
+    /// Default file TTL in seconds (only meaningful when `features.file_ttl`).
     pub ttl_seconds: u64,
+    /// Maximum lifetime in seconds an uploader may request (`0` = no maximum).
+    pub max_ttl_seconds: u64,
 }
 
 /// Plugin self-identification.
@@ -168,6 +170,7 @@ impl CapabilitiesResponse {
                 max_file_size_bytes: cfg.max_file_size_bytes,
                 max_total_storage_bytes: cfg.max_total_storage_bytes,
                 ttl_seconds: cfg.ttl.as_secs(),
+                max_ttl_seconds: cfg.max_ttl_seconds,
             },
         }
     }

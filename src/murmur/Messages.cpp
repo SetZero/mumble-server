@@ -704,6 +704,11 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		sendMessage(uSource, m_onboardingConfig);
 	}
 
+	// Advertise the editable server-settings schema to root-Write admins so the
+	// Admin > Server Settings panel populates immediately (the helper enforces
+	// the permission + Fancy-version gate).
+	sendFancyServerSettings(uSource);
+
 	log(uSource, "Authenticated");
 
 	emit userConnected(uSource);
@@ -3643,6 +3648,239 @@ void Server::msgFancyOnboardingResponseDeliver(ServerUser *,
 
 
 // ---------------------------------------------------------------------------
+// Fancy Mumble: runtime server settings (IDs 152-153)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct CoreSettingDef {
+	const char *key;
+	const char *type; // string | text | bool | int | enum | country | password
+	const char *group;
+	const char *label;
+	bool secret;
+};
+
+// Core murmur settings editable at runtime.  Every key here is handled by
+// Server::setLiveConf, so a change is applied to the live server immediately.
+const CoreSettingDef CORE_SERVER_SETTINGS[] = {
+	{ "welcometext", "text", "General", "Welcome message", false },
+	{ "serverpassword", "password", "General", "Server password", true },
+	{ "bandwidth", "int", "General", "Max bandwidth (bits/s)", false },
+	{ "users", "int", "General", "Max users", false },
+	{ "usersperchannel", "int", "General", "Max users per channel", false },
+	{ "timeout", "int", "General", "Connection timeout (s)", false },
+	{ "allowping", "bool", "General", "Allow ping (public server list)", false },
+	{ "allowrecording", "bool", "General", "Allow recording", false },
+	{ "certrequired", "bool", "General", "Require client certificate", false },
+	{ "textmessagelength", "int", "Messages", "Max text message length", false },
+	{ "imagemessagelength", "int", "Messages", "Max image message length", false },
+	{ "allowhtml", "bool", "Messages", "Allow HTML in messages", false },
+	{ "messagelimit", "int", "Messages", "Message rate limit", false },
+	{ "messageburst", "int", "Messages", "Message burst limit", false },
+	{ "defaultchannel", "int", "Channels", "Default channel id", false },
+	{ "rememberchannel", "bool", "Channels", "Remember last channel", false },
+	{ "rememberchannelduration", "int", "Channels", "Remember-channel duration (s)", false },
+	{ "channelnestinglimit", "int", "Channels", "Channel nesting limit", false },
+	{ "channelcountlimit", "int", "Channels", "Channel count limit", false },
+	{ "opusthreshold", "int", "Audio", "Opus threshold (%)", false },
+	{ "suggestpushtotalk", "bool", "Suggestions", "Suggest push-to-talk", false },
+	{ "suggestpositional", "bool", "Suggestions", "Suggest positional audio", false },
+	{ "suggestversion", "string", "Suggestions", "Suggested client version", false },
+	{ "registername", "string", "Registration", "Server name", false },
+	{ "registerpassword", "password", "Registration", "Registration password", true },
+	{ "registerhostname", "string", "Registration", "Registration hostname", false },
+	{ "registerurl", "string", "Registration", "Registration URL", false },
+	{ "registerlocation", "country", "Registration", "Registration country", false },
+};
+
+bool isCoreSettingKey(const QString &key) {
+	for (const auto &def : CORE_SERVER_SETTINGS) {
+		if (key == QLatin1String(def.key)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Read a config value with the same DB -> murmur.ini fallback the plugin host
+// applies, so the panel shows the effective current value rather than an empty
+// box for settings that were configured via the ini file.
+QString readConfigEffective(Server *server, const std::string &key) {
+	QString value;
+	server->m_dbWrapper.getConfigurationTo(server->iServerNum, key, value);
+	if (value.isEmpty() && Meta::mp && Meta::mp->qsSettings) {
+		value = Meta::mp->qsSettings->value(QString::fromStdString(key)).toString();
+	}
+	return value;
+}
+
+// Append every enabled plugin's editable config settings (declared in its
+// client_manifest's `config_schema`) to `out`, prefixing each key with
+// `plugin.<name>.`.  Disabled / unloaded plugins contribute nothing, so the
+// list shrinks when a plugin is disabled.
+void appendPluginSettings(Server *server, MumbleProto::FancyServerSettings &out) {
+	if (!server->m_pluginHost) {
+		return;
+	}
+	QJsonParseError err{};
+	const QJsonDocument doc = QJsonDocument::fromJson(server->m_pluginHost->listPluginsJson(), &err);
+	if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+		return;
+	}
+	const QJsonArray plugins = doc.object().value(QStringLiteral("plugins")).toArray();
+	for (const QJsonValue &pv : plugins) {
+		const QJsonObject pobj = pv.toObject();
+		if (!pobj.value(QStringLiteral("enabled")).toBool(false)) {
+			continue;
+		}
+		const QString name = pobj.value(QStringLiteral("plugin_name")).toString();
+		if (name.isEmpty()) {
+			continue;
+		}
+		const QJsonDocument info =
+			QJsonDocument::fromJson(pobj.value(QStringLiteral("info_json")).toString().toUtf8());
+		if (!info.isObject()) {
+			continue;
+		}
+		const QJsonObject manifest = info.object().value(QStringLiteral("client_manifest")).toObject();
+		const QJsonArray schema    = manifest.value(QStringLiteral("config_schema")).toArray();
+		for (const QJsonValue &sv : schema) {
+			const QJsonObject sobj = sv.toObject();
+			const QString suffix   = sobj.value(QStringLiteral("key")).toString();
+			if (suffix.isEmpty()) {
+				continue;
+			}
+			const QString fullKey = QStringLiteral("plugin.%1.%2").arg(name, suffix);
+			const bool secret     = sobj.value(QStringLiteral("secret")).toBool(false);
+
+			auto *setting    = out.add_settings();
+			setting->set_key(fullKey.toStdString());
+			const QString type = sobj.value(QStringLiteral("type")).toString();
+			setting->set_type((type.isEmpty() ? QStringLiteral("string") : type).toStdString());
+			setting->set_group(name.toStdString());
+			setting->set_label(sobj.value(QStringLiteral("label")).toString().toStdString());
+			setting->set_secret(secret);
+			if (!secret) {
+				setting->set_value(readConfigEffective(server, fullKey.toStdString()).toStdString());
+			}
+			const QJsonArray opts = sobj.value(QStringLiteral("options")).toArray();
+			for (const QJsonValue &ov : opts) {
+				setting->add_options(ov.toString().toStdString());
+			}
+		}
+	}
+}
+
+void buildServerSettingsMessage(Server *server, MumbleProto::FancyServerSettings &out) {
+	for (const auto &def : CORE_SERVER_SETTINGS) {
+		auto *setting = out.add_settings();
+		setting->set_key(def.key);
+		setting->set_type(def.type);
+		setting->set_group(def.group);
+		setting->set_label(def.label);
+		setting->set_secret(def.secret);
+		if (!def.secret) {
+			setting->set_value(readConfigEffective(server, std::string(def.key)).toStdString());
+		}
+	}
+	appendPluginSettings(server, out);
+}
+
+} // namespace
+
+void Server::sendFancyServerSettings(ServerUser *u) {
+	if (!u || u->sState != ServerUser::Authenticated) {
+		return;
+	}
+	Channel *root = qhChannels.value(0);
+	if (!root || !hasPermission(u, root, ChanACL::Write)) {
+		return;
+	}
+	// Only Fancy clients can render this; the exact version is not gated
+	// because a client that lacks the feature simply drops the unknown
+	// message type (the crate version does not track per-feature support).
+	if (!u->m_FancyVersion.has_value()) {
+		return;
+	}
+	MumbleProto::FancyServerSettings msg;
+	buildServerSettingsMessage(this, msg);
+	msg.set_revision(m_serverSettingsRevision);
+	sendMessage(u, msg);
+}
+
+void Server::msgFancyServerSettings(ServerUser *, MumbleProto::FancyServerSettings &) {
+	// Server -> Client only; ignore inbound.
+}
+
+void Server::msgFancyServerSettingsUpdate(ServerUser *uSource,
+										  MumbleProto::FancyServerSettingsUpdate &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	Channel *root = qhChannels.value(0);
+	if (!root) {
+		return;
+	}
+	// Only users with Write permission on the root channel may change
+	// server settings (mirrors onboarding / ACL edits).
+	if (!hasPermission(uSource, root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+
+	QSet< QString > pluginsToReload;
+	int applied = 0;
+	for (int i = 0; i < msg.settings_size(); ++i) {
+		const QString key   = u8(msg.settings(i).key());
+		const QString value = msg.settings(i).has_value() ? u8(msg.settings(i).value()) : QString();
+		if (key.isEmpty()) {
+			continue;
+		}
+		if (key.startsWith(QStringLiteral("plugin."))) {
+			// plugin.<name>.<suffix>
+			const qsizetype firstDot  = key.indexOf(QLatin1Char('.'));
+			const qsizetype secondDot = key.indexOf(QLatin1Char('.'), firstDot + 1);
+			if (secondDot < 0) {
+				continue;
+			}
+			const QString pluginName = key.mid(firstDot + 1, secondDot - firstDot - 1);
+			m_dbWrapper.setConfiguration(iServerNum, key.toStdString(), value.toStdString());
+			if (!pluginName.isEmpty()) {
+				pluginsToReload.insert(pluginName);
+			}
+			++applied;
+		} else if (isCoreSettingKey(key)) {
+			m_dbWrapper.setConfiguration(iServerNum, key.toStdString(), value.toStdString());
+			setLiveConf(key, value);
+			++applied;
+		}
+		// Unknown keys are ignored.
+	}
+
+	// Reload any affected plugins so they re-read their (now updated) config.
+	if (m_pluginHost) {
+		for (const QString &name : pluginsToReload) {
+			m_pluginHost->setPluginEnabled(name, false);
+			m_pluginHost->setPluginEnabled(name, true);
+		}
+	}
+
+	++m_serverSettingsRevision;
+
+	// Re-broadcast the updated snapshot to every admin (the helper filters by
+	// permission + version).
+	for (ServerUser *u : qhUsers) {
+		sendFancyServerSettings(u);
+	}
+
+	log(uSource, QString("server settings updated (%1 change(s), revision %2)")
+					 .arg(applied)
+					 .arg(m_serverSettingsRevision));
+}
+
+
+// ---------------------------------------------------------------------------
 // Fancy Mumble: plugin admin (IDs 146-151) - introduced in 0.4.0
 // ---------------------------------------------------------------------------
 
@@ -3837,6 +4075,12 @@ void Server::msgFancyPluginAdminSetEnabled(ServerUser *uSource,
 						 .arg(name, QLatin1String(enabled ? "enabled" : "disabled")));
 		broadcastPluginAdminList(this);
 		broadcastPluginRegistry(this);
+		// A plugin enabling/disabling changes the editable settings list, so
+		// re-advertise it to every admin.
+		++m_serverSettingsRevision;
+		for (ServerUser *u : qhUsers) {
+			sendFancyServerSettings(u);
+		}
 	}
 }
 

@@ -74,8 +74,14 @@ pub struct FileServerConfig {
     pub storage_path: PathBuf,
     /// If `true`, files are deleted after `ttl_seconds`.
     pub delete_on_ttl: bool,
-    /// TTL applied to newly uploaded files (only when `delete_on_ttl`).
+    /// Default TTL applied to a newly uploaded file when the uploader does not
+    /// request a specific lifetime (only when `delete_on_ttl`).
     pub ttl: Duration,
+    /// Hard cap, in seconds, on the lifetime an uploader may request for a
+    /// file.  `0` means "no maximum" - uploads may pick any duration, including
+    /// no expiry.  When set, every upload's expiry is clamped to at most this
+    /// many seconds, so no file can outlive the cap.
+    pub max_ttl_seconds: u64,
     /// If `true`, files are deleted after the first successful download.
     pub delete_on_download: bool,
     /// If `true`, files are deleted when the uploader disconnects.
@@ -117,6 +123,7 @@ impl FileServerConfig {
                 .map_or_else(|| default_data_dir(PLUGIN_NAME), PathBuf::from),
             delete_on_ttl: parse_or(ctx, "delete_on_ttl", true)?,
             ttl: Duration::from_secs(parse_or(ctx, "ttl_seconds", 86_400_u64)?),
+            max_ttl_seconds: parse_or(ctx, "max_ttl_seconds", 0_u64)?,
             delete_on_download: parse_or(ctx, "delete_on_download", false)?,
             delete_on_disconnect: parse_or(ctx, "delete_on_disconnect", false)?,
             auth_rate_limit_max_failures: parse_or(ctx, "auth_rate_limit_max_failures", 5_u32)?,

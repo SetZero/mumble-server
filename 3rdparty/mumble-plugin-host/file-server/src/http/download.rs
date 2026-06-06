@@ -4,23 +4,36 @@
 //! For `mode=password` and `mode=session`, the client must additionally
 //! present a single-use ticket obtained from `POST /files/{id}/auth`.
 
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderName, HeaderValue, Response, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Response, StatusCode};
 use futures_core::Stream;
+use rand::RngCore;
 use serde::Deserialize;
 use tokio_util::io::ReaderStream;
+use zeroize::Zeroizing;
 
+use crate::crypto::ENC_NONCE_PREFIX_BYTES;
 use crate::http::common::ApiError;
 use crate::signing;
 use crate::state::AppState;
-use crate::storage::{AccessMode, Storage};
+use crate::storage::{AccessMode, FileRecord, Storage};
 use crate::tickets::ConsumeResult;
+
+/// The decoupled in-browser password-entry page (pure frontend).  Served when a
+/// password file is opened in a browser without a ticket.  `__CSP_NONCE__` is
+/// replaced per-response so the inline script runs under a strict nonce CSP.
+///
+/// This is the single-file build output of the React + MUI project in `web/`
+/// (see `web/README.md`).  The crate's `build.rs` regenerates it from source
+/// when a Node toolchain is available; otherwise the committed artifact is used.
+const PASSWORD_PAGE: &str = include_str!("../../web/dist/password.html");
 
 /// MIME types whose content browsers are safe to render inline.  This is
 /// an explicit allow-list - in particular `image/svg+xml` is **not**
@@ -61,6 +74,7 @@ pub async fn download(
     State(state): State<AppState>,
     Path(file_id): Path<String>,
     Query(q): Query<DownloadQuery>,
+    headers: HeaderMap,
 ) -> Result<Response<Body>, ApiError> {
     let now = signing::now_unix_seconds();
     let _nonce = signing::verify(
@@ -86,29 +100,43 @@ pub async fn download(
         return Err(ApiError::forbidden("invalid signature"));
     }
 
+    // Ephemeral file-decryption key, carried by the ticket for encrypted files.
+    let mut enc_key: Option<Zeroizing<[u8; 32]>> = None;
     if record.access_mode != AccessMode::Public {
-        let ticket = q.ticket.as_deref().ok_or_else(|| {
-            ApiError::unauthorized("missing ticket; call POST /files/{id}/auth first")
-        })?;
-        match state.tickets.consume(ticket, &file_id) {
-            ConsumeResult::Ok => {}
+        let Some(ticket) = q.ticket.as_deref() else {
+            // No ticket.  When a password file is opened in a *browser*, serve
+            // the password-entry page instead of a raw JSON error so the user
+            // can authenticate; API callers still get the JSON 401.
+            if record.access_mode == AccessMode::Password && accepts_html(&headers) {
+                return password_page_response();
+            }
+            return Err(ApiError::unauthorized(
+                "missing ticket; call POST /files/{id}/auth first",
+            ));
+        };
+        let (result, key) = state.tickets.consume(ticket, &file_id);
+        match result {
+            ConsumeResult::Ok => enc_key = key,
             ConsumeResult::WrongFile | ConsumeResult::NotFound => {
                 return Err(ApiError::forbidden("invalid or expired ticket"));
             }
         }
     }
 
-    stream_blob(state, record).await
+    stream_blob(state, record, enc_key).await
 }
 
 async fn stream_blob(
     state: AppState,
-    record: crate::storage::FileRecord,
+    record: FileRecord,
+    enc_key: Option<Zeroizing<[u8; 32]>>,
 ) -> Result<Response<Body>, ApiError> {
     let blob_path = state.storage.blob_path(&record.id);
-    let file = tokio::fs::File::open(&blob_path)
-        .await
-        .map_err(|_| ApiError::not_found("file blob missing"))?;
+    // Fail early with 404 if the blob is gone (for encrypted files the bytes are
+    // opened on the blocking decrypt task, so check existence up front here).
+    if tokio::fs::metadata(&blob_path).await.is_err() {
+        return Err(ApiError::not_found("file blob missing"));
+    }
 
     if let Err(e) = state.storage.mark_downloaded(&record.id, now_unix_ms()) {
         tracing::warn!(error = %e, "failed to mark file as downloaded");
@@ -119,8 +147,23 @@ async fn stream_blob(
         .delete_on_download
         .then(|| DeleteOnDrop::new(state.storage.clone(), record.id.clone()));
 
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(GuardedStream::new(stream, delete_guard));
+    let body = if record.enc_salt.is_some() {
+        // Encrypted at rest: decrypt on the fly with the password-derived key.
+        let nonce_hex = record
+            .enc_nonce
+            .as_deref()
+            .ok_or_else(|| ApiError::internal("encrypted file missing nonce"))?;
+        let prefix = decode_nonce_prefix(nonce_hex)?;
+        let key = enc_key.ok_or_else(|| ApiError::forbidden("missing decryption key"))?;
+        let stream = decrypt_stream(blob_path, key, prefix);
+        Body::from_stream(GuardedStream::new(stream, delete_guard))
+    } else {
+        // Plaintext (public / session / pre-encryption legacy) blob.
+        let file = tokio::fs::File::open(&blob_path)
+            .await
+            .map_err(|_| ApiError::not_found("file blob missing"))?;
+        Body::from_stream(GuardedStream::new(ReaderStream::new(file), delete_guard))
+    };
 
     let disposition = build_content_disposition(&record.filename, &record.mime_type);
     let mime = HeaderValue::from_str(&record.mime_type)
@@ -249,6 +292,102 @@ fn now_unix_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Whether the request looks like a browser navigation (accepts HTML).  Used to
+/// decide between serving the password-entry page vs. a JSON error.
+fn accepts_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|a| a.contains("text/html"))
+        .unwrap_or(false)
+}
+
+/// Render the in-browser password-entry page with a fresh per-response CSP
+/// nonce so the page's single inline script can run while everything else stays
+/// blocked.  The template is otherwise served verbatim (it reads the file id +
+/// signed params from `window.location`), keeping it fully decoupled.
+fn password_page_response() -> Result<Response<Body>, ApiError> {
+    let mut nonce_bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = hex::encode(nonce_bytes);
+    let html = PASSWORD_PAGE.replace("__CSP_NONCE__", &nonce);
+    let csp = format!(
+        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; \
+         connect-src 'self'; form-action 'self'; img-src 'self' data:; \
+         base-uri 'none'; frame-ancestors 'none'"
+    );
+    let csp_value =
+        HeaderValue::from_str(&csp).map_err(|_| ApiError::internal("csp header build"))?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )
+        .header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))
+        .header(
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        )
+        .header(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        )
+        .header(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("no-referrer"),
+        )
+        .header(
+            HeaderName::from_static("content-security-policy"),
+            csp_value,
+        )
+        .body(Body::from(html))
+        .map_err(|e| ApiError::internal(format!("response build: {e}")))
+}
+
+/// Decode the hex STREAM nonce prefix stored on the record.
+fn decode_nonce_prefix(hex_str: &str) -> Result<[u8; ENC_NONCE_PREFIX_BYTES], ApiError> {
+    hex::decode(hex_str)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| ApiError::internal("corrupt encryption nonce"))
+}
+
+/// Stream the decrypted plaintext of an encrypted blob.  A blocking task reads
+/// and decrypts chunk by chunk (memory bounded to ~one chunk) and forwards
+/// plaintext over a small channel; a tag failure surfaces as a stream error
+/// that truncates the body.
+fn decrypt_stream(
+    blob_path: PathBuf,
+    key: Zeroizing<[u8; 32]>,
+    nonce_prefix: [u8; ENC_NONCE_PREFIX_BYTES],
+) -> ChannelStream {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    drop(tokio::task::spawn_blocking(move || {
+        let result = crate::crypto::decrypt_file(&blob_path, &key, &nonce_prefix, |chunk| {
+            tx.blocking_send(Ok(Bytes::from(chunk)))
+                // Receiver gone (client disconnected): stop decrypting.
+                .map_err(|_| crate::crypto::CryptoError::Io)
+        });
+        if let Err(e) = result {
+            let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
+        }
+    }));
+    ChannelStream { rx }
+}
+
+/// [`Stream`] adapter over the decrypt channel's receiver.
+struct ChannelStream {
+    rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
+}
+
+impl Stream for ChannelStream {
+    type Item = Result<Bytes, std::io::Error>;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.rx.poll_recv(cx)
+    }
 }
 
 /// Stream wrapper that owns an optional [`DeleteOnDrop`] guard.  When

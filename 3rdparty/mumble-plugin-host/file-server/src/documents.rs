@@ -198,8 +198,7 @@ impl DocumentsStore {
         // Collect blob ids before removing the rows so the files can be cleaned
         // up afterwards (outside the transaction).
         let blob_ids: Vec<String> = {
-            let mut stmt =
-                conn.prepare("SELECT id FROM document_revisions WHERE doc_name = ?1")?;
+            let mut stmt = conn.prepare("SELECT id FROM document_revisions WHERE doc_name = ?1")?;
             let rows = stmt.query_map(params![name], |row| row.get::<_, String>(0))?;
             let mut ids = Vec::new();
             for r in rows {
@@ -331,12 +330,18 @@ mod tests {
     #[test]
     fn delete_removes_document_and_revisions() {
         let (_dir, store) = open_store();
-        let _ = store.put("doc", b"v1", Some("Alice"), Some("certA")).unwrap();
+        let _ = store
+            .put("doc", b"v1", Some("Alice"), Some("certA"))
+            .unwrap();
         let _ = store.put("doc", b"v2", None, None).unwrap();
         assert!(store.delete("doc").unwrap());
         assert_eq!(store.get_latest("doc").unwrap(), None);
         assert!(store.list_revisions("doc").unwrap().is_empty());
-        assert!(store.list_documents().unwrap().iter().all(|d| d.name != "doc"));
+        assert!(store
+            .list_documents()
+            .unwrap()
+            .iter()
+            .all(|d| d.name != "doc"));
         // Deleting a non-existent document is a no-op that reports `false`.
         assert!(!store.delete("doc").unwrap());
     }
@@ -344,7 +349,9 @@ mod tests {
     #[test]
     fn owner_recorded_on_first_revision_only() {
         let (_dir, store) = open_store();
-        let _ = store.put("doc", b"v1", Some("Alice"), Some("certA")).unwrap();
+        let _ = store
+            .put("doc", b"v1", Some("Alice"), Some("certA"))
+            .unwrap();
         // A later revision by someone else must NOT reassign the owner.
         let _ = store.put("doc", b"v2", Some("Bob"), Some("certB")).unwrap();
         let docs = store.list_documents().unwrap();

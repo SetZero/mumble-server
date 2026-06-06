@@ -41,12 +41,18 @@ impl ServerHandle {
             let _ = tx.send(());
         }
         if let Some(mut task) = self.cleanup_task.take() {
-            if tokio::time::timeout(SHUTDOWN_GRACE, &mut task).await.is_err() {
+            if tokio::time::timeout(SHUTDOWN_GRACE, &mut task)
+                .await
+                .is_err()
+            {
                 task.abort();
             }
         }
         if let Some(mut task) = self.http_task.take() {
-            if tokio::time::timeout(SHUTDOWN_GRACE, &mut task).await.is_err() {
+            if tokio::time::timeout(SHUTDOWN_GRACE, &mut task)
+                .await
+                .is_err()
+            {
                 // Graceful shutdown stalled on a hung connection - force it so
                 // the bound socket is released and a re-enable can re-bind.
                 task.abort();
@@ -198,7 +204,12 @@ async fn self_test_capabilities(target: SocketAddr) -> Result<u16, String> {
     line.split_whitespace()
         .nth(1)
         .and_then(|s| s.parse::<u16>().ok())
-        .ok_or_else(|| format!("malformed status line: {:?}", line.lines().next().unwrap_or("")))
+        .ok_or_else(|| {
+            format!(
+                "malformed status line: {:?}",
+                line.lines().next().unwrap_or("")
+            )
+        })
 }
 
 fn spawn_cleanup_task(

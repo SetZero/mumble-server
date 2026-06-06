@@ -29,6 +29,9 @@ argon2 = "0.5"
 rand = "0.8"
 subtle = "2"
 hex = "0.4"
+# AEAD encryption-at-rest for password-protected files (XChaCha20-Poly1305 STREAM)
+chacha20poly1305 = { version = "0.10", features = ["stream"] }
+zeroize = "1"
 
 # JWT for session auth
 jsonwebtoken = "9"

@@ -13,6 +13,8 @@ use base64::Engine;
 use serde::Serialize;
 use std::net::SocketAddr;
 
+use zeroize::Zeroizing;
+
 use crate::auth::{verify_password, verify_session_jwt};
 use crate::http::common::{parse_bearer, ApiError};
 use crate::rate_limit::LimitDecision;
@@ -53,9 +55,11 @@ pub async fn pre_auth(
 
     let result = perform_auth(&state, &file_id, &headers);
     match result {
-        Ok(cert_hash) => {
+        Ok((cert_hash, enc_key)) => {
             state.auth_rate_limiter.clear(&peer_key);
-            let ticket = state.tickets.issue(&file_id, DEFAULT_TICKET_TTL, cert_hash);
+            let ticket = state
+                .tickets
+                .issue(&file_id, DEFAULT_TICKET_TTL, cert_hash, enc_key);
             Ok(Json(AuthResponse {
                 ticket,
                 ttl_seconds: DEFAULT_TICKET_TTL.as_secs(),
@@ -76,11 +80,16 @@ pub async fn pre_auth(
     }
 }
 
+/// On success returns `(cert_hash, enc_key)`: the authenticated identity (for
+/// session mode) and the ephemeral file-decryption key (for encrypted
+/// password files).
+type AuthOutcome = (Option<String>, Option<Zeroizing<[u8; 32]>>);
+
 fn perform_auth(
     state: &AppState,
     file_id: &str,
     headers: &HeaderMap,
-) -> Result<Option<String>, ApiError> {
+) -> Result<AuthOutcome, ApiError> {
     let record = state
         .storage
         .get(file_id)
@@ -92,21 +101,37 @@ fn perform_auth(
             "public files do not require pre-auth; GET directly",
         )),
         AccessMode::Password => {
-            verify_password_credential(headers, record.password_hash.as_deref())?;
-            Ok(None)
+            let password = verify_password_credential(headers, record.password_hash.as_deref())?;
+            // Encrypted at rest: derive the decryption key so the GET can
+            // decrypt.  Legacy/plaintext password files have no `enc_salt`.
+            let enc_key = match record.enc_salt.as_deref() {
+                Some(salt_hex) => {
+                    let salt = hex::decode(salt_hex)
+                        .map_err(|_| ApiError::internal("corrupt encryption salt"))?;
+                    Some(
+                        crate::crypto::derive_file_key(&password, &salt)
+                            .map_err(|_| ApiError::internal("key derivation failed"))?,
+                    )
+                }
+                None => None,
+            };
+            Ok((None, enc_key))
         }
         AccessMode::Session => {
             let claims = verify_session_credential(state, headers)?;
             ensure_channel_access(state, &claims, record.channel_id, record.server_id)?;
-            Ok(Some(claims.sub))
+            Ok((Some(claims.sub), None))
         }
     }
 }
 
+/// Verify the password from the `Authorization` header against the stored
+/// Argon2id hash and return the validated plaintext (zeroized on drop) so the
+/// caller can derive the file key.
 fn verify_password_credential(
     headers: &HeaderMap,
     stored_hash: Option<&str>,
-) -> Result<(), ApiError> {
+) -> Result<Zeroizing<String>, ApiError> {
     let stored =
         stored_hash.ok_or_else(|| ApiError::internal("password file missing stored hash"))?;
     let raw = headers
@@ -114,13 +139,15 @@ fn verify_password_credential(
         .and_then(|v| v.to_str().ok())
         .and_then(parse_bearer)
         .ok_or_else(|| ApiError::unauthorized("missing Authorization header"))?;
-    let plaintext_bytes = URL_SAFE_NO_PAD
-        .decode(raw)
-        .map_err(|_| ApiError::unauthorized("malformed credential"))?;
+    let plaintext_bytes = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(raw)
+            .map_err(|_| ApiError::unauthorized("malformed credential"))?,
+    );
     let plaintext = std::str::from_utf8(&plaintext_bytes)
         .map_err(|_| ApiError::unauthorized("malformed credential"))?;
     verify_password(plaintext, stored).map_err(|_| ApiError::forbidden("invalid password"))?;
-    Ok(())
+    Ok(Zeroizing::new(plaintext.to_owned()))
 }
 
 fn verify_session_credential(

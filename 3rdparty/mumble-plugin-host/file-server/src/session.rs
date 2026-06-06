@@ -21,6 +21,10 @@ pub struct SessionInfo {
     /// Display name of the connected user (captured at connect time so an
     /// uploaded file's owner can be shown in the admin dashboard).
     pub username: String,
+    /// Registered user id (`>= 0`), or `-1` for unregistered guests.  Captured
+    /// at connect so uploads can be stamped with a stable ownership key that
+    /// survives certificate regeneration across sessions.
+    pub user_id: i32,
 }
 
 /// Thread-safe map of session id -> info.
@@ -96,6 +100,7 @@ mod tests {
             cert_hash: "hash".into(),
             upload_token: token.into(),
             username: "tester".into(),
+            user_id: -1,
         }
     }
 

@@ -1,0 +1,13 @@
+# Node toolchain
+node_modules/
+*.local
+.vite/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Vite build output. The single-file `password.html` is intentionally committed
+# (it is the fallback artifact `include_str!`'d by the crate when no Node
+# toolchain is present at build time); everything else under dist/ is generated.
+dist/*
+!dist/password.html

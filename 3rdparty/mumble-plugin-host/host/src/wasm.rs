@@ -643,6 +643,7 @@ fn wit_manifest_to_native(m: wit_ui::ClientManifest) -> ncm::ClientManifest {
             .map(wit_capability_to_native)
             .collect(),
         settings_panels: Vec::new(),
+        config_schema: Vec::new(),
     }
 }
 
