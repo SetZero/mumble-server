@@ -992,6 +992,12 @@ void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSessio
 		qDebug("pchat: key holder reported (auto-verified) - channel=%u cert_hash=%s by session=%u",
 			   channelId, certHash.c_str(), senderSession);
 
+		// Deliver the sender keys of members who were already present so this
+		// late joiner can decrypt their messages. Per-sender SKDMs are otherwise
+		// only relayed live at distribution time to already-verified sessions, so
+		// without this an earlier member's key never reaches a later joiner.
+		sendStoredSenderKeyDistributions(senderSession, channelId, certHash);
+
 		// Auto-fetch after verification so the client receives stored messages.
 		MumbleProto::PchatFetch autoFetch;
 		autoFetch.set_channel_id(channelId);
@@ -1361,6 +1367,30 @@ void PersistentChatManager::handlePchatPin(unsigned int senderSession, const Mum
 
 std::string PersistentChatManager::skdmKey(unsigned int channelId, const std::string &senderHash) {
 	return std::to_string(channelId) + ":" + senderHash;
+}
+
+void PersistentChatManager::sendStoredSenderKeyDistributions(unsigned int sessionId, unsigned int channelId,
+															 const std::string &recipientCertHash) {
+	const std::string prefix = std::to_string(channelId) + ":";
+	for (const auto &[key, distribution] : m_senderKeyDistributions) {
+		if (key.compare(0, prefix.size(), prefix) != 0) {
+			continue;
+		}
+		const std::string senderHash = key.substr(prefix.size());
+		// A session never needs its own sender key relayed back to it.
+		if (senderHash == recipientCertHash) {
+			continue;
+		}
+
+		MumbleProto::PchatSenderKeyDistribution relay;
+		relay.set_channel_id(channelId);
+		relay.set_sender_hash(senderHash);
+		relay.set_distribution(distribution);
+		m_bridge.sendPchatSenderKeyDistribution(sessionId, relay);
+
+		qDebug("pchat: delivered stored SKDM sender=%s channel=%u to newly-verified session=%u",
+			   senderHash.c_str(), channelId, sessionId);
+	}
 }
 
 void PersistentChatManager::handlePchatSenderKeyDistribution(unsigned int senderSession,
