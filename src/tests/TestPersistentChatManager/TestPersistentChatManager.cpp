@@ -397,6 +397,11 @@ private slots:
 	void takeover_fullWipeDeletesMessagesAndHolders();
 	void takeover_keyOnlyKeepsMessages();
 	void takeover_broadcastsHoldersOnNewVerification();
+
+	// ---- Signal sender-key distribution to late joiners ----
+
+	void senderKeyDistribution_deliveredToLateJoiner();
+	void senderKeyDistribution_notEchoedToOwnSender();
 };
 
 // ---- handlePchatMessage tests ----
@@ -1170,6 +1175,89 @@ void TestPersistentChatManager::takeover_broadcastsHoldersOnNewVerification() {
 	}
 	QVERIFY(listToSession30 >= 1);
 	QVERIFY(listToSession10 >= 1);
+}
+
+// ---- Signal sender-key distribution to late joiners ----
+
+void TestPersistentChatManager::senderKeyDistribution_deliveredToLateJoiner() {
+	setupManager();
+	// Channel 42 is a SignalV1 channel; sessions auto-verify on key-holder
+	// report (no HMAC challenge) because Signal uses per-sender keys.
+	m_bridge->channelModes[42] = 4; // SignalV1
+
+	// Session 10 (bob) joins, auto-verifies, and distributes his sender key.
+	m_bridge->certHashes[10]          = "abc123";
+	m_bridge->hashToSession["abc123"] = 10;
+	m_bridge->fancyClients[10]        = true;
+	m_bridge->registeredUsers[10]     = true;
+
+	MumbleProto::PchatKeyHolderReport bobReport;
+	bobReport.set_channel_id(42);
+	bobReport.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(10, bobReport);
+
+	MumbleProto::PchatSenderKeyDistribution bobSkdm;
+	bobSkdm.set_channel_id(42);
+	bobSkdm.set_distribution("bob-sender-key");
+	m_mgr->handlePchatSenderKeyDistribution(10, bobSkdm);
+
+	m_bridge->reset();
+
+	// Session 20 (carol) joins LATER. On verification she must receive bob's
+	// already-stored sender key so she can decrypt his messages - without this
+	// an earlier member's key never reaches a later joiner.
+	m_bridge->certHashes[20]          = "def456";
+	m_bridge->hashToSession["def456"] = 20;
+	m_bridge->fancyClients[20]        = true;
+	m_bridge->registeredUsers[20]     = true;
+
+	MumbleProto::PchatKeyHolderReport carolReport;
+	carolReport.set_channel_id(42);
+	carolReport.set_cert_hash("def456");
+	m_mgr->handlePchatKeyHolderReport(20, carolReport);
+
+	bool gotBobKey = false;
+	for (const auto &pair : m_bridge->sentSenderKeyDistributions) {
+		if (pair.first == 20 && pair.second.sender_hash() == "abc123") {
+			QCOMPARE(pair.second.channel_id(), 42u);
+			QCOMPARE(pair.second.distribution(), std::string("bob-sender-key"));
+			gotBobKey = true;
+		}
+	}
+	QVERIFY(gotBobKey);
+}
+
+void TestPersistentChatManager::senderKeyDistribution_notEchoedToOwnSender() {
+	setupManager();
+	m_bridge->channelModes[42] = 4; // SignalV1
+
+	m_bridge->certHashes[10]          = "abc123";
+	m_bridge->hashToSession["abc123"] = 10;
+	m_bridge->fancyClients[10]        = true;
+	m_bridge->registeredUsers[10]     = true;
+
+	// Bob joins, verifies, and distributes his sender key (now the only stored
+	// SKDM for the channel).
+	MumbleProto::PchatKeyHolderReport bobReport;
+	bobReport.set_channel_id(42);
+	bobReport.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(10, bobReport);
+
+	MumbleProto::PchatSenderKeyDistribution bobSkdm;
+	bobSkdm.set_channel_id(42);
+	bobSkdm.set_distribution("bob-sender-key");
+	m_mgr->handlePchatSenderKeyDistribution(10, bobSkdm);
+
+	m_bridge->reset();
+
+	// Bob re-verifies (e.g. a re-report). The only stored SKDM is his own, so he
+	// must NOT be sent his own sender key back.
+	m_mgr->handlePchatKeyHolderReport(10, bobReport);
+
+	for (const auto &pair : m_bridge->sentSenderKeyDistributions) {
+		QVERIFY2(!(pair.first == 10 && pair.second.sender_hash() == "abc123"),
+				 "a session must not receive its own sender key");
+	}
 }
 
 QTEST_MAIN(TestPersistentChatManager)
