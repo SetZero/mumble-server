@@ -593,7 +593,7 @@ bool MetaParams::loadSSLSettings() {
 		if (ql.size() > 0) {
 			tmpIntermediates = ql;
 			qCritical("MetaParams: Adding %lld intermediate certificates from certificate file.",
-					  static_cast< qsizetype >(ql.size()));
+					  static_cast< long long >(ql.size()));
 		}
 	}
 

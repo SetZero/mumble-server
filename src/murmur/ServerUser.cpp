@@ -51,7 +51,7 @@ BandwidthRecord::BandwidthRecord() {
 bool BandwidthRecord::addFrame(int size, int maxpersec) {
 	QMutexLocker ml(&qmMutex);
 
-	long elapsed = a_qtWhen[iRecNum].elapsed().count();
+	qint64 elapsed = a_qtWhen[iRecNum].elapsed().count();
 
 	if (elapsed == 0)
 		return false;

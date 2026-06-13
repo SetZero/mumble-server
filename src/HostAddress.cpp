@@ -50,7 +50,7 @@ HostAddress::HostAddress(const QByteArray &address) {
 		m_byteRepresentation.fill(0);
 	} else {
 		for (unsigned int i = 0; i < m_byteRepresentation.size(); ++i) {
-			m_byteRepresentation[i] = static_cast< unsigned char >(address[i]);
+			m_byteRepresentation[i] = static_cast< unsigned char >(address[static_cast< qsizetype >(i)]);
 		}
 	}
 }
