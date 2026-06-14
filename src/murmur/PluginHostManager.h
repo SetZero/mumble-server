@@ -49,6 +49,7 @@ public:
 	// session/name/hash out of the User) and the unified inbound-plugin event.
 	void onUserConnected(Server &, const User *user) override;
 	void onUserDisconnected(Server &, const User *user) override;
+	void onUserStateChanged(Server &, const User *user) override;
 	void onPluginMessage(Server &, const PluginInbound &in) override;
 
         /// Build the PluginRegistry message for the currently loaded
@@ -146,6 +147,10 @@ private:
         /// bridge.  Populated once at startup (read-only thereafter, so the
         /// callback thread can look up without locking).
         QHash< QString, RequestResponseHandler > m_responseHandlers;
+        /// Last registered user_id announced to the host per session, so
+        /// onUserStateChanged re-announces a client only when its registration
+        /// actually changed (not on every mute/move/comment).
+        QHash< uint32_t, int64_t > m_lastUserId;
 };
 
 #endif // PLUGIN_HOST_MANAGER_H_
