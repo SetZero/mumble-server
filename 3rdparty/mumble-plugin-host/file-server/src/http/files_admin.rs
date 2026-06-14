@@ -17,12 +17,12 @@
 //! * `GET    /admin/files/{id}/raw`     - stream raw bytes (admin preview)
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Response, StatusCode};
 use axum::routing::get;
 use axum::{Json, Router};
 use mumble_plugin_api::Permissions;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 
 use crate::auth::verify_session_jwt;
@@ -139,6 +139,7 @@ pub fn router() -> Router<AppState> {
             "/admin/documents/{name}",
             axum::routing::delete(delete_document),
         )
+        .route("/admin/private-storage", get(list_private))
 }
 
 /// Verify the request comes from a server admin (Write on the root channel).
@@ -205,6 +206,57 @@ pub async fn list_documents(
         .list_documents()
         .map_err(|e| ApiError::internal(format!("documents: {e}")))?;
     Ok(Json(AdminDocumentsResponse { documents }))
+}
+
+/// Query for `GET /admin/private-storage` (optional key-prefix filter).
+#[derive(Debug, Deserialize)]
+pub struct PrivateQuery {
+    /// Only return entries whose key starts with this prefix (e.g. `calendar`).
+    pub prefix: Option<String>,
+}
+
+/// One per-user private-storage blob, surfaced to the admin dashboard.
+#[derive(Debug, Serialize)]
+pub struct PrivateUsageEntry {
+    /// Durable `"<server_id>:<user_id>"` namespace the blob belongs to.
+    pub scope: String,
+    /// Storage key (e.g. `calendar`).
+    pub key: String,
+    /// Blob size in bytes.
+    pub size_bytes: i64,
+    /// Last-updated time (unix millis).
+    pub updated_at: i64,
+}
+
+/// Response for `GET /admin/private-storage`.
+#[derive(Debug, Serialize)]
+pub struct PrivateUsageResponse {
+    /// One entry per stored private blob.
+    pub entries: Vec<PrivateUsageEntry>,
+}
+
+/// `GET /admin/private-storage[?prefix=calendar]` - per-user private-store usage
+/// (e.g. each user's calendar blob and its size) for the admin dashboard.
+pub async fn list_private(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<PrivateQuery>,
+) -> Result<Json<PrivateUsageResponse>, ApiError> {
+    require_admin(&state, &headers)?;
+    let rows = state
+        .private_store
+        .list_usage(q.prefix.as_deref())
+        .map_err(|e| ApiError::internal(format!("private-store: {e}")))?;
+    let entries = rows
+        .into_iter()
+        .map(|(scope, key, size_bytes, updated_at)| PrivateUsageEntry {
+            scope,
+            key,
+            size_bytes,
+            updated_at,
+        })
+        .collect();
+    Ok(Json(PrivateUsageResponse { entries }))
 }
 
 /// `DELETE /admin/documents/{name}` - delete a persisted live-doc document and

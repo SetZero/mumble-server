@@ -81,6 +81,35 @@ impl PrivateStore {
         }
         Ok(out)
     }
+
+    /// Aggregate usage across all namespaces: `(scope, key, size_bytes, updated_at)`,
+    /// optionally restricted to keys starting with `prefix`. Powers the admin
+    /// dashboard (e.g. listing each user's calendar blob and its size). `scope`
+    /// is the durable `"<server_id>:<user_id>"` namespace the blob is stored under.
+    pub fn list_usage(
+        &self,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, String, i64, i64)>, StorageError> {
+        let conn = self.db.lock().map_err(|_| poisoned_mutex_err())?;
+        let like = prefix.map(|p| format!("{p}%"));
+        let mut stmt = conn.prepare(
+            "SELECT cert_hash, key, length(blob), updated_at FROM private_storage \
+             WHERE (?1 IS NULL OR key LIKE ?1) ORDER BY cert_hash ASC, key ASC",
+        )?;
+        let rows = stmt.query_map(params![like], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
 }
 
 fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
