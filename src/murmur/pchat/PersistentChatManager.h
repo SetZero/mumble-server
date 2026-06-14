@@ -342,6 +342,14 @@ private:
 
 	/// Build a key for m_senderKeyDistributions.
 	static std::string skdmKey(unsigned int channelId, const std::string &senderHash);
+
+	/// Send every stored sender-key distribution for `channelId` to `sessionId`
+	/// (skipping `recipientCertHash`'s own key).  Called when a session becomes
+	/// verified so a late joiner receives the sender keys of members who were
+	/// already present - their SKDMs are otherwise only relayed live, at
+	/// distribution time, to sessions that were already verified.
+	void sendStoredSenderKeyDistributions(unsigned int sessionId, unsigned int channelId,
+										  const std::string &recipientCertHash);
 };
 
 } // namespace pchat

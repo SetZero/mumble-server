@@ -3437,7 +3437,20 @@ void Server::msgFancyTypingIndicator(ServerUser *uSource, MumbleProto::FancyTypi
 
 void Server::msgFancyLinkPreviewRequest(ServerUser *uSource, MumbleProto::FancyLinkPreviewRequest &msg) {
 	MSG_SETUP(ServerUser::Authenticated);
-	RATELIMIT(uSource);
+
+	// A link-preview request is emitted by the client immediately after the chat
+	// message that contains the URL(s). The default general-purpose leaky bucket
+	// (1 msg/s sustained, 5 burst) is shared with text messages and the whole
+	// connect/sync control-message flurry, so it is routinely near capacity by the
+	// time a message is sent - the trailing preview request then trips the limit
+	// and is dropped silently, leaving no preview. This request merely drives the
+	// `fancy-link-preview` plugin, so - exactly like the plugin-data relay and the
+	// draw-stroke overlay above - it uses the dedicated higher-rate plugin bucket
+	// (4 msg/s, 15 burst by default; tunable via `pluginmessagelimit` /
+	// `pluginmessageburst`) instead of contending for the chat-message bucket.
+	if (uSource->m_pluginMessageBucket.ratelimit(1)) {
+		return;
+	}
 
 	if (!m_linkPreviewBridge)
 		return;

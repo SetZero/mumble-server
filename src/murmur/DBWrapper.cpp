@@ -1470,7 +1470,7 @@ unsigned int DBWrapper::getLastChannelID(unsigned int serverID, unsigned int use
 		userData.lastDisconnect -= serverUptimeSecs;
 	}
 
-	long inactiveSeconds =
+	long long inactiveSeconds =
 		std::chrono::duration_cast< std::chrono::seconds >(std::chrono::system_clock::now() - userData.lastDisconnect)
 			.count();
 

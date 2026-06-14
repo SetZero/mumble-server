@@ -1895,6 +1895,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mumble-calendar"
+version = "0.1.0"
+dependencies = [
+ "abi_stable",
+ "mumble-plugin-api",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "mumble-file-server"
 version = "0.1.0"
 dependencies = [

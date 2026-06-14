@@ -217,7 +217,7 @@ namespace db {
 			}
 
 			try {
-				size = std::stoull(strRepr.substr(i + 1, strRepr.size() - 1));
+				size = static_cast< std::size_t >(std::stoull(strRepr.substr(i + 1, strRepr.size() - 1)));
 			} catch (const std::invalid_argument &e) {
 				throw UnknownDataTypeException("Size of data type \"" + strRepr
 											   + "\" could not be parsed: " + e.what());

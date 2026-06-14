@@ -74,7 +74,7 @@ fn caller_identity(
             "viewing your shared files requires a certificate identity",
         ));
     }
-    let uid = (claims.uid >= 0).then(|| i64::from(claims.uid));
+    let uid = (claims.uid >= 0).then_some(claims.uid);
     Ok((claims.sub, uid))
 }
 

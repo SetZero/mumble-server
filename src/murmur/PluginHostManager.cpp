@@ -61,11 +61,33 @@ PluginHostManager::~PluginHostManager() {
 }
 
 void PluginHostManager::onUserConnected(Server &, const User *user) {
+	m_lastUserId.insert(user->uiSession, static_cast< int64_t >(user->iId));
 	onClientConnected(user->uiSession, user->qsName, user->qsHash, static_cast< int64_t >(user->iId));
 }
 
 void PluginHostManager::onUserDisconnected(Server &, const User *user) {
+	m_lastUserId.remove(user->uiSession);
 	onClientDisconnected(user->uiSession);
+}
+
+void PluginHostManager::onUserStateChanged(Server &, const User *user) {
+	if (!m_handle || !user) {
+		return;
+	}
+	// A user can register (or change registration) mid-session; the registered
+	// user_id only reaches plugins through the connect handshake, so re-announce
+	// the client to the host whenever it changes. Relay plugins (e.g.
+	// fancy-calendar) key routing on a stable user_id and would otherwise keep
+	// the stale connect-time id (e.g. -1 for a guest) until the user reconnects.
+	// Gate on an actual id change so the frequent state changes (mute, deafen,
+	// channel move, comment) do not re-announce on every update.
+	const int64_t userId = static_cast< int64_t >(user->iId);
+	const int64_t previous = m_lastUserId.value(user->uiSession, -2);
+	if (userId == previous) {
+		return;
+	}
+	m_lastUserId.insert(user->uiSession, userId);
+	onClientConnected(user->uiSession, user->qsName, user->qsHash, userId);
 }
 
 void PluginHostManager::onPluginMessage(Server &, const PluginInbound &in) {

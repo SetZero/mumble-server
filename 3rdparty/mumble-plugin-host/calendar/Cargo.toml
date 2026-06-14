@@ -1,0 +1,29 @@
+# =========================================================================
+# mumble-calendar: Calendar / scheduling relay plugin for Fancy Mumble.
+#
+# A thin, stateless-on-disk relay: clients own their calendar (persisted in
+# the file-server per-user private store) and exchange shared meeting data over
+# the generic PluginMessage channel (wire ID 200). This plugin routes those
+# messages to the right participants' online sessions and replays known events
+# to a user when they connect. No port, no disk storage.
+# =========================================================================
+
+[package]
+name = "mumble-calendar"
+version = "0.1.0"
+edition = "2021"
+description = "Calendar/scheduling relay plugin for Fancy Mumble"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mumble-plugin-api = { path = "../api" }
+abi_stable = "0.11"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true
