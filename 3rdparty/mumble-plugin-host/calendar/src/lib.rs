@@ -108,7 +108,10 @@ fn sessions_for_uids(
         .sessions
         .iter()
         .filter(|((srv, sess), uid)| {
-            *srv == server_id && *sess != except && **uid > 0 && uids.contains(uid)
+            // Registered users (incl. SuperUser, uid 0) are >= 0; guests are -1.
+            // `uids` only ever holds registered participant ids, so >= 0 keeps
+            // guests out while letting SuperUser be a routable participant.
+            *srv == server_id && *sess != except && **uid >= 0 && uids.contains(uid)
         })
         .map(|((_, sess), _)| *sess)
         .collect()
@@ -187,7 +190,9 @@ impl MumblePlugin for CalendarPlugin {
         {
             let mut st = lock(&self.state);
             let _ = st.sessions.insert((server_id, session), uid);
-            if uid > 0 {
+            // Registered users (incl. SuperUser, uid 0) get their meetings
+            // replayed on connect; guests (-1) are never participants.
+            if uid >= 0 {
                 for ev in st.events.values() {
                     if ev.server_id == server_id
                         && (ev.organizer_uid == uid || ev.participant_uids.contains(&uid))
@@ -303,7 +308,9 @@ impl MumblePlugin for CalendarPlugin {
                 let targets = {
                     let mut st = lock(&self.state);
                     let uid = st.sessions.get(&(server_id, sender)).copied().unwrap_or(-1);
-                    if uid > 0 {
+                    // Store free/busy for any registered user (incl. SuperUser,
+                    // uid 0) for connect catch-up; skip guests (-1).
+                    if uid >= 0 {
                         let _ = st.availability.insert(uid, (server_id, bytes.to_vec()));
                     }
                     all_sessions(&st, server_id, sender)
