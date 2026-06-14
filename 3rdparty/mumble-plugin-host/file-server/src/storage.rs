@@ -85,7 +85,7 @@ pub struct FileRecord {
     pub uploader_name: Option<String>,
     /// Stable registered user id of the uploader (`>= 0`), or `None` for
     /// unregistered/guest uploads.  Unlike the cert hash - which can change
-    /// every session (a fresh self-signed cert, a password-only SuperUser) -
+    /// every session (a fresh self-signed cert, a password-only `SuperUser`) -
     /// this survives reconnects, so it is the durable ownership key.
     pub uploader_user_id: Option<i64>,
     /// Hex-encoded Argon2id salt used to derive the file-encryption key from the

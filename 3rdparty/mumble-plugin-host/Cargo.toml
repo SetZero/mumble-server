@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["api", "api-derive", "api-wasm", "file-server", "host", "link-preview", "live-doc"]
+members = ["api", "api-derive", "api-wasm", "calendar", "file-server", "host", "link-preview", "live-doc"]
 
 # Workspace-wide lints mirror the FancyMumbleNext client repo so that the
 # crates compile cleanly in either tree without per-crate adjustments.
