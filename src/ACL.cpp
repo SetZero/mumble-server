@@ -313,6 +313,9 @@ QString ChanACL::whatsThis(Perm p) {
 			return tr("This represents the permission to reset the comment or avatar of a user.");
 		case Register:
 			return tr("This represents the permission to register and unregister users on the server.");
+		case ReadRegister:
+			return tr("This represents the read-only permission to view the list of registered users on the server "
+					  "(for example to invite them to a meeting), without being able to register or unregister them.");
 		case SelfRegister:
 			return tr("This represents the permission to register oneself on the server.");
 		case Listen:
@@ -385,6 +388,8 @@ QString ChanACL::permName(Perm p) {
 			return tr("Reset User Content");
 		case Register:
 			return tr("Register User");
+		case ReadRegister:
+			return tr("List Registered Users");
 		case SelfRegister:
 			return tr("Register Self");
 		case Listen:

@@ -2518,15 +2518,17 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 
 	MSG_SETUP(ServerUser::Authenticated);
 
-	// The register permission is required on the root channel to be allowed to
-	// view the registered users.
-	if (!hasPermission(uSource, qhChannels.value(0), ChanACL::Register)) {
-		PERM_DENIED(uSource, qhChannels.value(0), ChanACL::Register);
-		return;
-	}
-
 	if (msg.users_size() == 0) {
-		// Query mode.
+		// Query mode - read the registered-user directory. Granted by either the
+		// read-only ReadRegister permission or the read/write Register permission
+		// (which implies the ability to view), so a non-admin can still resolve
+		// registered users that are offline - e.g. to invite them to a meeting.
+		if (!hasPermission(uSource, qhChannels.value(0), ChanACL::ReadRegister)
+			&& !hasPermission(uSource, qhChannels.value(0), ChanACL::Register)) {
+			PERM_DENIED(uSource, qhChannels.value(0), ChanACL::ReadRegister);
+			return;
+		}
+
 		std::vector< UserInfo > users = getAllRegisteredUserProperties();
 		for (const UserInfo &info : users) {
 			// Skip the SuperUser
@@ -2555,7 +2557,12 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 		}
 		sendMessage(uSource, msg);
 	} else {
-		// Update mode
+		// Update mode - renaming / unregistering registered users requires the
+		// read/write Register permission.
+		if (!hasPermission(uSource, qhChannels.value(0), ChanACL::Register)) {
+			PERM_DENIED(uSource, qhChannels.value(0), ChanACL::Register);
+			return;
+		}
 		for (int i = 0; i < msg.users_size(); ++i) {
 			const MumbleProto::UserList_User &user = msg.users(i);
 

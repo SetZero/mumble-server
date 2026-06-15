@@ -45,11 +45,12 @@ public:
 		ResetUserContent = 0x100000,
 		KeyOwner         = 0x200000,
 		ManageEmotes     = 0x400000,
+		ReadRegister     = 0x800000,
 
 		Cached = 0x8000000,
 		All = Write + Traverse + Enter + Speak + MuteDeafen + Move + MakeChannel + LinkChannel + Whisper + TextMessage
 			  + MakeTempChannel + Listen + DeleteMessage + SubscribePush + ShareFiles + ShareFilesPublic + Kick + Ban
-			  + Register + SelfRegister + ResetUserContent + KeyOwner + ManageEmotes
+			  + Register + SelfRegister + ResetUserContent + KeyOwner + ManageEmotes + ReadRegister
 	};
 
 	Q_DECLARE_FLAGS(Permissions, Perm)

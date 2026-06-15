@@ -174,6 +174,8 @@ module MumbleServer
 	const int PermissionRegisterSelf = 0x80000;
 	/** Reset the comment or avatar of a user. Only valid on root channel. */
 	const int ResetUserContent = 0x100000;
+	/** Read-only: view the list of registered users (without register/unregister). Only valid on root channel. */
+	const int PermissionReadRegister = 0x800000;
 
 
 	/** Access Control List for a channel. ACLs are defined per channel, and can be inherited from parent channels.
