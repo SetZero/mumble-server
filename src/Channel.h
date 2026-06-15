@@ -38,6 +38,10 @@ public:
 	unsigned int iId;
 	int iPosition;
 	bool bTemporary;
+	/// Whether this channel is hidden: only users with the SeeChannel permission
+	/// (and the users inside it) are told it exists. Defaults to false, so a
+	/// normal channel behaves exactly as before.
+	bool bHidden;
 	Channel *cParent;
 	QString qsName;
 	QString qsDesc;
@@ -77,7 +81,19 @@ public:
 	/// TLS certificate hashes of persistent chat key custodians.
 	QStringList qslPChatKeyCustodians;
 
+	/// Channel expiry mode: 0 = none, 1 = absolute (createdAt + duration),
+	/// 2 = sliding (lastActivity + duration). Drives the ChannelReaper.
+	uint32_t uiExpiryMode = 0;
+	/// Expiry lifetime / idle window in seconds (0 = none).
+	uint32_t uiExpiryDuration = 0;
+	/// Channel creation time (unix seconds); anchor for absolute expiry.
+	uint32_t uiCreatedAt = 0;
+	/// Last activity (unix seconds); runtime, drives sliding expiry. Seeded from
+	/// createdAt on load and bumped on join/leave.
+	int64_t iLastActivity = 0;
+
 	bool isPersistentChat() const { return uiPChatProtocol > 0; }
+	bool hasExpiry() const { return uiExpiryMode != 0 && uiExpiryDuration > 0; }
 
 	Channel(unsigned int id, const QString &name, QObject *p = nullptr);
 	~Channel();

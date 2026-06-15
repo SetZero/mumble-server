@@ -21,6 +21,11 @@ namespace server {
 			PChatMaxHistory,
 			PChatRetentionDays,
 			PChatKeyCustodians,
+			// Hidden-channel + expiry extensions.
+			Hidden,
+			ExpiryMode,
+			ExpiryDuration,
+			CreatedAt,
 		};
 
 	} // namespace db

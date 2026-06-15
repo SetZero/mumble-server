@@ -16,6 +16,7 @@
 #include "AudioReceiverBuffer.h"
 #include "Ban.h"
 #include "ChannelListenerManager.h"
+#include "ChannelVisibility.h"
 #include "DBWrapper.h"
 #include "HostAddress.h"
 #include "pchat/PersistentChatManager.h"
@@ -383,6 +384,18 @@ public:
 	/// the host (a subscriber) is destroyed while the distributor is still alive.
 	ServerEventDistributor m_events{ *this };
 
+	/// Policy deciding which channels each user may see (hidden-channel support).
+	/// Held behind the interface so it can be swapped/tested (DIP).
+	std::unique_ptr< IChannelVisibilityPolicy > m_channelVisibility;
+
+	/// Single-shot timer for the channel-expiry reaper. Fires on the main event
+	/// loop (same thread as channel mutations -> no locking needed), armed to the
+	/// earliest channel deadline so the server sleeps between expiries.
+	QTimer m_channelExpiryTimer;
+	/// Fired by m_channelExpiryTimer: reap channels whose deadline has passed
+	/// (recomputing sliding deadlines lazily), then re-arm to the next one.
+	void onChannelExpiryTimer();
+
 	// Link-preview glue over the generic plugin host.  Declared before
 	// m_pluginHost so the host (whose plugin runtime delivers the responses this
 	// bridge handles) is destroyed first, while this bridge is still alive.
@@ -442,6 +455,15 @@ public:
 	bool checkDecrypt(ServerUser *u, const unsigned char *encrypted, unsigned char *plain, unsigned int cryptlen);
 
 	bool hasPermission(ServerUser *p, Channel *c, QFlags< ChanACL::Perm > perm);
+	/// Whether @p p is allowed to see channel @p c (delegates to the channel
+	/// visibility policy; reuses the shared ACL cache). The single point every
+	/// broadcast/enumeration path consults to keep hidden channels hidden.
+	bool canSee(ServerUser *p, Channel *c);
+
+	/// Re-arm the single-shot channel-expiry timer to the earliest upcoming
+	/// channel deadline ("sleep until next" reaper). Cheap; call after any change
+	/// that can affect a channel's expiry (create / edit / remove).
+	void rescheduleChannelExpiry();
 	QFlags< ChanACL::Perm > effectivePermissions(ServerUser *p, Channel *c);
 	void sendClientPermission(ServerUser *u, Channel *c, bool explicitlyRequested = false);
 	void flushClientPermissionCache(ServerUser *u, MumbleProto::PermissionQuery &mpqq);
@@ -453,6 +475,15 @@ public:
 	void sendProtoExcept(ServerUser *, const ::google::protobuf::Message &msg, Mumble::Protocol::TCPMessageType type,
 						 Version::full_t version, Version::CompareMode mode);
 	void sendProtoMessage(ServerUser *, const ::google::protobuf::Message &msg, Mumble::Protocol::TCPMessageType type);
+	/// Like sendProtoAll, but only to users who may see channel @p c (visibility
+	/// policy). Used for any message that concerns a (possibly hidden) channel.
+	void sendProtoToChannelObservers(Channel *c, const ::google::protobuf::Message &msg,
+									 Mumble::Protocol::TCPMessageType type, Version::full_t version,
+									 Version::CompareMode mode);
+	/// As sendProtoToChannelObservers, but skips @p except (the acting user).
+	void sendProtoToChannelObserversExcept(ServerUser *except, Channel *c, const ::google::protobuf::Message &msg,
+										   Mumble::Protocol::TCPMessageType type, Version::full_t version,
+										   Version::CompareMode mode);
 
 	// sendAll sends a protobuf message to all users on the server whose version is either bigger than v or
 	// lower than ~v. If v == 0 the message is sent to everyone.
@@ -467,6 +498,17 @@ public:
 	}                                                                                                  \
 	void sendMessage(ServerUser *u, const MumbleProto::name &msg) {                                    \
 		sendProtoMessage(u, msg, Mumble::Protocol::TCPMessageType::name);                              \
+	}                                                                                                  \
+	/* Broadcast only to users who may see channel c (hidden-channel aware). */                       \
+	void sendToObservers(Channel *c, const MumbleProto::name &msg, Version::full_t v = Version::UNKNOWN, \
+						 Version::CompareMode mode = Version::CompareMode::AtLeast) {                  \
+		sendProtoToChannelObservers(c, msg, Mumble::Protocol::TCPMessageType::name, v, mode);          \
+	}                                                                                                  \
+	/* As sendToObservers, but excludes the acting user u. */                                          \
+	void sendToObserversExcept(ServerUser *u, Channel *c, const MumbleProto::name &msg,               \
+							   Version::full_t v = Version::UNKNOWN,                                    \
+							   Version::CompareMode mode = Version::CompareMode::AtLeast) {            \
+		sendProtoToChannelObserversExcept(u, c, msg, Mumble::Protocol::TCPMessageType::name, v, mode); \
 	}
 
 	MUMBLE_ALL_TCP_MESSAGES

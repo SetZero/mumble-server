@@ -28,6 +28,7 @@ Channel::Channel(unsigned int id, const QString &name, QObject *p) : QObject(p) 
 	bInheritACL = true;
 	uiMaxUsers  = 0;
 	bTemporary  = false;
+	bHidden     = false;
 	cParent     = qobject_cast< Channel * >(p);
 	if (cParent)
 		cParent->addChannel(this);

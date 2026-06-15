@@ -395,6 +395,14 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 	while (!q.isEmpty()) {
 		c = q.dequeue();
+
+		// Hidden-channel visibility: never tell this user about a channel they
+		// may not see, and prune its whole subtree (a descendant's parent ref
+		// would otherwise dangle). Root (id 0) is always visible.
+		if (c->iId != 0 && !canSee(uSource, c)) {
+			continue;
+		}
+
 		chans.insert(c);
 
 		mpcs.Clear();
@@ -415,6 +423,19 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			mpcs.set_description(u8(c->qsDesc));
 
 		mpcs.set_max_users(c->uiMaxUsers);
+
+		if (c->bHidden)
+			mpcs.set_hidden(true);
+
+		if (c->uiExpiryMode != 0) {
+			mpcs.set_expiry_mode(c->uiExpiryMode);
+			mpcs.set_expiry_duration_secs(c->uiExpiryDuration);
+			const quint64 deadline =
+				(c->uiExpiryMode == 2)
+					? static_cast< quint64 >(c->iLastActivity) + c->uiExpiryDuration
+					: static_cast< quint64 >(c->uiCreatedAt) + c->uiExpiryDuration;
+			mpcs.set_expires_at(deadline);
+		}
 
 		if (c->isPersistentChat()) {
 			mpcs.set_pchat_protocol(
@@ -438,16 +459,24 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		}
 	}
 
-	// Transmit links
+	// Transmit links. `chans` already excludes channels this user can't see; we
+	// must also drop link *targets* that are hidden from the user, so a hidden
+	// channel's id never leaks via a visible channel's link list.
 	for (Channel *chan : chans) {
 		if (chan->qhLinks.count() > 0) {
 			mpcs.Clear();
 			mpcs.set_channel_id(chan->iId);
 
+			int visibleLinks = 0;
 			for (Channel *l : chan->qhLinks.keys()) {
-				mpcs.add_links(l->iId);
+				if (canSee(uSource, l)) {
+					mpcs.add_links(l->iId);
+					++visibleLinks;
+				}
 			}
-			sendMessage(uSource, mpcs);
+			if (visibleLinks > 0) {
+				sendMessage(uSource, mpcs);
+			}
 		}
 	}
 
@@ -510,6 +539,11 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			continue;
 
 		if (u == uSource)
+			continue;
+
+		// Presence hiding: never reveal a user who is currently inside a hidden
+		// channel that the newcomer is not allowed to see.
+		if (!canSee(uSource, u->cChannel))
 			continue;
 
 		mpus.Clear();
@@ -1133,9 +1167,16 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 		bBroadcast = true;
 	}
 
+	// Track a channel move so the broadcast below can hide presence: a user
+	// moving into a hidden channel must vanish for peers who can't see it, and
+	// the move itself must only reach observers of the destination.
+	Channel *presencePrevChannel = pDstServerUser->cChannel;
+	bool presenceChannelMoved    = false;
+
 	if (msg.has_channel_id()) {
 		Channel *c = qhChannels.value(msg.channel_id());
 
+		presenceChannelMoved = (c != pDstServerUser->cChannel);
 		userEnterChannel(pDstServerUser, c, msg);
 		log(uSource, QString("Moved %1 to %2").arg(QString(*pDstServerUser), QString(*c)));
 		bBroadcast = true;
@@ -1241,12 +1282,12 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 				!= 600 * 60 * 4)) {
 			// This is a new style texture, don't send it because the client doesn't handle it correctly / crashes.
 			msg.clear_texture();
-			sendAll(msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
+			sendToObservers(pDstServerUser->cChannel, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
 			msg.set_texture(blob(pDstServerUser->qbaTexture));
 		} else {
 			// This is an old style texture, empty texture or there was no texture in this packet,
 			// send the message unchanged.
-			sendAll(msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
+			sendToObservers(pDstServerUser->cChannel, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
 		}
 
 		// Texture / comment handling for clients >= 1.2.2.
@@ -1269,7 +1310,27 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 		}
 
 		if (broadcastListenerVolumeAdjustments || !broadcastingBecauseOfVolumeChange) {
-			sendExcept(uSource, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
+			// Presence hiding: only peers who can see the user's current channel
+			// receive the state (a hidden-channel occupant stays invisible to
+			// everyone else).
+			sendToObserversExcept(uSource, pDstServerUser->cChannel, msg, Version::fromComponents(1, 2, 2),
+								  Version::CompareMode::AtLeast);
+		}
+
+		// If this was a move and the user is now somewhere a peer can no longer
+		// see (e.g. into a hidden channel), that peer must be told the user left
+		// their view - otherwise the user would appear frozen in the old channel.
+		if (presenceChannelMoved && presencePrevChannel) {
+			MumbleProto::UserRemove vanish;
+			vanish.set_session(pDstServerUser->uiSession);
+			QByteArray vanishCache;
+			for (ServerUser *peer : qhUsers) {
+				if (peer == uSource || peer == pDstServerUser || peer->sState != ServerUser::Authenticated)
+					continue;
+				if (canSee(peer, presencePrevChannel) && !canSee(peer, pDstServerUser->cChannel)) {
+					peer->sendMessage(vanish, Mumble::Protocol::TCPMessageType::UserRemove, vanishCache);
+				}
+			}
 		}
 
 		if (bDstAclChanged) {
@@ -1463,6 +1524,18 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 				c->qslPChatKeyCustodians << u8(msg.pchat_key_custodians(i));
 		}
 
+		if (msg.has_hidden()) {
+			c->bHidden = msg.hidden();
+		}
+
+		// Stamp creation time (anchor for absolute expiry) and read expiry config.
+		c->uiCreatedAt   = static_cast< uint32_t >(QDateTime::currentSecsSinceEpoch());
+		c->iLastActivity = c->uiCreatedAt;
+		if (msg.has_expiry_mode())
+			c->uiExpiryMode = msg.expiry_mode();
+		if (msg.has_expiry_duration_secs())
+			c->uiExpiryDuration = msg.expiry_duration_secs();
+
 		if (uSource->iId >= 0) {
 			Group *g = new Group(c, "admin");
 			g->qsAdd << uSource->iId;
@@ -1495,22 +1568,41 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 				static_cast< unsigned int >(c->iId), uSource->uiSession);
 		}
 
-		sendAll(msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
+		sendToObservers(c, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
 		if (!c->qbaDescHash.isEmpty()) {
 			msg.clear_description();
 			msg.set_description_hash(blob(c->qbaDescHash));
 		}
-		sendAll(msg, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
+		sendToObservers(c, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
 
 		if (c->bTemporary) {
 			// If a temporary channel has been created move the creator right in there
+			Channel *creatorPrevChannel = uSource->cChannel;
 			MumbleProto::UserState mpus;
 			mpus.set_session(uSource->uiSession);
 			mpus.set_channel_id(c->iId);
 			userEnterChannel(uSource, c, mpus);
-			sendAll(mpus);
+			// Presence hiding: only observers of the new channel see the creator
+			// move in; peers who could see the creator's previous channel but not
+			// the new (hidden) one are told the creator left their view.
+			sendToObservers(c, mpus);
+			if (creatorPrevChannel && creatorPrevChannel != c) {
+				MumbleProto::UserRemove vanish;
+				vanish.set_session(uSource->uiSession);
+				QByteArray vanishCache;
+				for (ServerUser *peer : qhUsers) {
+					if (peer == uSource || peer->sState != ServerUser::Authenticated)
+						continue;
+					if (canSee(peer, creatorPrevChannel) && !canSee(peer, c)) {
+						peer->sendMessage(vanish, Mumble::Protocol::TCPMessageType::UserRemove, vanishCache);
+					}
+				}
+			}
 			m_events.userStateChanged(uSource);
 		}
+
+		// A newly created channel may have the earliest expiry deadline.
+		rescheduleChannelExpiry();
 	} else {
 		// The message is related to an existing channel c so check if the user is allowed to modify it
 		// and perform the modifications
@@ -1621,6 +1713,20 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			}
 		}
 
+		if (msg.has_hidden()) {
+			if (!hasPermission(uSource, c, ChanACL::Write)) {
+				PERM_DENIED(uSource, c, ChanACL::Write);
+				return;
+			}
+		}
+
+		if (msg.has_expiry_mode() || msg.has_expiry_duration_secs()) {
+			if (!hasPermission(uSource, c, ChanACL::Write)) {
+				PERM_DENIED(uSource, c, ChanACL::Write);
+				return;
+			}
+		}
+
 		// All permission checks done -- the update is good.
 
 		if (p) {
@@ -1672,17 +1778,29 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			log(uSource, QString("pchat: set channel %1 key_custodians count=%2").arg(c->iId).arg(c->qslPChatKeyCustodians.size()));
 		}
 
+		if (msg.has_hidden()) {
+			c->bHidden = msg.hidden();
+		}
+
+		if (msg.has_expiry_mode())
+			c->uiExpiryMode = msg.expiry_mode();
+		if (msg.has_expiry_duration_secs())
+			c->uiExpiryDuration = msg.expiry_duration_secs();
+
 		if (!c->bTemporary) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
 		}
 		m_events.channelStateChanged(c);
 
-		sendAll(msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
+		sendToObservers(c, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
 		if (msg.has_description() && !c->qbaDescHash.isEmpty()) {
 			msg.clear_description();
 			msg.set_description_hash(blob(c->qbaDescHash));
 		}
-		sendAll(msg, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
+		sendToObservers(c, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
+
+		// Expiry config may have changed (or been added/removed) -> re-arm.
+		rescheduleChannelExpiry();
 	}
 }
 
@@ -2518,13 +2636,16 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 
 	MSG_SETUP(ServerUser::Authenticated);
 
+	// The read/write Register permission grants full management + visibility of
+	// the directory; the read-only ReadRegister permission (held by every
+	// registered user) grants a reduced, privacy-preserving view.
+	const bool canManage = hasPermission(uSource, qhChannels.value(0), ChanACL::Register);
+
 	if (msg.users_size() == 0) {
-		// Query mode - read the registered-user directory. Granted by either the
-		// read-only ReadRegister permission or the read/write Register permission
-		// (which implies the ability to view), so a non-admin can still resolve
-		// registered users that are offline - e.g. to invite them to a meeting.
-		if (!hasPermission(uSource, qhChannels.value(0), ChanACL::ReadRegister)
-			&& !hasPermission(uSource, qhChannels.value(0), ChanACL::Register)) {
+		// Query mode - read the registered-user directory. Allowed with either
+		// ReadRegister or Register, so a non-admin can still resolve registered
+		// users that are offline - e.g. to invite them to a meeting.
+		if (!canManage && !hasPermission(uSource, qhChannels.value(0), ChanACL::ReadRegister)) {
 			PERM_DENIED(uSource, qhChannels.value(0), ChanACL::ReadRegister);
 			return;
 		}
@@ -2536,21 +2657,26 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 				::MumbleProto::UserList_User *user = msg.add_users();
 				user->set_user_id(static_cast< unsigned int >(info.user_id));
 				user->set_name(u8(info.name));
-				if (info.last_channel) {
-					user->set_last_channel(static_cast< unsigned int >(info.last_channel.value()));
-				}
-				user->set_last_seen(u8(info.last_active.toString(Qt::ISODate)));
 				if (!info.texture.empty()) {
 					user->set_texture(info.texture.data(), info.texture.size());
 				}
-				if (!info.comment_hash.isEmpty()) {
-					if (!info.comment.isEmpty()) {
-						// Short comment: include inline.
-						user->set_comment(u8(info.comment));
-					} else {
-						// Long comment: send SHA-1 hash; client must request blob.
-						user->set_comment_hash(info.comment_hash.constData(),
-							static_cast< size_t >(info.comment_hash.size()));
+				// Sensitive directory metadata (presence/activity, comments) is
+				// limited to users who can manage registrations. ReadRegister-only
+				// users get just the public name + avatar needed to pick invitees.
+				if (canManage) {
+					if (info.last_channel) {
+						user->set_last_channel(static_cast< unsigned int >(info.last_channel.value()));
+					}
+					user->set_last_seen(u8(info.last_active.toString(Qt::ISODate)));
+					if (!info.comment_hash.isEmpty()) {
+						if (!info.comment.isEmpty()) {
+							// Short comment: include inline.
+							user->set_comment(u8(info.comment));
+						} else {
+							// Long comment: send SHA-1 hash; client must request blob.
+							user->set_comment_hash(info.comment_hash.constData(),
+								static_cast< size_t >(info.comment_hash.size()));
+						}
 					}
 				}
 			}
@@ -2559,7 +2685,7 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 	} else {
 		// Update mode - renaming / unregistering registered users requires the
 		// read/write Register permission.
-		if (!hasPermission(uSource, qhChannels.value(0), ChanACL::Register)) {
+		if (!canManage) {
 			PERM_DENIED(uSource, qhChannels.value(0), ChanACL::Register);
 			return;
 		}

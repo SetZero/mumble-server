@@ -47,10 +47,17 @@ public:
 		ManageEmotes     = 0x400000,
 		ReadRegister     = 0x800000,
 
+		// Channel-level (NOT root-only): may see a channel flagged hidden. Placed
+		// in this numeric range only because the low channel-perm bits
+		// (0x1..0x8000) are exhausted; root-only-ness is decided by the evaluation
+		// code, not the bit value, and SeeChannel is intentionally left out of the
+		// root-only handling so it flows through normal per-channel allow/deny.
+		SeeChannel       = 0x1000000,
+
 		Cached = 0x8000000,
 		All = Write + Traverse + Enter + Speak + MuteDeafen + Move + MakeChannel + LinkChannel + Whisper + TextMessage
 			  + MakeTempChannel + Listen + DeleteMessage + SubscribePush + ShareFiles + ShareFilesPublic + Kick + Ban
-			  + Register + SelfRegister + ResetUserContent + KeyOwner + ManageEmotes + ReadRegister
+			  + Register + SelfRegister + ResetUserContent + KeyOwner + ManageEmotes + ReadRegister + SeeChannel
 	};
 
 	Q_DECLARE_FLAGS(Permissions, Perm)

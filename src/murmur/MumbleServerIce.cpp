@@ -155,6 +155,7 @@ static void channelToChannel(const ::Channel *c, ::MumbleServer::Channel &mc, bo
 		mc.links.push_back(static_cast< int >(chn->iId));
 	}
 	mc.temporary = c->bTemporary;
+	mc.hidden    = c->bHidden;
 }
 
 static void ACLtoACL(const ::ChanACL *acl, ::MumbleServer::ACL &ma) {
@@ -1277,6 +1278,28 @@ static void impl_Server_getChannels(const ::MumbleServer::AMD_Server_getChannels
 	ICE_IMPL_END
 }
 
+#define ACCESS_Server_getChannelsForSession_READ
+static void impl_Server_getChannelsForSession(const ::MumbleServer::AMD_Server_getChannelsForSessionPtr cb,
+											  int server_id, int session, bool includeDescription) {
+	ICE_IMPL_BEGIN
+
+	NEED_SERVER;
+	NEED_PLAYER;
+	::MumbleServer::ChannelMap cm;
+	for (const ::Channel *c : server->qhChannels) {
+		// Visibility-filtered: omit hidden channels this user may not see.
+		if (!server->canSee(user, const_cast<::Channel * >(c))) {
+			continue;
+		}
+		::MumbleServer::Channel mc;
+		channelToChannel(c, mc, includeDescription);
+		cm[static_cast< int >(c->iId)] = mc;
+	}
+	cb->ice_response(cm);
+
+	ICE_IMPL_END
+}
+
 static bool userSort(const ::User *a, const ::User *b) {
 	return ::User::lessThan(a, b);
 }
@@ -1313,6 +1336,44 @@ static void impl_Server_getTree(const ::MumbleServer::AMD_Server_getTreePtr cb, 
 
 	NEED_SERVER;
 	cb->ice_response(recurseTree(server->qhChannels.value(0), includeDescription));
+
+	ICE_IMPL_END
+}
+
+// As recurseTree, but prunes any child channel `user` may not see (and thereby
+// the users inside it), for the per-session visibility-filtered tree.
+TreePtr recurseTreeForSession(::Server *server, ServerUser *user, const ::Channel *c, bool includeDescription) {
+	TreePtr t = new Tree();
+	channelToChannel(c, t->c, includeDescription);
+	QList<::User * > users = c->qlUsers;
+	std::sort(users.begin(), users.end(), userSort);
+
+	for (const ::User *p : users) {
+		::MumbleServer::User mp;
+		userToUser(p, mp, includeDescription);
+		t->users.push_back(mp);
+	}
+
+	QList<::Channel * > channels = c->qlChannels;
+	std::sort(channels.begin(), channels.end(), channelSort);
+
+	for (const ::Channel *chn : channels) {
+		if (server->canSee(user, const_cast<::Channel * >(chn))) {
+			t->children.push_back(recurseTreeForSession(server, user, chn, includeDescription));
+		}
+	}
+
+	return t;
+}
+
+#define ACCESS_Server_getTreeForSession_READ
+static void impl_Server_getTreeForSession(const ::MumbleServer::AMD_Server_getTreeForSessionPtr cb, int server_id,
+										  int session, bool includeDescription) {
+	ICE_IMPL_BEGIN
+
+	NEED_SERVER;
+	NEED_PLAYER;
+	cb->ice_response(recurseTreeForSession(server, user, server->qhChannels.value(0), includeDescription));
 
 	ICE_IMPL_END
 }
@@ -2476,7 +2537,9 @@ static void impl_Meta_setAssumedDatabaseState(const ::MumbleServer::AMD_Meta_set
 #undef ACCESS_Server_getLogLen_READ
 #undef ACCESS_Server_getUsers_READ
 #undef ACCESS_Server_getChannels_READ
+#undef ACCESS_Server_getChannelsForSession_READ
 #undef ACCESS_Server_getTree_READ
+#undef ACCESS_Server_getTreeForSession_READ
 #undef ACCESS_Server_getCertificateList_READ
 #undef ACCESS_Server_getBans_READ
 #undef ACCESS_Server_hasPermission_READ

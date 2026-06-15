@@ -121,6 +121,12 @@ module MumbleServer
 		bool temporary;
 		/** Position of the channel which is used in Client for sorting. */
 		int position;
+		/** Channel is hidden: only users with the SeeChannel permission see it (and
+		 * the users inside it). NOTE: the Ice admin plane is NOT visibility-filtered
+		 * - getTree/getChannels return hidden channels too. A consumer rendering a
+		 * channel list to end users must either filter on this flag or use the
+		 * per-session getTreeForSession/getChannelsForSession variants. */
+		bool hidden;
 	};
 
 	/** A group. Groups are defined per channel, and can inherit members from parent channels.
@@ -176,6 +182,8 @@ module MumbleServer
 	const int ResetUserContent = 0x100000;
 	/** Read-only: view the list of registered users (without register/unregister). Only valid on root channel. */
 	const int PermissionReadRegister = 0x800000;
+	/** See a channel marked as hidden (channel-level). Without it the channel is invisible to the user. */
+	const int PermissionSeeChannel = 0x1000000;
 
 
 	/** Access Control List for a channel. ACLs are defined per channel, and can be inherited from parent channels.
@@ -563,6 +571,14 @@ module MumbleServer
 		 */
 		idempotent ChannelMap getChannels(bool includeDescription) throws ServerBootedException, InvalidSecretException;
 
+		/** Fetch the channels visible to a specific connected user, honouring
+		 * hidden-channel visibility (SeeChannel). Unlike {@link getChannels} (the
+		 * unfiltered admin view), hidden channels the user may not see are omitted.
+		 * Use this when presenting a channel list on behalf of an end user.
+		 * @param session Connection ID of the user. See {@link User.session}.
+		 */
+		idempotent ChannelMap getChannelsForSession(int session, bool includeDescription) throws ServerBootedException, InvalidSessionException, InvalidSecretException;
+
 		/** Fetch certificate of user. This returns the complete certificate chain of a user.
 		 * @param session Connection ID of user. See {@link User.session}.
 		 * @return Certificate list of user.
@@ -574,6 +590,14 @@ module MumbleServer
 		 * @return Recursive tree of all channels and connected users.
 		 */
 		idempotent Tree getTree(bool includeDescription) throws ServerBootedException, InvalidSecretException;
+
+		/** As {@link getTree}, but pruned to what a specific connected user may see:
+		 * hidden channels the user lacks SeeChannel for (and the users inside them)
+		 * are omitted. Use this for an on-behalf-of-user channel viewer; {@link getTree}
+		 * itself is the unfiltered admin view.
+		 * @param session Connection ID of the user. See {@link User.session}.
+		 */
+		idempotent Tree getTreeForSession(int session, bool includeDescription) throws ServerBootedException, InvalidSessionException, InvalidSecretException;
 
 		/** Fetch all current IP bans on the server.
 		 * @return List of bans.

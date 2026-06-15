@@ -459,6 +459,18 @@ void DBWrapper::initializeChannelDetails(Server &server) {
 				QString::fromStdString(custodians).split(',', Qt::SkipEmptyParts);
 		}
 
+		// Read hidden-channel + expiry properties
+		currentChannel->bHidden = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+									  server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::Hidden)
+								  != 0;
+		currentChannel->uiExpiryMode = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::ExpiryMode);
+		currentChannel->uiExpiryDuration = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::ExpiryDuration);
+		currentChannel->uiCreatedAt = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::CreatedAt);
+		currentChannel->iLastActivity = currentChannel->uiCreatedAt;
+
 		// Read and initialize the groups defined for the current channel
 		for (const ::msdb::DBGroup &currentGroup :
 			 m_serverDB.getGroupTable().getAllGroups(server.iServerNum, currentChannel->iId)) {
@@ -709,6 +721,16 @@ void DBWrapper::updateChannelData(unsigned int serverID, const Channel &channel)
 		m_serverDB.getChannelPropertyTable().clearProperty(serverID, channel.iId,
 														   ::msdb::ChannelProperty::PChatKeyCustodians);
 	}
+
+	// Update hidden-channel + expiry properties
+	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::Hidden,
+													 std::to_string(channel.bHidden ? 1 : 0));
+	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::ExpiryMode,
+													 std::to_string(channel.uiExpiryMode));
+	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::ExpiryDuration,
+													 std::to_string(channel.uiExpiryDuration));
+	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::CreatedAt,
+													 std::to_string(channel.uiCreatedAt));
 
 	// First, clear old groups and ACLs
 	// (Clearing the groups automatically clear all entries referencing that group - in particular any members of that

@@ -141,6 +141,15 @@ QFlags< ChanACL::Perm > ChanACL::effectivePermissions(ServerUser *p, Channel *ch
 			granted = def;
 		}
 
+		// Registered users (iId > 0; SuperUser is 0 with full access, guests are
+		// -1) get directory-read access at the root channel by default - e.g. to
+		// resolve and invite users who are currently offline. Seeded here, before
+		// this channel's ACLs are applied, so a root-channel ACL that denies
+		// ReadRegister can still revoke it for specific users or groups.
+		if (ch->iId == 0 && p->iId > 0) {
+			granted |= ReadRegister;
+		}
+
 		for (const ChanACL *acl : ch->qlACL) {
 			bool matchUser  = (acl->iUserId != -1) && (acl->iUserId == p->iId);
 			bool matchGroup = Group::appliesToUser(*chan, *ch, acl->qsGroup, *p);
@@ -231,7 +240,7 @@ QFlags< ChanACL::Perm > ChanACL::effectivePermissions(ServerUser *p, Channel *ch
 	if (granted & Write) {
 		granted |=
 			Traverse | Enter | MuteDeafen | Move | MakeChannel | LinkChannel | TextMessage | MakeTempChannel | Listen
-			| ShareFiles | ShareFilesPublic;
+			| ShareFiles | ShareFilesPublic | SeeChannel;
 		if (chan->iId == 0)
 			granted |= Kick | Ban | ResetUserContent | Register | SelfRegister | ManageEmotes;
 	}
@@ -321,6 +330,10 @@ QString ChanACL::whatsThis(Perm p) {
 		case Listen:
 			return tr("This represents the permission to use the listen-feature allowing to listen to a channel "
 					  "without being in it.");
+		case SeeChannel:
+			return tr("This represents the permission to see a channel that is marked as hidden. Users without this "
+					  "privilege do not see the channel in their channel list at all (nor the users inside it). "
+					  "Has no effect on channels that are not hidden.");
 		case KeyOwner:
 			return tr("This represents the permission to take over key ownership of a persistent channel. "
 					  "The key owner can reset the channel encryption key, removing all stored messages "
@@ -394,6 +407,8 @@ QString ChanACL::permName(Perm p) {
 			return tr("Register Self");
 		case Listen:
 			return tr("Listen");
+		case SeeChannel:
+			return tr("See Hidden Channel");
 		case KeyOwner:
 			return tr("Key Owner");
 		case ManageEmotes:

@@ -50,7 +50,13 @@ public:
 
 	virtual void getChannels_async(const ::MumbleServer::AMD_Server_getChannelsPtr &, bool includeDescription, const Ice::Current &);
 
+	virtual void getChannelsForSession_async(const ::MumbleServer::AMD_Server_getChannelsForSessionPtr &, ::Ice::Int,
+											 bool includeDescription, const Ice::Current &);
+
 	virtual void getTree_async(const ::MumbleServer::AMD_Server_getTreePtr &, bool includeDescription, const Ice::Current &);
+
+	virtual void getTreeForSession_async(const ::MumbleServer::AMD_Server_getTreeForSessionPtr &, ::Ice::Int,
+										 bool includeDescription, const Ice::Current &);
 
 	virtual void getCertificateList_async(const ::MumbleServer::AMD_Server_getCertificateListPtr &, ::Ice::Int,
 										  const ::Ice::Current &);

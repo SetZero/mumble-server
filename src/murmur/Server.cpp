@@ -247,8 +247,21 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	connect(qtTimeout, SIGNAL(timeout()), this, SLOT(checkTimeout()));
 
 	m_bans = m_dbWrapper.getBans(iServerNum);
+
+	// Channel visibility policy (hidden-channel support). Default ACL-based rule;
+	// installed before channels are loaded so any early lookups are valid.
+	m_channelVisibility = std::make_unique< AclChannelVisibilityPolicy >();
+
+	// Channel-expiry reaper: a single-shot timer on the main event loop, armed to
+	// the earliest channel deadline (see rescheduleChannelExpiry).
+	m_channelExpiryTimer.setSingleShot(true);
+	connect(&m_channelExpiryTimer, &QTimer::timeout, this, [this]() { onChannelExpiryTimer(); });
+
 	m_dbWrapper.initializeChannels(*this);
 	m_dbWrapper.initializeChannelLinks(*this);
+
+	// Schedule expiry for any persisted expiring channels just loaded.
+	rescheduleChannelExpiry();
 
 	// Initialize persistent chat manager
 	m_pchatRateLimiter = std::make_unique< pchat::TokenBucketRateLimiter >();
@@ -2053,6 +2066,32 @@ void Server::sendProtoExcept(ServerUser *u, const ::google::protobuf::Message &m
 	}
 }
 
+void Server::sendProtoToChannelObservers(Channel *c, const ::google::protobuf::Message &msg,
+										 Mumble::Protocol::TCPMessageType msgType, Version::full_t version,
+										 Version::CompareMode mode) {
+	sendProtoToChannelObserversExcept(nullptr, c, msg, msgType, version, mode);
+}
+
+void Server::sendProtoToChannelObserversExcept(ServerUser *except, Channel *c, const ::google::protobuf::Message &msg,
+											   Mumble::Protocol::TCPMessageType msgType, Version::full_t version,
+											   Version::CompareMode mode) {
+	// Like sendProtoExcept but additionally gated on channel visibility, so a
+	// hidden channel's existence/state never reaches a user who lacks SeeChannel.
+	// For non-hidden channels canSee() is always true, so this behaves exactly
+	// like sendProtoExcept/sendProtoAll.
+	QByteArray cache;
+	for (ServerUser *usr : qhUsers) {
+		if ((usr != except) && (usr->sState == ServerUser::Authenticated)) {
+			const bool isUnknown = version == Version::UNKNOWN;
+			const bool fulfillsVersionRequirement =
+				mode == Version::CompareMode::AtLeast ? usr->m_version >= version : usr->m_version < version;
+			if ((isUnknown || fulfillsVersionRequirement) && canSee(usr, c)) {
+				usr->sendMessage(msg, msgType, cache);
+			}
+		}
+	}
+}
+
 void Server::removeChannel(unsigned int id) {
 	Channel *c = qhChannels.value(id);
 	if (c)
@@ -2110,7 +2149,9 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 
 	MumbleProto::ChannelRemove mpcr;
 	mpcr.set_channel_id(chan->iId);
-	sendAll(mpcr);
+	// Only users who could see the channel were ever told it existed, so only
+	// they should hear it is gone (hidden-channel aware). `chan` is still valid.
+	sendToObservers(chan, mpcr);
 
 	if (m_pchatManager) {
 		m_pchatManager->onChannelRemoved(static_cast< unsigned int >(chan->iId));
@@ -2201,6 +2242,15 @@ void Server::userEnterChannel(User *p, Channel *c, MumbleProto::UserState &mpus)
 
 	Channel *old = p->cChannel;
 
+	// Sliding-expiry activity: a user joining/leaving counts as activity, so a
+	// sliding-window channel stays alive while people move in and out. We only
+	// bump the timestamp here; the expiry timer re-evaluates lazily when it next
+	// fires (no per-move re-arm).
+	const qint64 nowSecs = QDateTime::currentSecsSinceEpoch();
+	c->iLastActivity     = nowSecs;
+	if (old)
+		old->iLastActivity = nowSecs;
+
 	{
 		QWriteLocker wl(&qrwlVoiceThread);
 		c->addUser(p);
@@ -2249,6 +2299,88 @@ void Server::userEnterChannel(User *p, Channel *c, MumbleProto::UserState &mpus)
 bool Server::hasPermission(ServerUser *p, Channel *c, QFlags< ChanACL::Perm > perm) {
 	QMutexLocker qml(&qmCache);
 	return ChanACL::hasPermission(p, c, perm, &acCache);
+}
+
+bool Server::canSee(ServerUser *p, Channel *c) {
+	QMutexLocker qml(&qmCache);
+	return m_channelVisibility->canSee(*p, *c, &acCache);
+}
+
+// Channel expiry deadline as unix seconds, or 0 when the channel does not expire.
+// Absolute mode anchors on creation time; sliding mode on the last activity.
+static qint64 channelExpiryDeadline(const Channel *c) {
+	if (!c || c->uiExpiryMode == 0 || c->uiExpiryDuration == 0) {
+		return 0;
+	}
+	if (c->uiExpiryMode == 2) {
+		return c->iLastActivity + static_cast< qint64 >(c->uiExpiryDuration);
+	}
+	return static_cast< qint64 >(c->uiCreatedAt) + c->uiExpiryDuration;
+}
+
+void Server::rescheduleChannelExpiry() {
+	const qint64 now = QDateTime::currentSecsSinceEpoch();
+	qint64 earliest  = -1;
+	for (Channel *c : qhChannels) {
+		if (c->iId == 0) {
+			continue;
+		}
+		const qint64 deadline = channelExpiryDeadline(c);
+		if (deadline <= 0) {
+			continue;
+		}
+		if (earliest < 0 || deadline < earliest) {
+			earliest = deadline;
+		}
+	}
+
+	if (earliest < 0) {
+		m_channelExpiryTimer.stop();
+		return;
+	}
+
+	qint64 ms = (earliest - now) * 1000;
+	if (ms < 0) {
+		ms = 0;
+	}
+	// QTimer takes an int ms (~24.8 day ceiling). Cap a single sleep at one day
+	// and simply re-arm on wake, so a month-long lifetime still costs only a
+	// handful of wakes while the server mostly sleeps between expiries.
+	constexpr qint64 MAX_SLEEP_MS = 86400000;
+	if (ms > MAX_SLEEP_MS) {
+		ms = MAX_SLEEP_MS;
+	}
+	m_channelExpiryTimer.start(static_cast< int >(ms));
+}
+
+void Server::onChannelExpiryTimer() {
+	const qint64 now = QDateTime::currentSecsSinceEpoch();
+
+	// Collect first, then reap, so we don't mutate qhChannels while iterating.
+	QList< unsigned int > expired;
+	for (Channel *c : qhChannels) {
+		if (c->iId == 0) {
+			continue;
+		}
+		const qint64 deadline = channelExpiryDeadline(c);
+		if (deadline > 0 && deadline <= now) {
+			expired.append(c->iId);
+		}
+	}
+
+	for (unsigned int id : expired) {
+		Channel *c = qhChannels.value(id);
+		if (c && c->iId != 0) {
+			log(QString("Channel %1 expired; removing and moving occupants to parent").arg(QString(*c)));
+			// removeChannel reparents occupants to the parent and tears down ACLs/
+			// groups (+ persistent-chat); ChannelRemove is observer-filtered.
+			removeChannel(c, c->cParent);
+		}
+	}
+
+	// Re-arm for the next deadline (sliding channels whose activity pushed their
+	// deadline out are simply rescheduled here rather than reaped).
+	rescheduleChannelExpiry();
 }
 
 QFlags< ChanACL::Perm > Server::effectivePermissions(ServerUser *p, Channel *c) {
