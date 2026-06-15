@@ -196,6 +196,11 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		MumbleProto::ChannelState mpcs;
 
 		for (Channel *chan : qhChannels) {
+			// Never reveal a hidden channel's existence to a user who may not see
+			// it (this would otherwise leak the channel id into their channel list).
+			if (chan->iId != 0 && !canSee(uSource, chan)) {
+				continue;
+			}
 			mpcs.set_channel_id(static_cast< unsigned int >(chan->iId));
 			mpcs.set_can_enter(hasPermission(uSource, chan, ChanACL::Enter));
 			// As no ACLs have changed, we don't need to update the is_access_restricted message field
@@ -2487,11 +2492,16 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 		}
 		log(uSource, QString("Updated ACL in channel %1").arg(*c));
 
-		// Send refreshed enter states of this channel to all clients
+		// Send refreshed enter states of this channel to all clients who may see
+		// it. Skipping users who can't see a hidden channel avoids leaking its id
+		// (and would also wrongly surface it after an unrelated ACL edit).
 		MumbleProto::ChannelState mpcs;
 		mpcs.set_channel_id(c->iId);
 
 		for (ServerUser *user : qhUsers) {
+			if (c->iId != 0 && !canSee(user, c)) {
+				continue;
+			}
 			mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
 			mpcs.set_can_enter(hasPermission(user, c, ChanACL::Enter));
 
@@ -2954,7 +2964,9 @@ void Server::msgRequestBlob(ServerUser *uSource, MumbleProto::RequestBlob &msg) 
 		for (int i = 0; i < ndescriptions; ++i) {
 			unsigned int id = msg.channel_description(i);
 			Channel *c      = qhChannels.value(id);
-			if (c && !c->qsDesc.isEmpty()) {
+			// Defence in depth: never serve a hidden channel's description to a
+			// user who may not see the channel.
+			if (c && !c->qsDesc.isEmpty() && (c->iId == 0 || canSee(uSource, c))) {
 				mpcs.set_channel_id(id);
 				mpcs.set_description(u8(c->qsDesc));
 				sendMessage(uSource, mpcs);
