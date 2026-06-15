@@ -1555,6 +1555,30 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			clearACLCache();
 		}
 
+		// Meeting-room invitees: turn the new channel into a private room by
+		// denying see/enter/traverse to @all and granting them to each invited
+		// registered user. The creator keeps access via their Write ACL above
+		// (Write implies SeeChannel/Enter). Only honoured at creation time.
+		if (msg.invitee_user_ids_size() > 0) {
+			ChanACL *deny    = new ChanACL(c);
+			deny->bApplyHere = true;
+			deny->bApplySubs = false;
+			deny->qsGroup    = QLatin1String("all");
+			deny->pAllow     = ChanACL::None;
+			deny->pDeny      = ChanACL::SeeChannel | ChanACL::Enter | ChanACL::Traverse;
+
+			for (int i = 0; i < msg.invitee_user_ids_size(); ++i) {
+				ChanACL *allow    = new ChanACL(c);
+				allow->bApplyHere = true;
+				allow->bApplySubs = false;
+				allow->iUserId    = static_cast< int >(msg.invitee_user_ids(i));
+				allow->pDeny      = ChanACL::None;
+				allow->pAllow     = ChanACL::SeeChannel | ChanACL::Enter | ChanACL::Traverse;
+			}
+
+			clearACLCache();
+		}
+
 		if (!c->bTemporary) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
 		}

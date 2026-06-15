@@ -200,6 +200,12 @@ message ChannelState {
 	// Server-computed absolute deadline (unix seconds), for client countdown UI.
 	// Output-only: ignored if a client sends it.
 	optional uint64 expires_at = 108;
+
+	// Meeting-room convenience (input-only, on create): registered user_ids to
+	// invite. The server grants each SeeChannel|Enter|Traverse and denies those
+	// to @all, turning the new channel into a private room only invitees can see
+	// and join. Ignored on update.
+	repeated uint32 invitee_user_ids = 109;
 }
 
 // Used to communicate user leaving or being kicked. May be sent by the client
