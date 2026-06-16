@@ -156,7 +156,7 @@ bool ServerBridge::hasWritePermission(unsigned int sessionId, unsigned int chann
 	if (!user || !c) {
 		return false;
 	}
-	return m_server.hasPermission(user, c, ChanACL::Write);
+	return user->hasPermission(c, ChanACL::Write);
 }
 
 bool ServerBridge::hasEnterPermission(unsigned int sessionId, unsigned int channelId) const {
@@ -165,7 +165,7 @@ bool ServerBridge::hasEnterPermission(unsigned int sessionId, unsigned int chann
 	if (!user || !c) {
 		return false;
 	}
-	return m_server.hasPermission(user, c, ChanACL::Enter);
+	return user->hasPermission(c, ChanACL::Enter);
 }
 
 bool ServerBridge::hasDeleteMessagePermission(unsigned int sessionId, unsigned int channelId) const {
@@ -174,7 +174,7 @@ bool ServerBridge::hasDeleteMessagePermission(unsigned int sessionId, unsigned i
 	if (!user || !c) {
 		return false;
 	}
-	return m_server.hasPermission(user, c, ChanACL::DeleteMessage);
+	return user->hasPermission(c, ChanACL::DeleteMessage);
 }
 
 bool ServerBridge::hasKeyOwnerPermission(unsigned int sessionId, unsigned int channelId) const {
@@ -183,7 +183,7 @@ bool ServerBridge::hasKeyOwnerPermission(unsigned int sessionId, unsigned int ch
 	if (!user || !c) {
 		return false;
 	}
-	return m_server.hasPermission(user, c, ChanACL::KeyOwner);
+	return user->hasPermission(c, ChanACL::KeyOwner);
 }
 
 Protocol ServerBridge::getChannelPChatProtocol(unsigned int channelId) const {

@@ -18,6 +18,7 @@
 #include "LinkPreviewBridge.h"
 #include "ServerUser.h"
 #include "User.h"
+#include "UserStateSerializer.h"
 #include "Version.h"
 #include "crypto/CryptState.h"
 
@@ -116,7 +117,7 @@ public:
 		QMutableStringListIterator it(this->qslTemporaryTokens);
 
 		{
-			QMutexLocker qml(&server->qmCache);
+			QMutexLocker qml(&server->aclCache().mutex());
 
 			while (it.hasNext()) {
 				QString &token = it.next();
@@ -145,7 +146,7 @@ public:
 	~TemporaryAccessTokenHelper() {
 		if (!this->qslTemporaryTokens.isEmpty()) {
 			{
-				QMutexLocker qml(&server->qmCache);
+				QMutexLocker qml(&server->aclCache().mutex());
 
 				// remove the temporary tokens
 				for (const QString &token : this->qslTemporaryTokens) {
@@ -186,7 +187,8 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		}
 
 		{
-			QMutexLocker qml(&qmCache);
+			// Serialise the access-token edit against permission evaluation.
+			QMutexLocker qml(&aclCache().mutex());
 			uSource->qslAccessTokens = qsl;
 		}
 
@@ -198,11 +200,11 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		for (Channel *chan : qhChannels) {
 			// Never reveal a hidden channel's existence to a user who may not see
 			// it (this would otherwise leak the channel id into their channel list).
-			if (chan->iId != 0 && !canSee(uSource, chan)) {
+			if (chan->iId != 0 && !uSource->canSee(chan)) {
 				continue;
 			}
 			mpcs.set_channel_id(static_cast< unsigned int >(chan->iId));
-			mpcs.set_can_enter(hasPermission(uSource, chan, ChanACL::Enter));
+			mpcs.set_can_enter(uSource->hasPermission(chan, ChanACL::Enter));
 			// As no ACLs have changed, we don't need to update the is_access_restricted message field
 
 			sendMessage(uSource, mpcs);
@@ -298,7 +300,8 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			}
 
 			{
-				QMutexLocker qml(&qmCache);
+				// Serialise the access-token edit against permission evaluation.
+				QMutexLocker qml(&aclCache().mutex());
 				uSource->qslAccessTokens = qsl;
 			}
 		}
@@ -318,9 +321,9 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		lc                         = qhChannels.value(lastChannelID);
 	}
 
-	if (!lc || !hasPermission(uSource, lc, ChanACL::Enter) || isChannelFull(lc, uSource)) {
+	if (!lc || !uSource->hasPermission(lc, ChanACL::Enter) || isChannelFull(lc, uSource)) {
 		lc = qhChannels.value(iDefaultChan);
-		if (!lc || !hasPermission(uSource, lc, ChanACL::Enter) || isChannelFull(lc, uSource)) {
+		if (!lc || !uSource->hasPermission(lc, ChanACL::Enter) || isChannelFull(lc, uSource)) {
 			lc = root;
 			if (isChannelFull(lc, uSource)) {
 				reason = QString::fromLatin1("Server channels are full");
@@ -404,7 +407,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		// Hidden-channel visibility: never tell this user about a channel they
 		// may not see, and prune its whole subtree (a descendant's parent ref
 		// would otherwise dangle). Root (id 0) is always visible.
-		if (c->iId != 0 && !canSee(uSource, c)) {
+		if (c->iId != 0 && !uSource->canSee(c)) {
 			continue;
 		}
 
@@ -455,7 +458,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 		// Include info about enter restrictions of this channel
 		mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
-		mpcs.set_can_enter(hasPermission(uSource, c, ChanACL::Enter));
+		mpcs.set_can_enter(uSource->hasPermission(c, ChanACL::Enter));
 
 		sendMessage(uSource, mpcs);
 
@@ -474,7 +477,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 			int visibleLinks = 0;
 			for (Channel *l : chan->qhLinks.keys()) {
-				if (canSee(uSource, l)) {
+				if (uSource->canSee(l)) {
 					mpcs.add_links(l->iId);
 					++visibleLinks;
 				}
@@ -548,7 +551,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 		// Presence hiding: never reveal a user who is currently inside a hidden
 		// channel that the newcomer is not allowed to see.
-		if (!canSee(uSource, u->cChannel))
+		if (!uSource->canSee(u->cChannel))
 			continue;
 
 		mpus.Clear();
@@ -617,9 +620,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 	if (uSource->iId == 0) {
 		mpss.set_permissions(ChanACL::All);
 	} else {
-		QMutexLocker qml(&qmCache);
-		ChanACL::hasPermission(uSource, root, ChanACL::Enter, &acCache);
-		mpss.set_permissions(acCache.value(uSource)->value(root));
+		mpss.set_permissions(static_cast< unsigned int >(uSource->effectivePermissions(root)));
 	}
 
 	sendMessage(uSource, mpss);
@@ -759,7 +760,7 @@ void Server::msgBanList(ServerUser *uSource, MumbleProto::BanList &msg) {
 
 	MSG_SETUP(ServerUser::Authenticated);
 
-	if (!hasPermission(uSource, qhChannels.value(0), ChanACL::Ban)) {
+	if (!uSource->hasPermission(qhChannels.value(0), ChanACL::Ban)) {
 		PERM_DENIED(uSource, qhChannels.value(0), ChanACL::Ban);
 		return;
 	}
@@ -897,12 +898,12 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 		if (!c || (c == pDstServerUser->cChannel))
 			return;
 
-		if ((uSource != pDstServerUser) && (!hasPermission(uSource, pDstServerUser->cChannel, ChanACL::Move))) {
+		if ((uSource != pDstServerUser) && (!uSource->hasPermission(pDstServerUser->cChannel, ChanACL::Move))) {
 			PERM_DENIED(uSource, pDstServerUser->cChannel, ChanACL::Move);
 			return;
 		}
 
-		if (!hasPermission(uSource, c, ChanACL::Move) && !hasPermission(pDstServerUser, c, ChanACL::Enter)) {
+		if (!uSource->hasPermission(c, ChanACL::Move) && !pDstServerUser->hasPermission(c, ChanACL::Enter)) {
 			PERM_DENIED(pDstServerUser, c, ChanACL::Enter);
 			return;
 		}
@@ -922,7 +923,7 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 			continue;
 		}
 
-		if (!hasPermission(pDstServerUser, c, ChanACL::Listen)) {
+		if (!pDstServerUser->hasPermission(c, ChanACL::Listen)) {
 			PERM_DENIED(pDstServerUser, c, ChanACL::Listen);
 			continue;
 		}
@@ -957,7 +958,7 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 			PERM_DENIED_TYPE(SuperUser);
 			return;
 		}
-		if (!hasPermission(uSource, pDstServerUser->cChannel, ChanACL::MuteDeafen) || msg.suppress()) {
+		if (!uSource->hasPermission(pDstServerUser->cChannel, ChanACL::MuteDeafen) || msg.suppress()) {
 			PERM_DENIED(uSource, pDstServerUser->cChannel, ChanACL::MuteDeafen);
 			return;
 		}
@@ -974,7 +975,7 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 				c = c->cParent;
 			}
 
-			if (!c || !hasPermission(uSource, c, ChanACL::MuteDeafen)) {
+			if (!c || !uSource->hasPermission(c, ChanACL::MuteDeafen)) {
 				PERM_DENIED_TYPE(TemporaryChannel);
 				return;
 			}
@@ -987,7 +988,7 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 		bool changed = false;
 		comment      = u8(msg.comment());
 		if (uSource != pDstServerUser) {
-			if (!hasPermission(uSource, root, ChanACL::ResetUserContent)) {
+			if (!uSource->hasPermission(root, ChanACL::ResetUserContent)) {
 				PERM_DENIED(uSource, root, ChanACL::ResetUserContent);
 				return;
 			}
@@ -1013,7 +1014,7 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 			return;
 		}
 		if (uSource != pDstServerUser) {
-			if (!hasPermission(uSource, root, ChanACL::ResetUserContent)) {
+			if (!uSource->hasPermission(root, ChanACL::ResetUserContent)) {
 				PERM_DENIED(uSource, root, ChanACL::ResetUserContent);
 				return;
 			}
@@ -1027,7 +1028,7 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 
 	if (msg.has_user_id()) {
 		ChanACL::Perm p = (uSource == pDstServerUser) ? ChanACL::SelfRegister : ChanACL::Register;
-		if ((pDstServerUser->iId >= 0) || !hasPermission(uSource, root, p)) {
+		if ((pDstServerUser->iId >= 0) || !uSource->hasPermission(root, p)) {
 			PERM_DENIED(uSource, root, p);
 			return;
 		}
@@ -1322,18 +1323,34 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 								  Version::CompareMode::AtLeast);
 		}
 
-		// If this was a move and the user is now somewhere a peer can no longer
-		// see (e.g. into a hidden channel), that peer must be told the user left
-		// their view - otherwise the user would appear frozen in the old channel.
+		// Presence hiding on a channel move has two symmetric sides:
 		if (presenceChannelMoved && presencePrevChannel) {
-			MumbleProto::UserRemove vanish;
-			vanish.set_session(pDstServerUser->uiSession);
-			QByteArray vanishCache;
+			Channel *newChannel = pDstServerUser->cChannel;
 			for (ServerUser *peer : qhUsers) {
 				if (peer == uSource || peer == pDstServerUser || peer->sState != ServerUser::Authenticated)
 					continue;
-				if (canSee(peer, presencePrevChannel) && !canSee(peer, pDstServerUser->cChannel)) {
+
+				const bool sawBefore = peer->canSee(presencePrevChannel);
+				const bool seesNow   = peer->canSee(newChannel);
+
+				if (sawBefore && !seesNow) {
+					// Moved out of view (e.g. into a hidden channel): tell the peer
+					// the user left, otherwise they'd appear frozen in the old
+					// channel.
+					MumbleProto::UserRemove vanish;
+					vanish.set_session(pDstServerUser->uiSession);
+					QByteArray vanishCache;
 					peer->sendMessage(vanish, Mumble::Protocol::TCPMessageType::UserRemove, vanishCache);
+				} else if (!sawBefore && seesNow) {
+					// Moved back into view (e.g. leaving a hidden channel): the peer
+					// was previously sent a UserRemove and no longer knows this
+					// session, so the regular delta UserState above can't reattach
+					// to it. Re-announce the user in full so they reappear.
+					MumbleProto::UserState reappear;
+					serializeUserState(reappear, *pDstServerUser, *peer, m_channelListenerManager,
+									   broadcastListenerVolumeAdjustments);
+					QByteArray reappearCache;
+					peer->sendMessage(reappear, Mumble::Protocol::TCPMessageType::UserState, reappearCache);
 				}
 			}
 		}
@@ -1363,7 +1380,7 @@ void Server::msgUserRemove(ServerUser *uSource, MumbleProto::UserRemove &msg) {
 	Channel *c                   = qhChannels.value(0);
 	QFlags< ChanACL::Perm > perm = ban ? ChanACL::Ban : (ChanACL::Ban | ChanACL::Kick);
 
-	if ((pDstServerUser->iId == 0) || !hasPermission(uSource, c, perm)) {
+	if ((pDstServerUser->iId == 0) || !uSource->hasPermission(c, perm)) {
 		PERM_DENIED(uSource, c, perm);
 		return;
 	}
@@ -1496,7 +1513,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		}
 
 		ChanACL::Perm perm = msg.temporary() ? ChanACL::MakeTempChannel : ChanACL::MakeChannel;
-		if (!hasPermission(uSource, p, perm)) {
+		if (!uSource->hasPermission(p, perm)) {
 			PERM_DENIED(uSource, p, perm);
 			return;
 		}
@@ -1546,7 +1563,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			g->qsAdd << uSource->iId;
 		}
 
-		if (!hasPermission(uSource, c, ChanACL::Write)) {
+		if (!uSource->hasPermission(c, ChanACL::Write)) {
 			ChanACL *a    = new ChanACL(c);
 			a->bApplyHere = true;
 			a->bApplySubs = false;
@@ -1622,7 +1639,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 				for (ServerUser *peer : qhUsers) {
 					if (peer == uSource || peer->sState != ServerUser::Authenticated)
 						continue;
-					if (canSee(peer, creatorPrevChannel) && !canSee(peer, c)) {
+					if (peer->canSee(creatorPrevChannel) && !peer->canSee(c)) {
 						peer->sendMessage(vanish, Mumble::Protocol::TCPMessageType::UserRemove, vanishCache);
 					}
 				}
@@ -1636,19 +1653,19 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		// The message is related to an existing channel c so check if the user is allowed to modify it
 		// and perform the modifications
 		if (!qsName.isNull()) {
-			if (!hasPermission(uSource, c, ChanACL::Write) || (c->iId == 0)) {
+			if (!uSource->hasPermission(c, ChanACL::Write) || (c->iId == 0)) {
 				PERM_DENIED(uSource, c, ChanACL::Write);
 				return;
 			}
 		}
 		if (!qsDesc.isNull()) {
-			if (!hasPermission(uSource, c, ChanACL::Write)) {
+			if (!uSource->hasPermission(c, ChanACL::Write)) {
 				PERM_DENIED(uSource, c, ChanACL::Write);
 				return;
 			}
 		}
 		if (msg.has_position()) {
-			if (!hasPermission(uSource, c, ChanACL::Write)) {
+			if (!uSource->hasPermission(c, ChanACL::Write)) {
 				PERM_DENIED(uSource, c, ChanACL::Write);
 				return;
 			}
@@ -1672,14 +1689,14 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 				return;
 			}
 
-			if (!hasPermission(uSource, c, ChanACL::Write)) {
+			if (!uSource->hasPermission(c, ChanACL::Write)) {
 				PERM_DENIED(uSource, c, ChanACL::Write);
 				return;
 			}
 
 			QFlags< ChanACL::Perm > parentMakePermission =
 				c->bTemporary ? ChanACL::MakeTempChannel : ChanACL::MakeChannel;
-			if (!hasPermission(uSource, p, parentMakePermission)) {
+			if (!uSource->hasPermission(p, parentMakePermission)) {
 				PERM_DENIED(uSource, p, parentMakePermission);
 				return;
 			}
@@ -1697,7 +1714,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		QList< Channel * > qlRemove;
 
 		if (msg.links_add_size() || msg.links_remove_size()) {
-			if (!hasPermission(uSource, c, ChanACL::LinkChannel)) {
+			if (!uSource->hasPermission(c, ChanACL::LinkChannel)) {
 				PERM_DENIED(uSource, c, ChanACL::LinkChannel);
 				return;
 			}
@@ -1718,7 +1735,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 					if (!l) {
 						return;
 					}
-					if (!hasPermission(uSource, l, ChanACL::LinkChannel)) {
+					if (!uSource->hasPermission(l, ChanACL::LinkChannel)) {
 						PERM_DENIED(uSource, l, ChanACL::LinkChannel);
 						return;
 					}
@@ -1728,7 +1745,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		}
 
 		if (msg.has_max_users()) {
-			if (!hasPermission(uSource, c, ChanACL::Write)) {
+			if (!uSource->hasPermission(c, ChanACL::Write)) {
 				PERM_DENIED(uSource, c, ChanACL::Write);
 				return;
 			}
@@ -1736,21 +1753,21 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 
 		if (msg.has_pchat_protocol() || msg.has_pchat_max_history() || msg.has_pchat_retention_days()
 			|| msg.pchat_key_custodians_size() > 0) {
-			if (!hasPermission(uSource, c, ChanACL::Write)) {
+			if (!uSource->hasPermission(c, ChanACL::Write)) {
 				PERM_DENIED(uSource, c, ChanACL::Write);
 				return;
 			}
 		}
 
 		if (msg.has_hidden()) {
-			if (!hasPermission(uSource, c, ChanACL::Write)) {
+			if (!uSource->hasPermission(c, ChanACL::Write)) {
 				PERM_DENIED(uSource, c, ChanACL::Write);
 				return;
 			}
 		}
 
 		if (msg.has_expiry_mode() || msg.has_expiry_duration_secs()) {
-			if (!hasPermission(uSource, c, ChanACL::Write)) {
+			if (!uSource->hasPermission(c, ChanACL::Write)) {
 				PERM_DENIED(uSource, c, ChanACL::Write);
 				return;
 			}
@@ -1842,7 +1859,7 @@ void Server::msgChannelRemove(ServerUser *uSource, MumbleProto::ChannelRemove &m
 	if (!c)
 		return;
 
-	if (!hasPermission(uSource, c, ChanACL::Write) || (c->iId == 0)) {
+	if (!uSource->hasPermission(c, ChanACL::Write) || (c->iId == 0)) {
 		PERM_DENIED(uSource, c, ChanACL::Write);
 		return;
 	}
@@ -1856,7 +1873,6 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	ZoneScoped;
 
 	MSG_SETUP(ServerUser::Authenticated);
-	QMutexLocker qml(&qmCache);
 
 	// For signal userTextMessage (RPC consumers)
 	TextMessage tm;
@@ -1966,7 +1982,7 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 			return;
 		}
 
-		if (!ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
+		if (!uSource->hasPermission(c, ChanACL::TextMessage)) {
 			PERM_DENIED(uSource, c, ChanACL::TextMessage);
 			return;
 		}
@@ -2003,7 +2019,7 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 			return;
 		}
 
-		if (!ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
+		if (!uSource->hasPermission(c, ChanACL::TextMessage)) {
 			PERM_DENIED(uSource, c, ChanACL::TextMessage);
 			return;
 		}
@@ -2024,7 +2040,7 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	// Sub-channels are enqued so they are also checked by a later loop-iteration
 	while (!q.isEmpty()) {
 		Channel *c = q.dequeue();
-		if (ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)
+		if (uSource->hasPermission(c, ChanACL::TextMessage)
 			&& !(c->isPersistentChat() && m_pchatManager
 				 && !m_pchatManager->isSessionVerified(static_cast< unsigned int >(c->iId),
 													   uSource->uiSession))) {
@@ -2050,7 +2066,7 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 		unsigned int session = msg.session(i);
 		ServerUser *u        = qhUsers.value(session);
 		if (u) {
-			if (!ChanACL::hasPermission(uSource, u->cChannel, ChanACL::TextMessage, &acCache)) {
+			if (!uSource->hasPermission(u->cChannel, ChanACL::TextMessage)) {
 				PERM_DENIED(uSource, u->cChannel, ChanACL::TextMessage);
 				return;
 			}
@@ -2096,6 +2112,34 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 
 	// Actually send the original message to the affected users
 	for (ServerUser *u : users) {
+		// Presence hiding makes the sender invisible to anyone who can't see the
+		// sender's (hidden) channel - they were never sent a UserState for the
+		// sender, so the message's `actor` session is unresolvable on their client
+		// and renders as "Server". When such a recipient is nonetheless a legitimate
+		// target (tree/direct/listener/push delivery), announce just the sender's
+		// identity first so the message is attributed to the real user.
+		//
+		// We deliberately omit the channel id: the recipient learns who is talking
+		// to them, but not which hidden channel the sender sits in (keeping the
+		// channel-id-never-leaks invariant of the visibility policy intact).
+		if (uSource->cChannel && !u->canSee(uSource->cChannel)) {
+			MumbleProto::UserState ident;
+			ident.set_session(uSource->uiSession);
+			ident.set_name(u8(uSource->qsName));
+			if (uSource->iId >= 0)
+				ident.set_user_id(static_cast< unsigned int >(uSource->iId));
+			if (!uSource->qsHash.isEmpty())
+				ident.set_hash(u8(uSource->qsHash));
+			if (u->usesBlobHashes()) {
+				if (!uSource->qbaTextureHash.isEmpty())
+					ident.set_texture_hash(blob(uSource->qbaTextureHash));
+			} else if (!uSource->qbaTexture.isEmpty()) {
+				ident.set_texture(blob(uSource->qbaTexture));
+			}
+			if (uSource->isFancyClient())
+				ident.add_client_features(MumbleProto::UserState::FEATURE_PCHAT_E2EE);
+			sendMessage(u, ident);
+		}
 		sendMessage(u, msg);
 	}
 
@@ -2256,7 +2300,7 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 	// This is done to prevent users who have permission to create (temporary)
 	// channels being able to "lock-out" admins by denying them 'Write' in their
 	// channel effectively becoming ungovernable.
-	if (!hasPermission(uSource, c, ChanACL::Write) && !hasPermission(uSource, qhChannels.value(0), ChanACL::Write)) {
+	if (!uSource->hasPermission(c, ChanACL::Write) && !uSource->hasPermission(qhChannels.value(0), ChanACL::Write)) {
 		PERM_DENIED(uSource, c, ChanACL::Write);
 		return;
 	}
@@ -2467,7 +2511,7 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 
 		clearACLCache();
 
-		if (!hasPermission(uSource, c, ChanACL::Write) && ((uSource->iId >= 0) || !uSource->qsHash.isEmpty())) {
+		if (!uSource->hasPermission(c, ChanACL::Write) && ((uSource->iId >= 0) || !uSource->qsHash.isEmpty())) {
 			{
 				QWriteLocker wl(&qrwlVoiceThread);
 
@@ -2499,11 +2543,11 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 		mpcs.set_channel_id(c->iId);
 
 		for (ServerUser *user : qhUsers) {
-			if (c->iId != 0 && !canSee(user, c)) {
+			if (c->iId != 0 && !user->canSee(c)) {
 				continue;
 			}
 			mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
-			mpcs.set_can_enter(hasPermission(user, c, ChanACL::Enter));
+			mpcs.set_can_enter(user->hasPermission(c, ChanACL::Enter));
 
 			sendMessage(user, mpcs);
 		}
@@ -2518,7 +2562,7 @@ void Server::msgQueryUsers(ServerUser *uSource, MumbleProto::QueryUsers &msg) {
 	// User needs Write permission on at least one channel in the tree
 	bool hasWritePermission = false;
 	for (Channel *chan : qhChannels) {
-		if (hasPermission(uSource, chan, ChanACL::Write)) {
+		if (uSource->hasPermission(chan, ChanACL::Write)) {
 			hasWritePermission = true;
 			break;
 		}
@@ -2673,13 +2717,13 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 	// The read/write Register permission grants full management + visibility of
 	// the directory; the read-only ReadRegister permission (held by every
 	// registered user) grants a reduced, privacy-preserving view.
-	const bool canManage = hasPermission(uSource, qhChannels.value(0), ChanACL::Register);
+	const bool canManage = uSource->hasPermission(qhChannels.value(0), ChanACL::Register);
 
 	if (msg.users_size() == 0) {
 		// Query mode - read the registered-user directory. Allowed with either
 		// ReadRegister or Register, so a non-admin can still resolve registered
 		// users that are offline - e.g. to invite them to a meeting.
-		if (!canManage && !hasPermission(uSource, qhChannels.value(0), ChanACL::ReadRegister)) {
+		if (!canManage && !uSource->hasPermission(qhChannels.value(0), ChanACL::ReadRegister)) {
 			PERM_DENIED(uSource, qhChannels.value(0), ChanACL::ReadRegister);
 			return;
 		}
@@ -2841,9 +2885,9 @@ void Server::msgUserStats(ServerUser *uSource, MumbleProto::UserStats &msg) {
 	const BandwidthRecord &bwr            = pDstServerUser->bwr;
 	const QList< QSslCertificate > &certs = pDstServerUser->peerCertificateChain();
 
-	bool extend = (uSource == pDstServerUser) || hasPermission(uSource, qhChannels.value(0), ChanACL::Ban);
+	bool extend = (uSource == pDstServerUser) || uSource->hasPermission(qhChannels.value(0), ChanACL::Ban);
 
-	if (!extend && !hasPermission(uSource, pDstServerUser->cChannel, ChanACL::Enter)) {
+	if (!extend && !uSource->hasPermission(pDstServerUser->cChannel, ChanACL::Enter)) {
 		PERM_DENIED(uSource, pDstServerUser->cChannel, ChanACL::Enter);
 		return;
 	}
@@ -2966,7 +3010,7 @@ void Server::msgRequestBlob(ServerUser *uSource, MumbleProto::RequestBlob &msg) 
 			Channel *c      = qhChannels.value(id);
 			// Defence in depth: never serve a hidden channel's description to a
 			// user who may not see the channel.
-			if (c && !c->qsDesc.isEmpty() && (c->iId == 0 || canSee(uSource, c))) {
+			if (c && !c->qsDesc.isEmpty() && (c->iId == 0 || uSource->canSee(c))) {
 				mpcs.set_channel_id(id);
 				mpcs.set_description(u8(c->qsDesc));
 				sendMessage(uSource, mpcs);
@@ -3107,7 +3151,7 @@ void Server::computeAllowedPushChannels(ServerUser *user, std::set< uint32_t > &
 	out.clear();
 	for (auto it = qhChannels.constBegin(); it != qhChannels.constEnd(); ++it) {
 		Channel *c = it.value();
-		if (ChanACL::hasPermission(user, c, ChanACL::SubscribePush, &acCache)) {
+		if (user->hasPermission(c, ChanACL::SubscribePush)) {
 			out.insert(static_cast< uint32_t >(c->iId));
 		}
 	}
@@ -3309,7 +3353,7 @@ void Server::msgPchatDeleteMessages(ServerUser *uSource, MumbleProto::PchatDelet
 		return;
 	}
 
-	if (!hasPermission(uSource, c, ChanACL::DeleteMessage)) {
+	if (!uSource->hasPermission(c, ChanACL::DeleteMessage)) {
 		PERM_DENIED(uSource, c, ChanACL::DeleteMessage);
 		return;
 	}
@@ -3385,7 +3429,7 @@ void Server::msgWebRtcSignal(ServerUser *uSource, MumbleProto::WebRtcSignal &msg
 	if (!c)
 		return;
 
-	if (!ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
+	if (!uSource->hasPermission(c, ChanACL::TextMessage)) {
 		PERM_DENIED(uSource, c, ChanACL::TextMessage);
 		return;
 	}
@@ -3752,7 +3796,7 @@ void Server::msgFancyOnboardingConfigUpdate(ServerUser *uSource,
 	// Only users with Write permission on the root channel can edit
 	// the onboarding flow (mirrors how server-wide config edits are
 	// authorised elsewhere).
-	if (!hasPermission(uSource, root, ChanACL::Write)) {
+	if (!uSource->hasPermission(root, ChanACL::Write)) {
 		PERM_DENIED(uSource, root, ChanACL::Write);
 		return;
 	}
@@ -4016,7 +4060,7 @@ void Server::sendFancyServerSettings(ServerUser *u) {
 		return;
 	}
 	Channel *root = qhChannels.value(0);
-	if (!root || !hasPermission(u, root, ChanACL::Write)) {
+	if (!root || !u->hasPermission(root, ChanACL::Write)) {
 		return;
 	}
 	// Only Fancy clients can render this; the exact version is not gated
@@ -4046,7 +4090,7 @@ void Server::msgFancyServerSettingsUpdate(ServerUser *uSource,
 	}
 	// Only users with Write permission on the root channel may change
 	// server settings (mirrors onboarding / ACL edits).
-	if (!hasPermission(uSource, root, ChanACL::Write)) {
+	if (!uSource->hasPermission(root, ChanACL::Write)) {
 		PERM_DENIED(uSource, root, ChanACL::Write);
 		return;
 	}
@@ -4204,7 +4248,7 @@ void broadcastPluginAdminList(Server *server) {
 		if (u->sState != ServerUser::Authenticated) {
 			continue;
 		}
-		if (!server->hasPermission(u, root, ChanACL::Write)) {
+		if (!u->hasPermission(root, ChanACL::Write)) {
 			continue;
 		}
 		server->sendMessage(u, reply);
@@ -4239,7 +4283,7 @@ void Server::msgFancyPluginAdminListRequest(ServerUser *uSource,
 	if (!root) {
 		return;
 	}
-	if (!hasPermission(uSource, root, ChanACL::Write)) {
+	if (!uSource->hasPermission(root, ChanACL::Write)) {
 		PERM_DENIED(uSource, root, ChanACL::Write);
 		return;
 	}
@@ -4269,7 +4313,7 @@ void Server::msgFancyPluginAdminSetEnabled(ServerUser *uSource,
 	if (!root) {
 		return;
 	}
-	if (!hasPermission(uSource, root, ChanACL::Write)) {
+	if (!uSource->hasPermission(root, ChanACL::Write)) {
 		PERM_DENIED(uSource, root, ChanACL::Write);
 		return;
 	}
@@ -4315,7 +4359,7 @@ void Server::msgFancyPluginAdminInstall(ServerUser *uSource,
 	if (!root) {
 		return;
 	}
-	if (!hasPermission(uSource, root, ChanACL::Write)) {
+	if (!uSource->hasPermission(root, ChanACL::Write)) {
 		PERM_DENIED(uSource, root, ChanACL::Write);
 		return;
 	}
@@ -4357,7 +4401,7 @@ void Server::msgFancyPluginAdminUninstall(ServerUser *uSource,
 	if (!root) {
 		return;
 	}
-	if (!hasPermission(uSource, root, ChanACL::Write)) {
+	if (!uSource->hasPermission(root, ChanACL::Write)) {
 		PERM_DENIED(uSource, root, ChanACL::Write);
 		return;
 	}

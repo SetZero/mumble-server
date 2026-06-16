@@ -5,6 +5,9 @@
 
 #include "ServerUser.h"
 
+#include "ACL.h"
+#include "Channel.h"
+#include "ChannelVisibility.h"
 #include "ClientType.h"
 #include "Meta.h"
 #include "Server.h"
@@ -16,7 +19,7 @@
 #include <chrono>
 
 ServerUser::ServerUser(Server *p, QSslSocket *socket)
-	: Connection(p, socket), ServerUserInfo(), s(nullptr), leakyBucket(p->iMessageLimit, p->iMessageBurst),
+	: Connection(p, socket), ServerUserInfo(), s(p), leakyBucket(p->iMessageLimit, p->iMessageBurst),
 	  m_pluginMessageBucket(p->iPluginMessageLimit, p->iPluginMessageBurst) {
 	sState       = ServerUser::Connected;
 	m_clientType = ClientType::REGULAR;
@@ -41,6 +44,33 @@ ServerUser::ServerUser(Server *p, QSslSocket *socket)
 ServerUser::operator QString() const {
 	return QString::fromLatin1("%1:%2(%3)").arg(qsName).arg(uiSession).arg(iId);
 }
+
+bool ServerUser::usesBlobHashes() const {
+	return m_version >= Version::fromComponents(1, 2, 2);
+}
+
+bool ServerUser::isFancyClient() const {
+	return m_FancyVersion.has_value();
+}
+
+bool ServerUser::canSee(Channel *c) {
+	return s->aclCache().evaluate([&](ChanACL::ACLCache &cache, IChannelVisibilityPolicy &visibility) {
+		return visibility.canSee(*this, *c, &cache);
+	});
+}
+
+bool ServerUser::hasPermission(Channel *c, QFlags< ChanACL::Perm > perm) {
+	return s->aclCache().evaluate([&](ChanACL::ACLCache &cache, IChannelVisibilityPolicy &) {
+		return ChanACL::hasPermission(this, c, perm, &cache);
+	});
+}
+
+QFlags< ChanACL::Perm > ServerUser::effectivePermissions(Channel *c) {
+	return s->aclCache().evaluate([&](ChanACL::ACLCache &cache, IChannelVisibilityPolicy &) {
+		return ChanACL::effectivePermissions(this, c, &cache);
+	});
+}
+
 BandwidthRecord::BandwidthRecord() {
 	iRecNum = 0;
 	iSum    = 0;

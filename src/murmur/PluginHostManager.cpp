@@ -232,7 +232,7 @@ bool PluginHostManager::userHasChannelAccessTrampoline(void *userData, uint32_t 
 	if (!user || !chan) {
 		return false;
 	}
-	return self->m_server->hasPermission(user, chan, ChanACL::Enter);
+	return user->hasPermission(chan, ChanACL::Enter);
 }
 
 bool PluginHostManager::hasPermissionTrampoline(void *userData, uint32_t /*serverId*/,
@@ -249,7 +249,7 @@ bool PluginHostManager::hasPermissionTrampoline(void *userData, uint32_t /*serve
 		return false;
 	}
 	const QFlags< ChanACL::Perm > perms(static_cast< ChanACL::Perm >(permissionFlags));
-	return self->m_server->hasPermission(user, chan, perms);
+	return user->hasPermission(chan, perms);
 }
 
 bool PluginHostManager::currentChannelTrampoline(void *userData, uint32_t /*serverId*/,

@@ -1288,7 +1288,7 @@ static void impl_Server_getChannelsForSession(const ::MumbleServer::AMD_Server_g
 	::MumbleServer::ChannelMap cm;
 	for (const ::Channel *c : server->qhChannels) {
 		// Visibility-filtered: omit hidden channels this user may not see.
-		if (!server->canSee(user, const_cast<::Channel * >(c))) {
+		if (!user->canSee(const_cast<::Channel * >(c))) {
 			continue;
 		}
 		::MumbleServer::Channel mc;
@@ -1358,7 +1358,7 @@ TreePtr recurseTreeForSession(::Server *server, ServerUser *user, const ::Channe
 	std::sort(channels.begin(), channels.end(), channelSort);
 
 	for (const ::Channel *chn : channels) {
-		if (server->canSee(user, const_cast<::Channel * >(chn))) {
+		if (user->canSee(const_cast<::Channel * >(chn))) {
 			t->children.push_back(recurseTreeForSession(server, user, chn, includeDescription));
 		}
 	}
@@ -1482,7 +1482,7 @@ static void impl_Server_hasPermission(const ::MumbleServer::AMD_Server_hasPermis
 	NEED_SERVER;
 	NEED_PLAYER;
 	NEED_CHANNEL;
-	cb->ice_response(server->hasPermission(user, channel, static_cast< ChanACL::Perm >(perm)));
+	cb->ice_response(user->hasPermission(channel, static_cast< ChanACL::Perm >(perm)));
 
 	ICE_IMPL_END
 }
@@ -1495,7 +1495,7 @@ static void impl_Server_effectivePermissions(const ::MumbleServer::AMD_Server_ef
 	NEED_SERVER;
 	NEED_PLAYER;
 	NEED_CHANNEL;
-	cb->ice_response(static_cast< int >(server->effectivePermissions(user, channel)));
+	cb->ice_response(static_cast< int >(user->effectivePermissions(channel)));
 
 	ICE_IMPL_END
 }

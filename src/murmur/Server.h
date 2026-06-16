@@ -13,6 +13,7 @@
 #endif
 
 #include "ACL.h"
+#include "AclSubsystem.h"
 #include "AudioReceiverBuffer.h"
 #include "Ban.h"
 #include "ChannelListenerManager.h"
@@ -359,9 +360,6 @@ public:
 	QHash< HostAddress, QSet< ServerUser * > > qhHostUsers;
 	QHash< unsigned int, Channel * > qhChannels;
 
-	QMutex qmCache;
-	ChanACL::ACLCache acCache;
-
 	QHash< int, QString > qhUserNameCache;
 	QHash< Mumble::QtUtils::CaseInsensitiveQString, int > qhUserIDCache;
 
@@ -384,9 +382,10 @@ public:
 	/// the host (a subscriber) is destroyed while the distributor is still alive.
 	ServerEventDistributor m_events{ *this };
 
-	/// Policy deciding which channels each user may see (hidden-channel support).
-	/// Held behind the interface so it can be swapped/tested (DIP).
-	std::unique_ptr< IChannelVisibilityPolicy > m_channelVisibility;
+	/// Owns the ACL permission cache, its lock and the channel-visibility policy.
+	/// Replaces the former public qmCache / acCache / m_channelVisibility members
+	/// that callers reached into directly.
+	AclSubsystem m_aclCache;
 
 	/// Single-shot timer for the channel-expiry reaper. Fires on the main event
 	/// loop (same thread as channel mutations -> no locking needed), armed to the
@@ -454,17 +453,16 @@ public:
 
 	bool checkDecrypt(ServerUser *u, const unsigned char *encrypted, unsigned char *plain, unsigned int cryptlen);
 
-	bool hasPermission(ServerUser *p, Channel *c, QFlags< ChanACL::Perm > perm);
-	/// Whether @p p is allowed to see channel @p c (delegates to the channel
-	/// visibility policy; reuses the shared ACL cache). The single point every
-	/// broadcast/enumeration path consults to keep hidden channels hidden.
-	bool canSee(ServerUser *p, Channel *c);
+	// Permission / channel-visibility checks live on ServerUser
+	// (user->hasPermission(c, perm) / user->canSee(c) / user->effectivePermissions(c)),
+	// grouped on the object the question is about. Those delegate to the
+	// AclSubsystem reached through this accessor (no Server internals exposed).
+	AclSubsystem &aclCache() { return m_aclCache; }
 
 	/// Re-arm the single-shot channel-expiry timer to the earliest upcoming
 	/// channel deadline ("sleep until next" reaper). Cheap; call after any change
 	/// that can affect a channel's expiry (create / edit / remove).
 	void rescheduleChannelExpiry();
-	QFlags< ChanACL::Perm > effectivePermissions(ServerUser *p, Channel *c);
 	void sendClientPermission(ServerUser *u, Channel *c, bool explicitlyRequested = false);
 	void flushClientPermissionCache(ServerUser *u, MumbleProto::PermissionQuery &mpqq);
 	void clearACLCache(User *p = nullptr);

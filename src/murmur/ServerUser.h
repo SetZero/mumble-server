@@ -12,6 +12,7 @@
 #	include "win.h"
 #endif
 
+#include "ACL.h"
 #include "ClientType.h"
 #include "Connection.h"
 #include "HostAddress.h"
@@ -116,6 +117,30 @@ public:
 	State sState;
 	ClientType m_clientType;
 	operator QString() const;
+
+	/// Whether this client negotiated a protocol that carries avatars and
+	/// comments by hash (>= 1.2.2), lazily fetching the bytes. Older clients
+	/// need the blob sent inline. Encapsulates the bare version comparison that
+	/// would otherwise be sprinkled across the message handlers.
+	bool usesBlobHashes() const;
+
+	/// Whether this client advertised a Fancy Mumble version, i.e. understands
+	/// the Fancy protocol extensions (PCHAT E2EE, calendar, ...). A precondition
+	/// for sending any Fancy-only message to it.
+	bool isFancyClient() const;
+
+	// Permission / visibility queries about *this* user, grouped on the user they
+	// concern (rather than spread across the Server message handlers). Each
+	// delegates to the server's AclSubsystem (Server::aclCache()), which locks the
+	// ACL cache internally - so the caller MUST NOT already hold that lock
+	// (AclSubsystem::mutex()).
+
+	/// Whether this user may see channel @p c (consults the channel-visibility policy).
+	bool canSee(Channel *c);
+	/// Whether this user holds every permission in @p perm on channel @p c.
+	bool hasPermission(Channel *c, QFlags< ChanACL::Perm > perm);
+	/// This user's effective permission flags on channel @p c.
+	QFlags< ChanACL::Perm > effectivePermissions(Channel *c);
 
 	float dUDPPingAvg, dUDPPingVar;
 	float dTCPPingAvg, dTCPPingVar;

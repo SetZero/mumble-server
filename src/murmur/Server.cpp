@@ -248,9 +248,8 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 
 	m_bans = m_dbWrapper.getBans(iServerNum);
 
-	// Channel visibility policy (hidden-channel support). Default ACL-based rule;
-	// installed before channels are loaded so any early lookups are valid.
-	m_channelVisibility = std::make_unique< AclChannelVisibilityPolicy >();
+	// m_aclCache (the ACL permission cache + lock + channel-visibility policy) is a
+	// value member; it default-constructs the standard ACL-based visibility policy.
 
 	// Channel-expiry reaper: a single-shot timer on the main event loop, armed to
 	// the earliest channel deadline (see rescheduleChannelExpiry).
@@ -1352,10 +1351,8 @@ void Server::processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, Au
 			QSet< Channel * > chans = c->allLinks();
 			chans.remove(c);
 
-			QMutexLocker qml(&qmCache);
-
 			for (Channel *l : chans) {
-				if (ChanACL::hasPermission(u, l, ChanACL::Speak, &acCache)) {
+				if (u->hasPermission(l, ChanACL::Speak)) {
 					// Send the audio stream to all users that are listening to the linked channel
 					for (unsigned int currentSession : m_channelListenerManager.getListenersForChannel(l->iId)) {
 						ServerUser *pDst = static_cast< ServerUser * >(qhUsers.value(currentSession));
@@ -2085,7 +2082,7 @@ void Server::sendProtoToChannelObserversExcept(ServerUser *except, Channel *c, c
 			const bool isUnknown = version == Version::UNKNOWN;
 			const bool fulfillsVersionRequirement =
 				mode == Version::CompareMode::AtLeast ? usr->m_version >= version : usr->m_version < version;
-			if ((isUnknown || fulfillsVersionRequirement) && canSee(usr, c)) {
+			if ((isUnknown || fulfillsVersionRequirement) && usr->canSee(c)) {
 				usr->sendMessage(msg, msgType, cache);
 			}
 		}
@@ -2119,7 +2116,7 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 
 		Channel *target = dest;
 		while (target->cParent
-			   && (!hasPermission(static_cast< ServerUser * >(p), target, ChanACL::Enter)
+			   && (!static_cast< ServerUser * >(p)->hasPermission(target, ChanACL::Enter)
 				   || isChannelFull(target, static_cast< ServerUser * >(p))))
 			target = target->cParent;
 
@@ -2193,7 +2190,10 @@ bool Server::unregisterUser(int id) {
 
 
 	{
-		QMutexLocker lock(&qmCache);
+		// Serialise the ACL-list edits below against concurrent permission
+		// evaluation (they read these same lists). clearACLCache() is invoked
+		// afterwards, outside this lock.
+		QMutexLocker lock(&m_aclCache.mutex());
 
 		for (Channel *c : qhChannels) {
 			bool write            = false;
@@ -2296,16 +2296,6 @@ void Server::userEnterChannel(User *p, Channel *c, MumbleProto::UserState &mpus)
 	}
 }
 
-bool Server::hasPermission(ServerUser *p, Channel *c, QFlags< ChanACL::Perm > perm) {
-	QMutexLocker qml(&qmCache);
-	return ChanACL::hasPermission(p, c, perm, &acCache);
-}
-
-bool Server::canSee(ServerUser *p, Channel *c) {
-	QMutexLocker qml(&qmCache);
-	return m_channelVisibility->canSee(*p, *c, &acCache);
-}
-
 // Channel expiry deadline as unix seconds, or 0 when the channel does not expire.
 // Absolute mode anchors on creation time; sliding mode on the last activity.
 static qint64 channelExpiryDeadline(const Channel *c) {
@@ -2383,24 +2373,11 @@ void Server::onChannelExpiryTimer() {
 	rescheduleChannelExpiry();
 }
 
-QFlags< ChanACL::Perm > Server::effectivePermissions(ServerUser *p, Channel *c) {
-	QMutexLocker qml(&qmCache);
-	return ChanACL::effectivePermissions(p, c, &acCache);
-}
-
 void Server::sendClientPermission(ServerUser *u, Channel *c, bool explicitlyRequested) {
-	unsigned int perm;
-
 	if (u->iId == 0)
 		return;
 
-	{
-		QMutexLocker qml(&qmCache);
-		// Abuse that hasPermission will update acCache with the latest permissions (all of them,
-		// not only the requested one) so that we can pull this information out of it afterwards.
-		ChanACL::hasPermission(u, c, ChanACL::Enter, &acCache);
-		perm = acCache.value(u)->value(c);
-	}
+	const unsigned int perm = static_cast< unsigned int >(u->effectivePermissions(c));
 
 	if (explicitlyRequested) {
 		// Store the last channel the client showed explicit interest in
@@ -2421,7 +2398,7 @@ void Server::sendClientPermission(ServerUser *u, Channel *c, bool explicitlyRequ
 	}
 }
 
-/* This function is a helper for clearACLCache and assumes qmCache is held.
+/* This function is a helper for clearACLCache.
  * First, check if anything actually changed, or if the list is getting awfully large,
  * because this function is potentially quite expensive.
  * If all the items are still valid; great. If they aren't, send off the last channel
@@ -2436,8 +2413,7 @@ void Server::flushClientPermissionCache(ServerUser *u, MumbleProto::PermissionQu
 		if (!c) {
 			match = false;
 		} else {
-			ChanACL::hasPermission(u, c, ChanACL::Enter, &acCache);
-			unsigned int perm = acCache.value(u)->value(c);
+			unsigned int perm = static_cast< unsigned int >(u->effectivePermissions(c));
 			if (perm != i.value())
 				match = false;
 		}
@@ -2454,8 +2430,7 @@ void Server::flushClientPermissionCache(ServerUser *u, MumbleProto::PermissionQu
 		u->iLastPermissionCheck = static_cast< int >(c->iId);
 	}
 
-	ChanACL::hasPermission(u, c, ChanACL::Enter, &acCache);
-	unsigned int perm = acCache.value(u)->value(c);
+	unsigned int perm = static_cast< unsigned int >(u->effectivePermissions(c));
 	u->qmPermissionSent.insert(static_cast< int >(c->iId), perm);
 
 	mppq.Clear();
@@ -2469,60 +2444,54 @@ void Server::flushClientPermissionCache(ServerUser *u, MumbleProto::PermissionQu
 void Server::clearACLCache(User *p) {
 	MumbleProto::PermissionQuery mppq;
 
-	{
-		QMutexLocker qml(&qmCache);
+	// Drop the stale memo entries (AclSubsystem locks internally), then re-derive
+	// what changed. The re-derivation re-evaluates from the current ACLs, so it
+	// doesn't need to share one critical section with the invalidation above.
+	if (p) {
+		m_aclCache.clearUser(*p);
 
-		if (p) {
-			ChanACL::ChanCache *h = acCache.take(p);
-			delete h;
+		// Guard: do not send to a user whose session has already been removed from
+		// qhUsers (e.g. a ghost disconnected during msgAuthenticate). Writing to a
+		// destroyed socket causes a SIGSEGV in QRingBuffer::reserve().
+		ServerUser *su = static_cast< ServerUser * >(p);
+		if (qhUsers.contains(su->uiSession)) {
+			flushClientPermissionCache(su, mppq);
+		}
+	} else {
+		m_aclCache.clearAll();
 
-			// Guard: do not send to a user whose session has already been
-			// removed from qhUsers (e.g. a ghost disconnected during
-			// msgAuthenticate).  Writing to a destroyed socket causes a
-			// SIGSEGV in QRingBuffer::reserve().
-			ServerUser *su = static_cast< ServerUser * >(p);
-			if (qhUsers.contains(su->uiSession)) {
-				flushClientPermissionCache(su, mppq);
-			}
-		} else {
-			for (ChanACL::ChanCache *h : acCache) {
-				delete h;
-			}
-			acCache.clear();
-
-			for (ServerUser *u : qhUsers) {
-				if (u->sState == ServerUser::Authenticated) {
-					flushClientPermissionCache(u, mppq);
-				}
+		for (ServerUser *u : qhUsers) {
+			if (u->sState == ServerUser::Authenticated) {
+				flushClientPermissionCache(u, mppq);
 			}
 		}
+	}
 
-		// A change in ACLs could also change a user's suppression state
-		MumbleProto::UserState mpus;
-		auto processingFunction = [&](ServerUser *user) {
-			bool maySpeak = ChanACL::hasPermission(user, user->cChannel, ChanACL::Speak, &acCache);
+	// A change in ACLs could also change a user's suppression state
+	MumbleProto::UserState mpus;
+	auto processingFunction = [&](ServerUser *user) {
+		bool maySpeak = user->hasPermission(user->cChannel, ChanACL::Speak);
 
-			if (maySpeak == user->bSuppress) {
-				// Mirror a user's ability to speak in the current channel (by means of the ACLs) in the suppress
-				// property (not being allowed to speak -> suppressed and vice versa)
-				user->bSuppress = !maySpeak;
+		if (maySpeak == user->bSuppress) {
+			// Mirror a user's ability to speak in the current channel (by means of the ACLs) in the suppress
+			// property (not being allowed to speak -> suppressed and vice versa)
+			user->bSuppress = !maySpeak;
 
-				mpus.Clear();
-				mpus.set_session(user->uiSession);
-				mpus.set_suppress(true);
-				sendAll(mpus);
-			}
-		};
+			mpus.Clear();
+			mpus.set_session(user->uiSession);
+			mpus.set_suppress(true);
+			sendAll(mpus);
+		}
+	};
 
-		if (p) {
-			ServerUser *su = static_cast< ServerUser * >(p);
-			if (qhUsers.contains(su->uiSession)) {
-				processingFunction(su);
-			}
-		} else {
-			for (ServerUser *currentUser : qhUsers) {
-				processingFunction(currentUser);
-			}
+	if (p) {
+		ServerUser *su = static_cast< ServerUser * >(p);
+		if (qhUsers.contains(su->uiSession)) {
+			processingFunction(su);
+		}
+	} else {
+		for (ServerUser *currentUser : qhUsers) {
+			processingFunction(currentUser);
 		}
 	}
 
@@ -2765,7 +2734,7 @@ bool Server::isTextAllowed(QString &text, bool &changed) {
 }
 
 bool Server::isChannelFull(Channel *c, ServerUser *u) {
-	if (u && hasPermission(u, c, ChanACL::Write)) {
+	if (u && u->hasPermission(c, ChanACL::Write)) {
 		return false;
 	}
 	if (c->uiMaxUsers) {
@@ -2787,8 +2756,6 @@ bool Server::canNest(Channel *newParent, Channel *channel) const {
 WhisperTargetCache Server::createWhisperTargetCacheFor(ServerUser &speaker, const WhisperTarget &target) {
 	ZoneScoped;
 
-	QMutexLocker qml(&qmCache);
-
 	WhisperTargetCache cache;
 
 	if (!target.channels.empty()) {
@@ -2802,7 +2769,7 @@ WhisperTargetCache Server::createWhisperTargetCacheFor(ServerUser &speaker, cons
 
 				if (!includeLinks && !includeChildren && !restrictToGroup) {
 					// Common case
-					if (ChanACL::hasPermission(&speaker, targetChannel, ChanACL::Whisper, &acCache)) {
+					if (speaker.hasPermission(targetChannel, ChanACL::Whisper)) {
 						for (User *p : targetChannel->qlUsers) {
 							// Add users of the target channel
 							cache.channelTargets.insert(static_cast< ServerUser * >(p));
@@ -2839,7 +2806,7 @@ WhisperTargetCache Server::createWhisperTargetCacheFor(ServerUser &speaker, cons
 					const QString &targetGroup = redirect.isEmpty() ? currentTarget.targetGroup : redirect;
 
 					for (Channel *subTargetChan : channels) {
-						if (ChanACL::hasPermission(&speaker, subTargetChan, ChanACL::Whisper, &acCache)) {
+						if (speaker.hasPermission(subTargetChan, ChanACL::Whisper)) {
 							for (User *p : subTargetChan->qlUsers) {
 								ServerUser *su = static_cast< ServerUser * >(p);
 
@@ -2870,7 +2837,7 @@ WhisperTargetCache Server::createWhisperTargetCacheFor(ServerUser &speaker, cons
 
 	for (unsigned int id : target.sessions) {
 		ServerUser *pDst = qhUsers.value(id);
-		if (pDst && ChanACL::hasPermission(&speaker, pDst->cChannel, ChanACL::Whisper, &acCache)
+		if (pDst && speaker.hasPermission(pDst->cChannel, ChanACL::Whisper)
 			&& !cache.channelTargets.contains(pDst))
 			cache.directTargets.insert(pDst);
 	}
