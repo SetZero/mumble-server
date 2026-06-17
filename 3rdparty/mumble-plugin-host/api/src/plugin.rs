@@ -177,6 +177,52 @@ pub trait PluginContext: Send + Sync + 'static {
         let _ = (server_id, response_type, request_id, target_session, payload);
         ROk(())
     }
+
+    /// Create a sub-channel under `parent`, or return the id of an existing
+    /// child of `parent` that already has this `name` (idempotent "ensure").
+    ///
+    /// All arguments are standard, content-agnostic channel properties that the
+    /// host forwards verbatim to the server's channel machinery; the host
+    /// ascribes no meaning to them:
+    /// * `hidden` - only users with `SeeChannel` are told the channel exists;
+    /// * `registered_can_manage` - make it a shared container the authenticated
+    ///   (`auth`) group may see, traverse and create sub-channels in, while
+    ///   `@all` is denied `SeeChannel` (i.e. hidden from guests but a workspace
+    ///   for registered users);
+    /// * `pchat_protocol` - persistent-chat protocol selector (0 = none);
+    /// * `expiry_mode` / `expiry_duration_secs` - auto-expiry config (0 = none);
+    /// * `invitee_uids` - when non-empty, makes it a private channel only those
+    ///   registered users may see/enter (the server denies `@all` and grants the
+    ///   invitees).
+    ///
+    /// Returns the channel id, or `RNone` on failure.  The default returns
+    /// `RNone`; the real host overrides it.
+    #[allow(clippy::too_many_arguments, reason = "mirrors the server's channel-property surface")]
+    fn create_channel(
+        &self,
+        server_id: ServerId,
+        parent: ChannelId,
+        name: RStr<'_>,
+        hidden: bool,
+        registered_can_manage: bool,
+        pchat_protocol: u32,
+        expiry_mode: u32,
+        expiry_duration_secs: u32,
+        invitee_uids: RSlice<'_, u32>,
+    ) -> ROption<ChannelId> {
+        let _ = (server_id, parent, name, hidden, registered_can_manage, pchat_protocol, expiry_mode, expiry_duration_secs, invitee_uids);
+        abi_stable::std_types::RNone
+    }
+
+    /// Grant a registered `user_id` access (`SeeChannel|Enter|Traverse`) to an
+    /// existing private `channel` (the inverse of the deny-`@all` baseline a
+    /// private channel carries).  Returns `true` on success.
+    ///
+    /// The default returns `false`; the real host overrides it.
+    fn grant_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
+        let _ = (server_id, channel, user_id);
+        false
+    }
 }
 
 /// FFI-safe shape of every loadable plugin.

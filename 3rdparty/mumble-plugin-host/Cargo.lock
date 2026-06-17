@@ -1899,8 +1899,13 @@ name = "mumble-calendar"
 version = "0.1.0"
 dependencies = [
  "abi_stable",
+ "base64",
+ "hmac",
  "mumble-plugin-api",
+ "rand 0.8.6",
  "serde_json",
+ "sha2",
+ "subtle",
  "tracing",
  "tracing-subscriber",
 ]

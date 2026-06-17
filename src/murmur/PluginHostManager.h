@@ -140,6 +140,18 @@ private:
                                                  const char *responseType, const char *requestId,
                                                  uint32_t targetSession, const uint8_t *payload,
                                                  size_t payloadLen);
+        // Generic channel provisioning (content-agnostic; the calendar plugin
+        // composes meeting rooms from it). These may be invoked from a plugin
+        // worker thread or, synchronously, from the server thread, so each
+        // marshals the actual channel mutation onto the server's thread with a
+        // thread-aware connection type.
+        static bool createChannelTrampoline(void *userData, uint32_t serverId, uint32_t parent,
+                                            const char *name, bool hidden, bool registeredCanManage,
+                                            uint32_t pchatProtocol, uint32_t expiryMode,
+                                            uint32_t expiryDuration, const uint32_t *inviteeUids,
+                                            size_t inviteeLen, uint32_t *outChannel);
+        static bool grantChannelAccessTrampoline(void *userData, uint32_t serverId, uint32_t channel,
+                                                 uint32_t userId);
 
         Server *m_server;
         PluginHostHandle *m_handle;

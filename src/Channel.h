@@ -14,6 +14,8 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+#include <bitset>
+#include <cstddef>
 #include <cstdint>
 
 #ifdef MUMBLE
@@ -27,21 +29,32 @@ class ChanACL;
 
 class ClientUser;
 
+/// Boolean channel attributes, stored in a Channel as a fixed-width bit set so
+/// new attributes can be added without growing the class. Indices are stable
+/// (the bit position is part of the on-the-wire/on-disk meaning where relevant)
+/// - always append new attributes, never reorder or reuse a removed slot.
+enum class ChannelAttribute : std::size_t {
+	/// Channel is temporary (auto-removed when the last user leaves).
+	Temporary = 0,
+	/// Channel is hidden (only users with SeeChannel are told it exists).
+	Hidden = 1,
+	/// Channel inherits its parent's ACLs (the default for a new channel).
+	InheritACL = 2,
+};
+
 class Channel : public QObject {
 private:
 	Q_OBJECT
 	Q_DISABLE_COPY(Channel)
 private:
 	QSet< Channel * > qsUnseen;
+	/// Boolean attributes (temporary, hidden, inherit-ACL, ...). 64 bits for now;
+	/// widen the bitset if more than 64 attributes are ever needed.
+	std::bitset< 64 > m_attributes;
 
 public:
 	unsigned int iId;
 	int iPosition;
-	bool bTemporary;
-	/// Whether this channel is hidden: only users with the SeeChannel permission
-	/// (and the users inside it) are told it exists. Defaults to false, so a
-	/// normal channel behaves exactly as before.
-	bool bHidden;
 	Channel *cParent;
 	QString qsName;
 	QString qsDesc;
@@ -63,8 +76,6 @@ public:
 
 	QSet< Channel * > qsPermLinks;
 	QHash< Channel *, int > qhLinks;
-
-	bool bInheritACL;
 
 	/// Maximum number of users allowed in the channel. If this
 	/// value is zero, the maximum number of users allowed in the
@@ -94,6 +105,22 @@ public:
 
 	bool isPersistentChat() const { return uiPChatProtocol > 0; }
 	bool hasExpiry() const { return uiExpiryMode != 0 && uiExpiryDuration > 0; }
+
+	// -- Boolean channel attributes (bit set; see ChannelAttribute) -------------
+
+	/// Whether attribute @p a is set on this channel.
+	bool hasAttribute(ChannelAttribute a) const {
+		return m_attributes.test(static_cast< std::size_t >(a));
+	}
+	/// Set attribute @p a.
+	void setAttribute(ChannelAttribute a) { m_attributes.set(static_cast< std::size_t >(a)); }
+	/// Set or clear attribute @p a according to @p on (convenience for direct
+	/// assignment from a bool).
+	void setAttribute(ChannelAttribute a, bool on) {
+		m_attributes.set(static_cast< std::size_t >(a), on);
+	}
+	/// Clear attribute @p a.
+	void clearAttribute(ChannelAttribute a) { m_attributes.reset(static_cast< std::size_t >(a)); }
 
 	Channel(unsigned int id, const QString &name, QObject *p = nullptr);
 	~Channel();

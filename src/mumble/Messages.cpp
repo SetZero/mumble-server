@@ -888,7 +888,7 @@ void MainWindow::msgChannelState(const MumbleProto::ChannelState &msg) {
 		// Addresses channel does not exist so create it
 		if (p && msg.has_name()) {
 			c             = pmModel->addChannel(msg.channel_id(), p, u8(msg.name()));
-			c->bTemporary = msg.temporary();
+			c->setAttribute(ChannelAttribute::Temporary, msg.temporary());
 			p             = nullptr; // No need to move it later
 
 			ServerHandlerPtr sh = Global::get().sh;

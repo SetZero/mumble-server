@@ -432,7 +432,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 		mpcs.set_max_users(c->uiMaxUsers);
 
-		if (c->bHidden)
+		if (c->hasAttribute(ChannelAttribute::Hidden))
 			mpcs.set_hidden(true);
 
 		if (c->uiExpiryMode != 0) {
@@ -965,13 +965,13 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 	}
 
 	if (msg.has_mute() || msg.has_deaf() || msg.has_suppress()) {
-		if (pDstServerUser->cChannel->bTemporary) {
+		if (pDstServerUser->cChannel->hasAttribute(ChannelAttribute::Temporary)) {
 			// If the destination user is inside a temporary channel,
 			// the source user needs to have the MuteDeafen ACL in the first
 			// non-temporary parent channel.
 
 			Channel *c = pDstServerUser->cChannel;
-			while (c && c->bTemporary) {
+			while (c && c->hasAttribute(ChannelAttribute::Temporary)) {
 				c = c->cParent;
 			}
 
@@ -1523,7 +1523,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			return;
 		}
 
-		if (p->bTemporary) {
+		if (p->hasAttribute(ChannelAttribute::Temporary)) {
 			PERM_DENIED_TYPE(TemporaryChannel);
 			return;
 		}
@@ -1547,7 +1547,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		}
 
 		if (msg.has_hidden()) {
-			c->bHidden = msg.hidden();
+			c->setAttribute(ChannelAttribute::Hidden, msg.hidden());
 		}
 
 		// Stamp creation time (anchor for absolute expiry) and read expiry config.
@@ -1601,7 +1601,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			clearACLCache();
 		}
 
-		if (!c->bTemporary) {
+		if (!c->hasAttribute(ChannelAttribute::Temporary)) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
 		}
 
@@ -1621,7 +1621,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		}
 		sendToObservers(c, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
 
-		if (c->bTemporary) {
+		if (c->hasAttribute(ChannelAttribute::Temporary)) {
 			// If a temporary channel has been created move the creator right in there
 			Channel *creatorPrevChannel = uSource->cChannel;
 			MumbleProto::UserState mpus;
@@ -1684,7 +1684,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 				ip = ip->cParent;
 			}
 
-			if (p->bTemporary) {
+			if (p->hasAttribute(ChannelAttribute::Temporary)) {
 				PERM_DENIED_TYPE(TemporaryChannel);
 				return;
 			}
@@ -1695,7 +1695,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			}
 
 			QFlags< ChanACL::Perm > parentMakePermission =
-				c->bTemporary ? ChanACL::MakeTempChannel : ChanACL::MakeChannel;
+				c->hasAttribute(ChannelAttribute::Temporary) ? ChanACL::MakeTempChannel : ChanACL::MakeChannel;
 			if (!uSource->hasPermission(p, parentMakePermission)) {
 				PERM_DENIED(uSource, p, parentMakePermission);
 				return;
@@ -1825,7 +1825,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		}
 
 		if (msg.has_hidden()) {
-			c->bHidden = msg.hidden();
+			c->setAttribute(ChannelAttribute::Hidden, msg.hidden());
 		}
 
 		if (msg.has_expiry_mode())
@@ -1833,7 +1833,7 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		if (msg.has_expiry_duration_secs())
 			c->uiExpiryDuration = msg.expiry_duration_secs();
 
-		if (!c->bTemporary) {
+		if (!c->hasAttribute(ChannelAttribute::Temporary)) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
 		}
 		m_events.channelStateChanged(c);
@@ -2316,12 +2316,12 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 		msg.clear_groups();
 		msg.clear_acls();
 		msg.clear_query();
-		msg.set_inherit_acls(c->bInheritACL);
+		msg.set_inherit_acls(c->hasAttribute(ChannelAttribute::InheritACL));
 
 		p = c;
 		while (p) {
 			chans.push(p);
-			if ((p == c) || p->bInheritACL)
+			if ((p == c) || p->hasAttribute(ChannelAttribute::InheritACL))
 				p = p->cParent;
 			else
 				p = nullptr;
@@ -2438,7 +2438,7 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 			c->qhGroups.clear();
 			c->qlACL.clear();
 
-			c->bInheritACL = msg.inherit_acls();
+			c->setAttribute(ChannelAttribute::InheritACL, msg.inherit_acls());
 
 			// Add new groups
 			for (int i = 0; i < msg.groups_size(); ++i) {
@@ -2531,7 +2531,7 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 		}
 
 
-		if (!c->bTemporary) {
+		if (!c->hasAttribute(ChannelAttribute::Temporary)) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
 		}
 		log(uSource, QString("Updated ACL in channel %1").arg(*c));

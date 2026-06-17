@@ -17,8 +17,11 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QJsonValue>
+#include <QtCore/QMetaObject>
 #include <QtCore/QReadLocker>
 #include <QtCore/QSettings>
+#include <QtCore/QThread>
+#include <QtCore/QVector>
 
 #include <cctype>
 #include <cstdlib>
@@ -46,6 +49,8 @@ PluginHostManager::PluginHostManager(Server *server, QObject *parent)
         cb.find_session_by_name   = &PluginHostManager::findSessionByNameTrampoline;
         cb.free_sessions          = &PluginHostManager::freeSessionsTrampoline;
         cb.send_request_response  = &PluginHostManager::sendRequestResponseTrampoline;
+        cb.create_channel         = &PluginHostManager::createChannelTrampoline;
+        cb.grant_channel_access   = &PluginHostManager::grantChannelAccessTrampoline;
 	m_handle = plugin_host_create(&cb);
 }
 
@@ -635,6 +640,87 @@ void PluginHostManager::freeSessionsTrampoline(void * /*userData*/, uint32_t *pt
                                                 size_t /*count*/) {
         if (ptr) {
                 std::free(ptr);
+        }
+}
+
+// ---------------------------------------------------------------------------
+// Generic channel-provisioning trampolines
+//
+// Channel mutation must run on the server's own thread. These callbacks may be
+// invoked either from a plugin worker thread or synchronously from the server
+// thread (a plugin handler reached via on_plugin_message). We therefore marshal
+// with a thread-aware connection type: a direct call when already on the server
+// thread (no deadlock), otherwise a blocking queued call so the worker thread
+// waits for the channel id. The host attaches no meaning to the parameters.
+// ---------------------------------------------------------------------------
+
+namespace {
+Qt::ConnectionType serverThreadConnection(const Server *server) {
+        return (QThread::currentThread() == server->thread()) ? Qt::DirectConnection
+                                                              : Qt::BlockingQueuedConnection;
+}
+} // namespace
+
+bool PluginHostManager::createChannelTrampoline(void *userData, uint32_t /*serverId*/, uint32_t parent,
+                                                const char *name, bool hidden, bool registeredCanManage,
+                                                uint32_t pchatProtocol, uint32_t expiryMode,
+                                                uint32_t expiryDuration, const uint32_t *inviteeUids,
+                                                size_t inviteeLen, uint32_t *outChannel) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server || !outChannel) {
+                return false;
+        }
+        Server *server       = self->m_server;
+        const QString qsName = QString::fromUtf8(name ? name : "");
+        QVector< unsigned int > invitees;
+        if (inviteeUids && inviteeLen > 0) {
+                invitees.reserve(static_cast< int >(inviteeLen));
+                for (size_t i = 0; i < inviteeLen; ++i) {
+                        invitees.append(inviteeUids[i]);
+                }
+        }
+        try {
+                unsigned int id = 0;
+                QMetaObject::invokeMethod(
+                        server,
+                        [server, parent, qsName, hidden, registeredCanManage, pchatProtocol, expiryMode,
+                         expiryDuration, invitees]() {
+                                return server->createChannelForPlugin(parent, qsName, hidden, registeredCanManage,
+                                                                      pchatProtocol, expiryMode, expiryDuration,
+                                                                      invitees);
+                        },
+                        serverThreadConnection(server), &id);
+                if (id == 0) {
+                        return false;
+                }
+                *outChannel = id;
+                return true;
+        } catch (const std::exception &e) {
+                qWarning("plugin host createChannel failed: %s", e.what());
+                return false;
+        } catch (...) {
+                return false;
+        }
+}
+
+bool PluginHostManager::grantChannelAccessTrampoline(void *userData, uint32_t /*serverId*/,
+                                                     uint32_t channel, uint32_t userId) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server) {
+                return false;
+        }
+        Server *server = self->m_server;
+        try {
+                bool ok = false;
+                QMetaObject::invokeMethod(
+                        server, [server, channel, userId]() { return server->grantChannelAccess(channel, userId); },
+                        serverThreadConnection(server), &ok);
+                return ok;
+        } catch (const std::exception &e) {
+                qWarning("plugin host grantChannelAccess failed: %s", e.what());
+                return false;
+        } catch (...) {
+                return false;
         }
 }
 

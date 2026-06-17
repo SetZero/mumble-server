@@ -33,7 +33,7 @@ public:
 class AclChannelVisibilityPolicy : public IChannelVisibilityPolicy {
 public:
 	bool canSee(ServerUser &user, Channel &channel, ChanACL::ACLCache *cache) const override {
-		if (!channel.bHidden) {
+		if (!channel.hasAttribute(ChannelAttribute::Hidden)) {
 			return true;
 		}
 		return ChanACL::hasPermission(&user, &channel, ChanACL::SeeChannel, cache);

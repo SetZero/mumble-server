@@ -137,7 +137,7 @@ QFlags< ChanACL::Perm > ChanACL::effectivePermissions(ServerUser *p, Channel *ch
 	// Iterate over all parent channels from root to the channel the user is in (inclusive)
 	while (!chanstack.isEmpty()) {
 		ch = chanstack.pop();
-		if (!ch->bInheritACL) {
+		if (!ch->hasAttribute(ChannelAttribute::InheritACL)) {
 			granted = def;
 		}
 

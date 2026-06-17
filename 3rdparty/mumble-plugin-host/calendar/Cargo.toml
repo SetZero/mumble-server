@@ -24,6 +24,13 @@ abi_stable = "0.11"
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Invite-link tokens: HMAC-SHA256 over the event id, base64url-encoded,
+# verified in constant time. Secret is a random per-process key.
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+base64 = "0.22"
+rand = "0.8"
 
 [lints]
 workspace = true

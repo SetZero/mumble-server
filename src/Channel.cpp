@@ -22,14 +22,13 @@ QReadWriteLock Channel::c_qrwlChannels;
 #endif
 
 Channel::Channel(unsigned int id, const QString &name, QObject *p) : QObject(p) {
-	iId         = id;
-	iPosition   = 0;
-	qsName      = name;
-	bInheritACL = true;
-	uiMaxUsers  = 0;
-	bTemporary  = false;
-	bHidden     = false;
-	cParent     = qobject_cast< Channel * >(p);
+	iId        = id;
+	iPosition  = 0;
+	qsName     = name;
+	uiMaxUsers = 0;
+	// Temporary/Hidden default to unset; new channels inherit ACLs by default.
+	setAttribute(ChannelAttribute::InheritACL);
+	cParent = qobject_cast< Channel * >(p);
 	if (cParent)
 		cParent->addChannel(this);
 #ifdef MUMBLE
@@ -280,7 +279,7 @@ void Channel::removeUser(User *p) {
 Channel::operator QString() const {
 	return QString::fromLatin1("%1[%2:%3%4]")
 		.arg(qsName, QString::number(iId), QString::number(cParent ? static_cast< int >(cParent->iId) : -1),
-			 bTemporary ? QLatin1String("*") : QLatin1String(""));
+			 hasAttribute(ChannelAttribute::Temporary) ? QLatin1String("*") : QLatin1String(""));
 }
 
 size_t Channel::getLevel() const {

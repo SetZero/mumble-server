@@ -154,8 +154,8 @@ static void channelToChannel(const ::Channel *c, ::MumbleServer::Channel &mc, bo
 	for (::Channel *chn : c->qsPermLinks) {
 		mc.links.push_back(static_cast< int >(chn->iId));
 	}
-	mc.temporary = c->bTemporary;
-	mc.hidden    = c->bHidden;
+	mc.temporary = c->hasAttribute(ChannelAttribute::Temporary);
+	mc.hidden    = c->hasAttribute(ChannelAttribute::Hidden);
 }
 
 static void ACLtoACL(const ::ChanACL *acl, ::MumbleServer::ACL &ma) {
@@ -1713,7 +1713,7 @@ static void impl_Server_addChannel(const ::MumbleServer::AMD_Server_addChannelPt
 	QString qsName = u8(name);
 
 	nc = server->createNewChannel(p, qsName);
-	if (!nc->bTemporary) {
+	if (!nc->hasAttribute(ChannelAttribute::Temporary)) {
 		server->m_dbWrapper.updateChannelData(server->iServerNum, *nc);
 	}
 
@@ -1745,13 +1745,13 @@ static void impl_Server_getACL(const ::MumbleServer::AMD_Server_getACLPtr cb, in
 	p = channel;
 	while (p) {
 		chans.push(p);
-		if ((p == channel) || (p->bInheritACL))
+		if ((p == channel) || (p->hasAttribute(ChannelAttribute::InheritACL)))
 			p = p->cParent;
 		else
 			p = nullptr;
 	}
 
-	bool inherit = channel->bInheritACL;
+	bool inherit = channel->hasAttribute(ChannelAttribute::InheritACL);
 
 	while (!chans.isEmpty()) {
 		p = chans.pop();
@@ -1824,7 +1824,7 @@ static void impl_Server_setACL(const ::MumbleServer::AMD_Server_setACLPtr cb, in
 		channel->qhGroups.clear();
 		channel->qlACL.clear();
 
-		channel->bInheritACL = inherit;
+		channel->setAttribute(ChannelAttribute::InheritACL, inherit);
 		for (const ::MumbleServer::Group &gi : groups) {
 			QString name    = u8(gi.name);
 			::Group *g      = new ::Group(channel, name);
@@ -1859,7 +1859,7 @@ static void impl_Server_setACL(const ::MumbleServer::AMD_Server_setACLPtr cb, in
 	}
 
 	server->clearACLCache();
-	if (!channel->bTemporary) {
+	if (!channel->hasAttribute(ChannelAttribute::Temporary)) {
 		server->m_dbWrapper.updateChannelData(server->iServerNum, *channel);
 	}
 	cb->ice_response();

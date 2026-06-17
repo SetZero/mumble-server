@@ -571,6 +571,26 @@ public:
 	Channel *createNewChannel(Channel *parent, const QString &name, bool temporary = false, int position = 0,
 							  unsigned int maxUser = 0);
 
+	/// Generic, content-agnostic channel provisioning for the plugin host bridge
+	/// (the private-rooms primitive, exposed programmatically). These run on the
+	/// server's own thread - off-thread callers marshal via QMetaObject::invokeMethod.
+	///
+	/// Create a sub-channel under `parentId` (or return an existing same-named
+	/// child) with standard channel properties: `hidden`, persistent-chat
+	/// `pchatProtocol` (0 = none), auto-`expiryMode`/`expiryDuration` (0 = none),
+	/// and `inviteeUserIds` which - when non-empty - make it a private channel
+	/// (deny @all see/enter/traverse, allow each invitee). When
+	/// `registeredCanManage` is true it becomes a shared container the `auth`
+	/// (registered-users) group may see, traverse and create sub-channels in,
+	/// hidden from guests (deny @all SeeChannel). Returns the channel id, or 0
+	/// on failure. The server ascribes no domain meaning to any of this.
+	unsigned int createChannelForPlugin(unsigned int parentId, const QString &name, bool hidden,
+										bool registeredCanManage, uint32_t pchatProtocol, uint32_t expiryMode,
+										uint32_t expiryDuration, const QVector< unsigned int > &inviteeUserIds);
+	/// Grant a registered user SeeChannel|Enter|Traverse on an existing private
+	/// channel (admission to an invitee-gated room). Returns true on success.
+	bool grantChannelAccess(unsigned int channelId, unsigned int userId);
+
 	void linkChannels(Channel &first, Channel &second);
 	void unlinkChannels(Channel &first, Channel &second);
 

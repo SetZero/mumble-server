@@ -186,6 +186,37 @@ pub struct PluginHostCallbacks {
             payload_len: usize,
         ) -> c_int,
     >,
+
+    /// Create a sub-channel under `parent` (or return an existing same-named
+    /// child) with standard, content-agnostic channel properties, writing the
+    /// channel id through `out_channel`.  Returns `true` on success.
+    pub create_channel: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            server_id: u32,
+            parent: u32,
+            name: *const c_char,
+            hidden: bool,
+            registered_can_manage: bool,
+            pchat_protocol: u32,
+            expiry_mode: u32,
+            expiry_duration_secs: u32,
+            invitee_uids: *const u32,
+            invitee_len: usize,
+            out_channel: *mut u32,
+        ) -> bool,
+    >,
+
+    /// Grant registered `user_id` access to private `channel`.  Returns `true`
+    /// on success.
+    pub grant_channel_access: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            server_id: u32,
+            channel: u32,
+            user_id: u32,
+        ) -> bool,
+    >,
 }
 
 // SAFETY: callbacks are documented as thread-safe; user_data is owned
@@ -647,6 +678,64 @@ impl PluginContext for ScopedContext {
                 format!("send_request_response returned {rc}").into(),
             ))
         }
+    }
+
+    fn create_channel(
+        &self,
+        server_id: ServerId,
+        parent: ChannelId,
+        name: RStr<'_>,
+        hidden: bool,
+        registered_can_manage: bool,
+        pchat_protocol: u32,
+        expiry_mode: u32,
+        expiry_duration_secs: u32,
+        invitee_uids: RSlice<'_, u32>,
+    ) -> ROption<ChannelId> {
+        let Some(func) = self.inner.callbacks.create_channel else {
+            return RNone;
+        };
+        let Ok(name_c) = CString::new(name.as_str()) else {
+            return RNone;
+        };
+        let uids = invitee_uids.as_slice();
+        let uids_ptr = if uids.is_empty() {
+            ptr::null()
+        } else {
+            uids.as_ptr()
+        };
+        let mut out: u32 = 0;
+        // SAFETY: callback non-null; name_c + uids slice live until the call
+        // returns; `out` is a valid stack slot.
+        let ok = unsafe {
+            func(
+                self.inner.callbacks.user_data,
+                server_id,
+                parent,
+                name_c.as_ptr(),
+                hidden,
+                registered_can_manage,
+                pchat_protocol,
+                expiry_mode,
+                expiry_duration_secs,
+                uids_ptr,
+                uids.len(),
+                &mut out,
+            )
+        };
+        if ok {
+            RSome(out)
+        } else {
+            RNone
+        }
+    }
+
+    fn grant_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
+        let Some(func) = self.inner.callbacks.grant_channel_access else {
+            return false;
+        };
+        // SAFETY: callback non-null; primitive args passed by value.
+        unsafe { func(self.inner.callbacks.user_data, server_id, channel, user_id) }
     }
 }
 

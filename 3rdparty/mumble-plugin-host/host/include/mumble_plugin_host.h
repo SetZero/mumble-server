@@ -169,6 +169,31 @@ typedef struct PluginHostCallbacks {
                                uint32_t target_session,
                                const uint8_t *payload,
                                uintptr_t payload_len);
+  /**
+   * Create a sub-channel under `parent` (or return an existing same-named
+   * child) with standard, content-agnostic channel properties, writing the
+   * channel id through `out_channel`.  Returns `true` on success.
+   */
+  bool (*create_channel)(void *user_data,
+                         uint32_t server_id,
+                         uint32_t parent,
+                         const char *name,
+                         bool hidden,
+                         bool registered_can_manage,
+                         uint32_t pchat_protocol,
+                         uint32_t expiry_mode,
+                         uint32_t expiry_duration_secs,
+                         const uint32_t *invitee_uids,
+                         uintptr_t invitee_len,
+                         uint32_t *out_channel);
+  /**
+   * Grant registered `user_id` access to private `channel`.  Returns `true`
+   * on success.
+   */
+  bool (*grant_channel_access)(void *user_data,
+                               uint32_t server_id,
+                               uint32_t channel,
+                               uint32_t user_id);
 } PluginHostCallbacks;
 
 #ifdef __cplusplus

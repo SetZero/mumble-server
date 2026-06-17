@@ -1,4 +1,4 @@
-//! `mumble-calendar` - calendar/scheduling relay plugin.
+//! `mumble-calendar` - calendar/scheduling relay **and meeting-room** plugin.
 //!
 //! Clients persist their own calendar in the file-server per-user private store
 //! and exchange *shared* meeting data over the generic `PluginMessage` envelope
@@ -12,6 +12,14 @@
 //! * `calendar.availability` - a user's free/busy blocks; broadcast to everyone on
 //!   the virtual server and remembered for connect-time catch-up.
 //!
+//! On top of the relay it also **provisions the actual meeting rooms**: a hidden,
+//! end-to-end-encrypted (`signal_v1`) channel under the server's `__meetings` root,
+//! created server-authoritatively when a meeting's start time arrives (a background
+//! scheduler thread) or when the first participant asks to join (`calendar.join`).
+//! Rooms inherit an absolute expiry so they self-destruct ~1 week after the meeting.
+//! Organisers can mint a Teams-style invite link (`calendar.inviteLink`) carrying an
+//! HMAC token that admits any *registered* user.
+//!
 //! Personal fields (RSVP, show-as, reminder, colour overrides) never leave the
 //! owning client; only the shared meeting body is relayed.
 #![allow(
@@ -20,15 +28,22 @@
 )]
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use abi_stable::std_types::ROption::RNone;
 use abi_stable::std_types::RResult::{RErr, ROk};
-use abi_stable::std_types::{RArc, RStr, RString, RVec};
+use abi_stable::std_types::{RArc, RSlice, RStr, RString, RVec};
+use base64::Engine;
+use hmac::{Hmac, Mac};
 use mumble_plugin_api::{
     ClientInfo, MumblePlugin, PluginContext_TO, PluginInfo, PluginMessageIn, PluginMessageOut,
     PluginResult, ServerId, SessionId,
 };
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
 
 const PLUGIN_NAME: &str = "fancy-calendar";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -37,12 +52,50 @@ const MSG_UPSERT: &str = "calendar.upsert";
 const MSG_DELETE: &str = "calendar.delete";
 const MSG_PUBLISH: &str = "calendar.publish";
 const MSG_AVAILABILITY: &str = "calendar.availability";
+/// A client asks to join a meeting's room (create-on-demand + access grant).
+const MSG_JOIN: &str = "calendar.join";
+/// Server -> client: the room channel id for a meeting.
+const MSG_ROOM: &str = "calendar.room";
+/// Organiser asks for / receives a shareable invite link.
+const MSG_INVITE_LINK: &str = "calendar.inviteLink";
 
-/// A meeting the relay knows about (enough to route + replay it).
+/// Keep a meeting room around this long after the meeting *ends* before the
+/// server's expiry reaper deletes it.
+const MEETING_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
+/// Canonical name of the hidden node under which meeting rooms are provisioned.
+/// This plugin (and the client's calendar UI) is the only place that knows it;
+/// the server/host treat it as an ordinary hidden channel.
+const MEETINGS_NODE_NAME: &str = "__meetings";
+/// Parent for the meetings node: the server's root channel (id 0).
+const ROOT_CHANNEL_ID: u32 = 0;
+/// `signal_v1` persistent-chat protocol selector (Signal sender-key group E2E).
+const PCHAT_SIGNAL_V1: u32 = 4;
+/// Absolute channel-expiry mode (removed at created_at + duration).
+const EXPIRY_ABSOLUTE: u32 = 1;
+/// No persistent-chat protocol.
+const PCHAT_NONE: u32 = 0;
+/// No channel expiry.
+const EXPIRY_NONE: u32 = 0;
+/// Upper bound on how long the scheduler sleeps between scans (heartbeat); new
+/// or changed meetings wake it sooner via the condvar.
+const SCHED_HEARTBEAT: Duration = Duration::from_secs(3600);
+/// Retry delay after a failed room-creation attempt (e.g. host doesn't yet
+/// implement the meeting-channel callbacks).
+const SCHED_RETRY: Duration = Duration::from_secs(60);
+/// Truncate long meeting titles when deriving a channel name.
+const MAX_TITLE_LEN: usize = 60;
+
+/// A meeting the relay knows about (enough to route, replay and provision it).
 struct StoredEvent {
     server_id: ServerId,
     organizer_uid: i64,
     participant_uids: Vec<i64>,
+    /// Meeting start / end as UTC epoch millis (0 when unknown).
+    start_ms: i64,
+    end_ms: i64,
+    title: String,
+    /// The provisioned room channel id, once created (idempotency guard).
+    channel_id: Option<u32>,
     /// Raw shared-event JSON, relayed verbatim.
     payload: Vec<u8>,
 }
@@ -57,20 +110,59 @@ struct State {
     sessions: HashMap<(ServerId, SessionId), i64>,
 }
 
-struct CalendarPlugin {
+/// State shared between the plugin callbacks and the background scheduler thread.
+struct Shared {
     state: Mutex<State>,
+    /// Signalled whenever the meeting set changes so the scheduler re-evaluates.
+    sched_cv: Condvar,
+    /// Host call-back handle, populated in `on_load`.
+    ctx: OnceLock<PluginContext_TO<RArc<()>>>,
+    /// Set on unload to stop the scheduler thread.
+    stop: AtomicBool,
+    /// Ensures the scheduler thread is spawned exactly once.
+    started: AtomicBool,
+    /// Per-process secret for invite-link HMAC tokens.
+    token_secret: [u8; 32],
+}
+
+impl Shared {
+    fn new() -> Self {
+        use rand::RngCore;
+        let mut secret = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut secret);
+        Self {
+            state: Mutex::new(State::default()),
+            sched_cv: Condvar::new(),
+            ctx: OnceLock::new(),
+            stop: AtomicBool::new(false),
+            started: AtomicBool::new(false),
+            token_secret: secret,
+        }
+    }
+}
+
+struct CalendarPlugin {
+    shared: Arc<Shared>,
 }
 
 impl CalendarPlugin {
     fn new() -> Self {
         Self {
-            state: Mutex::new(State::default()),
+            shared: Arc::new(Shared::new()),
         }
     }
 }
 
 fn lock(m: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Current wall-clock time as UTC epoch milliseconds.
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Send `payload` to an explicit set of sessions on `server_id`.
@@ -143,6 +235,295 @@ fn routing_of(v: &serde_json::Value) -> Option<(String, i64, Vec<i64>)> {
     Some((id, organizer, participants))
 }
 
+/// Read a numeric JSON field as i64 (accepts integer or float encodings).
+fn json_i64(v: &serde_json::Value, key: &str) -> i64 {
+    v.get(key)
+        .and_then(|n| n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)))
+        .unwrap_or(0)
+}
+
+/// Pull scheduling fields (`start`, `end` UTC ms; `title`) out of an event JSON.
+fn times_of(v: &serde_json::Value) -> (i64, i64, String) {
+    let start = json_i64(v, "start");
+    let end = json_i64(v, "end");
+    let title = v
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    (start, end, title)
+}
+
+/// Registered invitee uids for a meeting (participants + organiser, guests
+/// stripped), suitable for the room ACL.
+fn invitee_uids(ev: &StoredEvent) -> Vec<u32> {
+    let mut uids: Vec<u32> = ev
+        .participant_uids
+        .iter()
+        .chain(std::iter::once(&ev.organizer_uid))
+        .filter(|u| **u >= 0)
+        .map(|u| *u as u32)
+        .collect();
+    uids.sort_unstable();
+    uids.dedup();
+    uids
+}
+
+/// Derive a human-readable, collision-resistant room name from a meeting.
+fn room_name(title: &str, id: &str) -> String {
+    let trimmed = title.trim();
+    let base: String = if trimmed.is_empty() {
+        "Meeting".to_string()
+    } else {
+        trimmed.chars().take(MAX_TITLE_LEN).collect()
+    };
+    let short: String = id.chars().take(8).collect();
+    format!("{base} [{short}]")
+}
+
+/// Mint an invite-link token: base64url(HMAC-SHA256(secret, eventId)[..16]).
+fn make_token(secret: &[u8; 32], event_id: &str) -> String {
+    let mut mac = <Hmac<Sha256>>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(event_id.as_bytes());
+    let tag = mac.finalize().into_bytes();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&tag[..16])
+}
+
+/// Constant-time validation of an invite-link token for `event_id`.
+fn verify_token(secret: &[u8; 32], event_id: &str, token: &str) -> bool {
+    let expected = make_token(secret, event_id);
+    expected.as_bytes().ct_eq(token.as_bytes()).into()
+}
+
+/// Read `eventId` (falling back to `id`) from a control-message JSON body.
+fn event_id_of(v: &serde_json::Value) -> Option<String> {
+    v.get("eventId")
+        .or_else(|| v.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// Ensure the meeting room for `event_id` exists, creating it under the
+/// server's `__meetings` root if needed.  Idempotent: returns the existing
+/// channel id when already provisioned.  Returns `None` when the host could
+/// not create the channel (e.g. an older server without the callbacks).
+fn ensure_room(
+    shared: &Shared,
+    ctx: &PluginContext_TO<RArc<()>>,
+    server_id: ServerId,
+    event_id: &str,
+) -> Option<u32> {
+    // Snapshot what we need without holding the lock across the (possibly
+    // blocking) host calls.
+    let (name, invitees, expiry_secs) = {
+        let st = lock(&shared.state);
+        let ev = st.events.get(event_id)?;
+        if let Some(cid) = ev.channel_id {
+            return Some(cid);
+        }
+        let now = now_ms();
+        let remaining_ms = (ev.end_ms.max(now) - now).max(0);
+        let expiry = remaining_ms / 1000 + MEETING_RETENTION_SECS;
+        let expiry_secs = expiry.clamp(0, i64::from(u32::MAX)) as u32;
+        (room_name(&ev.title, event_id), invitee_uids(ev), expiry_secs)
+    };
+
+    // Compose the room from generic channel primitives. First ensure the hidden
+    // `__meetings` node exists under root: a hidden, registered-users-managed
+    // container (registered users may see/traverse/create there - so meeting
+    // rooms nest *inside* it - while it stays hidden from guests). Then create
+    // the room under it as a hidden, Signal-E2E (`signal_v1`), absolutely-expiring
+    // private channel for the invitees. The host/server ascribe no meaning to the
+    // `__meetings` name or the `signal_v1` choice - only this plugin does.
+    let root = ctx
+        .create_channel(
+            server_id,
+            ROOT_CHANNEL_ID,
+            RStr::from_str(MEETINGS_NODE_NAME),
+            true,  // hidden
+            true,  // registered_can_manage
+            PCHAT_NONE,
+            EXPIRY_NONE,
+            0,
+            RSlice::from_slice(&[]),
+        )
+        .into_option()?;
+    let cid = ctx
+        .create_channel(
+            server_id,
+            root,
+            RStr::from_str(&name),
+            true,  // hidden
+            false, // registered_can_manage (the room is invitee-gated, not shared)
+            PCHAT_SIGNAL_V1,
+            EXPIRY_ABSOLUTE,
+            expiry_secs,
+            RSlice::from_slice(&invitees),
+        )
+        .into_option()?;
+
+    // Re-acquire and store the id, honouring a concurrent winner.
+    let mut st = lock(&shared.state);
+    if let Some(ev) = st.events.get_mut(event_id) {
+        if let Some(existing) = ev.channel_id {
+            return Some(existing);
+        }
+        ev.channel_id = Some(cid);
+    }
+    Some(cid)
+}
+
+/// Tell a meeting's participants which channel hosts their room.
+fn notify_room(
+    shared: &Shared,
+    ctx: &PluginContext_TO<RArc<()>>,
+    server_id: ServerId,
+    event_id: &str,
+    channel_id: u32,
+) {
+    let sessions = {
+        let st = lock(&shared.state);
+        let Some(ev) = st.events.get(event_id) else {
+            return;
+        };
+        let mut uids = ev.participant_uids.clone();
+        uids.push(ev.organizer_uid);
+        sessions_for_uids(&st, server_id, &uids, SessionId::MAX)
+    };
+    let payload = serde_json::json!({ "eventId": event_id, "channelId": channel_id });
+    send_to(ctx, server_id, sessions, MSG_ROOM, &serde_json::to_vec(&payload).unwrap_or_default());
+}
+
+/// Background loop that provisions rooms as meeting start times arrive.
+fn run_scheduler(shared: Arc<Shared>) {
+    let Some(ctx) = shared.ctx.get() else {
+        return;
+    };
+    loop {
+        if shared.stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let now = now_ms();
+        // Collect meetings whose start has passed but have no room yet, plus
+        // the earliest future start, in a single pass under the lock.
+        let mut due: Vec<(String, ServerId)> = Vec::new();
+        let mut earliest_future: Option<i64> = None;
+        {
+            let st = lock(&shared.state);
+            for (id, ev) in &st.events {
+                if ev.channel_id.is_some() {
+                    continue;
+                }
+                if ev.start_ms <= now {
+                    due.push((id.clone(), ev.server_id));
+                } else {
+                    earliest_future = Some(match earliest_future {
+                        Some(t) => t.min(ev.start_ms),
+                        None => ev.start_ms,
+                    });
+                }
+            }
+        }
+
+        let mut any_failed = false;
+        for (id, server_id) in due {
+            match ensure_room(&shared, ctx, server_id, &id) {
+                Some(cid) => notify_room(&shared, ctx, server_id, &id, cid),
+                None => any_failed = true,
+            }
+        }
+
+        let wait = if any_failed {
+            SCHED_RETRY
+        } else {
+            match earliest_future {
+                Some(t) => Duration::from_millis((t - now_ms()).max(0) as u64).min(SCHED_HEARTBEAT),
+                None => SCHED_HEARTBEAT,
+            }
+        };
+
+        let guard = lock(&shared.state);
+        if shared.stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = shared.sched_cv.wait_timeout(guard, wait);
+    }
+}
+
+impl CalendarPlugin {
+    /// Handle `calendar.join`: create-or-find the room and grant the caller
+    /// access (registered users only; either a participant or a valid token).
+    fn handle_join(&self, ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn) {
+        let server_id = msg.server_id;
+        let sender = msg.sender_session;
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(msg.payload.as_slice()) else {
+            return;
+        };
+        let Some(event_id) = event_id_of(&v) else {
+            return;
+        };
+        let token = v.get("token").and_then(serde_json::Value::as_str);
+
+        let (uid, is_participant) = {
+            let st = lock(&self.shared.state);
+            let uid = st.sessions.get(&(server_id, sender)).copied().unwrap_or(-1);
+            let is_participant = st.events.get(&event_id).is_some_and(|ev| {
+                ev.organizer_uid == uid || ev.participant_uids.contains(&uid)
+            });
+            (uid, is_participant)
+        };
+        // Registered users only; guests (-1) are never admitted.
+        if uid < 0 {
+            return;
+        }
+        let token_ok = token.is_some_and(|t| verify_token(&self.shared.token_secret, &event_id, t));
+        if !is_participant && !token_ok {
+            return;
+        }
+
+        let Some(cid) = ensure_room(&self.shared, ctx, server_id, &event_id) else {
+            return;
+        };
+        // Token joiners may not be in the original ACL; grant them explicitly.
+        if !is_participant {
+            let _ = ctx.grant_channel_access(server_id, cid, uid as u32);
+            let mut st = lock(&self.shared.state);
+            if let Some(ev) = st.events.get_mut(&event_id) {
+                if !ev.participant_uids.contains(&uid) {
+                    ev.participant_uids.push(uid);
+                }
+            }
+        }
+        let payload = serde_json::json!({ "eventId": event_id, "channelId": cid });
+        send_to(ctx, server_id, vec![sender], MSG_ROOM, &serde_json::to_vec(&payload).unwrap_or_default());
+    }
+
+    /// Handle `calendar.inviteLink`: the organiser requests a shareable link.
+    fn handle_invite_link(&self, ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn) {
+        let server_id = msg.server_id;
+        let sender = msg.sender_session;
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(msg.payload.as_slice()) else {
+            return;
+        };
+        let Some(event_id) = event_id_of(&v) else {
+            return;
+        };
+        // Only the organiser may mint a link.
+        let authorized = {
+            let st = lock(&self.shared.state);
+            let uid = st.sessions.get(&(server_id, sender)).copied().unwrap_or(-1);
+            st.events.get(&event_id).is_some_and(|ev| ev.organizer_uid == uid && uid >= 0)
+        };
+        if !authorized {
+            return;
+        }
+        let token = make_token(&self.shared.token_secret, &event_id);
+        let url = format!("fancy://meeting/{event_id}?t={token}");
+        let payload = serde_json::json!({ "eventId": event_id, "url": url });
+        send_to(ctx, server_id, vec![sender], MSG_INVITE_LINK, &serde_json::to_vec(&payload).unwrap_or_default());
+    }
+}
+
 impl MumblePlugin for CalendarPlugin {
     fn name(&self) -> RStr<'_> {
         RStr::from_str(PLUGIN_NAME)
@@ -155,7 +536,8 @@ impl MumblePlugin for CalendarPlugin {
     fn info_json(&self) -> RString {
         PluginInfo {
             description: "Relays calendar meetings, invites and free/busy between \
-                          participants; calendars are stored per-user in the file-server."
+                          participants and provisions hidden end-to-end-encrypted \
+                          meeting rooms; calendars are stored per-user in the file-server."
                 .to_owned(),
             author: Some("Fancy Mumble Developers".to_owned()),
             homepage: None,
@@ -166,14 +548,27 @@ impl MumblePlugin for CalendarPlugin {
         .to_rstring()
     }
 
-    fn on_load(&self, _ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {
+    fn on_load(&self, ctx: PluginContext_TO<RArc<()>>) -> PluginResult<()> {
         init_tracing();
         tracing::info!("calendar plugin loaded");
+        // Retain the host handle for the scheduler thread (set-once).
+        let _ = self.shared.ctx.set(ctx);
+        if !self.shared.started.swap(true, Ordering::SeqCst) {
+            let shared = Arc::clone(&self.shared);
+            if let Err(e) = thread::Builder::new()
+                .name("calendar-sched".to_owned())
+                .spawn(move || run_scheduler(shared))
+            {
+                tracing::warn!(error = %e, "calendar: failed to spawn scheduler thread");
+            }
+        }
         ROk(())
     }
 
     fn on_unload(&self, _ctx: &PluginContext_TO<RArc<()>>) -> PluginResult<()> {
-        *lock(&self.state) = State::default();
+        self.shared.stop.store(true, Ordering::SeqCst);
+        self.shared.sched_cv.notify_all();
+        *lock(&self.shared.state) = State::default();
         ROk(())
     }
 
@@ -188,7 +583,7 @@ impl MumblePlugin for CalendarPlugin {
         let mut catch_up: Vec<Vec<u8>> = Vec::new();
         let mut availability: Vec<Vec<u8>> = Vec::new();
         {
-            let mut st = lock(&self.state);
+            let mut st = lock(&self.shared.state);
             let _ = st.sessions.insert((server_id, session), uid);
             // Registered users (incl. SuperUser, uid 0) get their meetings
             // replayed on connect; guests (-1) are never participants.
@@ -222,7 +617,7 @@ impl MumblePlugin for CalendarPlugin {
         server_id: ServerId,
         session: SessionId,
     ) -> PluginResult<()> {
-        let _ = lock(&self.state).sessions.remove(&(server_id, session));
+        let _ = lock(&self.shared.state).sessions.remove(&(server_id, session));
         ROk(())
     }
 
@@ -239,21 +634,28 @@ impl MumblePlugin for CalendarPlugin {
             MSG_UPSERT => {
                 if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
                     if let Some((id, organizer, participants)) = routing_of(&v) {
+                        let (start_ms, end_ms, title) = times_of(&v);
                         let mut uids = participants.clone();
                         uids.push(organizer);
                         let targets = {
-                            let mut st = lock(&self.state);
+                            let mut st = lock(&self.shared.state);
+                            let prev_cid = st.events.get(&id).and_then(|e| e.channel_id);
                             let _ = st.events.insert(
                                 id,
                                 StoredEvent {
                                     server_id,
                                     organizer_uid: organizer,
                                     participant_uids: participants,
+                                    start_ms,
+                                    end_ms,
+                                    title,
+                                    channel_id: prev_cid,
                                     payload: bytes.to_vec(),
                                 },
                             );
                             sessions_for_uids(&st, server_id, &uids, sender)
                         };
+                        self.shared.sched_cv.notify_all();
                         send_to(ctx, server_id, targets, MSG_UPSERT, bytes);
                     }
                 }
@@ -262,7 +664,7 @@ impl MumblePlugin for CalendarPlugin {
                 if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
                     if let Some(id) = v.get("id").and_then(serde_json::Value::as_str) {
                         let targets = {
-                            let mut st = lock(&self.state);
+                            let mut st = lock(&self.shared.state);
                             match st.events.remove(id) {
                                 Some(ev) => {
                                     let mut uids = ev.participant_uids;
@@ -272,6 +674,7 @@ impl MumblePlugin for CalendarPlugin {
                                 None => Vec::new(),
                             }
                         };
+                        self.shared.sched_cv.notify_all();
                         send_to(ctx, server_id, targets, MSG_DELETE, bytes);
                     }
                 }
@@ -283,17 +686,23 @@ impl MumblePlugin for CalendarPlugin {
                             let Some((id, organizer, participants)) = routing_of(ev) else {
                                 continue;
                             };
+                            let (start_ms, end_ms, title) = times_of(ev);
                             let payload = serde_json::to_vec(ev).unwrap_or_default();
                             let mut uids = participants.clone();
                             uids.push(organizer);
                             let targets = {
-                                let mut st = lock(&self.state);
+                                let mut st = lock(&self.shared.state);
+                                let prev_cid = st.events.get(&id).and_then(|e| e.channel_id);
                                 let _ = st.events.insert(
                                     id,
                                     StoredEvent {
                                         server_id,
                                         organizer_uid: organizer,
                                         participant_uids: participants,
+                                        start_ms,
+                                        end_ms,
+                                        title,
+                                        channel_id: prev_cid,
                                         payload: payload.clone(),
                                     },
                                 );
@@ -301,12 +710,13 @@ impl MumblePlugin for CalendarPlugin {
                             };
                             send_to(ctx, server_id, targets, MSG_UPSERT, &payload);
                         }
+                        self.shared.sched_cv.notify_all();
                     }
                 }
             }
             MSG_AVAILABILITY => {
                 let targets = {
-                    let mut st = lock(&self.state);
+                    let mut st = lock(&self.shared.state);
                     let uid = st.sessions.get(&(server_id, sender)).copied().unwrap_or(-1);
                     // Store free/busy for any registered user (incl. SuperUser,
                     // uid 0) for connect catch-up; skip guests (-1).
@@ -317,6 +727,8 @@ impl MumblePlugin for CalendarPlugin {
                 };
                 send_to(ctx, server_id, targets, MSG_AVAILABILITY, bytes);
             }
+            MSG_JOIN => self.handle_join(ctx, &msg),
+            MSG_INVITE_LINK => self.handle_invite_link(ctx, &msg),
             _ => {}
         }
         ROk(())
@@ -344,7 +756,10 @@ mod plugin_export {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test code - panics are acceptable")]
 mod tests {
-    use super::{ServerId, State, all_sessions, routing_of, sessions_for_uids};
+    use super::{
+        all_sessions, make_token, room_name, routing_of, sessions_for_uids, times_of, verify_token,
+        ServerId, State, StoredEvent,
+    };
 
     fn state_with(sessions: &[(ServerId, u32, i64)]) -> State {
         let mut st = State::default();
@@ -352,6 +767,19 @@ mod tests {
             let _ = st.sessions.insert((srv, sess), uid);
         }
         st
+    }
+
+    fn stored(server_id: ServerId, organizer: i64, participants: Vec<i64>) -> StoredEvent {
+        StoredEvent {
+            server_id,
+            organizer_uid: organizer,
+            participant_uids: participants,
+            start_ms: 0,
+            end_ms: 0,
+            title: String::new(),
+            channel_id: None,
+            payload: Vec::new(),
+        }
     }
 
     #[test]
@@ -375,6 +803,15 @@ mod tests {
         assert_eq!(id, "ev-2");
         assert_eq!(organizer, -1);
         assert!(participants.is_empty());
+    }
+
+    #[test]
+    fn times_of_reads_start_end_title() {
+        let v = serde_json::json!({ "start": 1000, "end": 2000.0, "title": "Standup" });
+        let (start, end, title) = times_of(&v);
+        assert_eq!(start, 1000);
+        assert_eq!(end, 2000);
+        assert_eq!(title, "Standup");
     }
 
     #[test]
@@ -403,5 +840,28 @@ mod tests {
         // availability broadcasts to everyone (guests included); sender + other
         // virtual server excluded.
         assert_eq!(got, vec![10, 12]);
+    }
+
+    #[test]
+    fn invitee_uids_merges_organizer_and_drops_guests() {
+        let ev = stored(1, 7, vec![8, 9, -1, 8]);
+        let got = super::invitee_uids(&ev);
+        assert_eq!(got, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn room_name_is_titled_and_disambiguated() {
+        assert_eq!(room_name("Sprint Review", "abcdef123456"), "Sprint Review [abcdef12]");
+        assert_eq!(room_name("   ", "id123456"), "Meeting [id123456]");
+    }
+
+    #[test]
+    fn token_roundtrips_and_rejects_tampering() {
+        let secret = [3u8; 32];
+        let token = make_token(&secret, "ev-1");
+        assert!(verify_token(&secret, "ev-1", &token));
+        assert!(!verify_token(&secret, "ev-2", &token));
+        assert!(!verify_token(&secret, "ev-1", "not-a-token"));
+        assert!(!verify_token(&[4u8; 32], "ev-1", &token));
     }
 }

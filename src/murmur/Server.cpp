@@ -1851,7 +1851,7 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 			old->removeUser(u);
 	}
 
-	if (old && old->bTemporary && old->qlUsers.isEmpty()) {
+	if (old && old->hasAttribute(ChannelAttribute::Temporary) && old->qlUsers.isEmpty()) {
 		auto func_ptr = std::mem_fn< void(unsigned int) >(&Server::removeChannel);
 		QCoreApplication::instance()->postEvent(this, new ExecEvent(std::bind(func_ptr, this, old->iId)));
 	}
@@ -2154,7 +2154,7 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 		m_pchatManager->onChannelRemoved(static_cast< unsigned int >(chan->iId));
 	}
 
-	if (!chan->bTemporary) {
+	if (!chan->hasAttribute(ChannelAttribute::Temporary)) {
 		m_dbWrapper.deleteChannel(iServerNum, static_cast< unsigned int >(chan->iId));
 	}
 
@@ -2210,7 +2210,7 @@ bool Server::unregisterUser(int id) {
 				bool remrem = g->qsRemove.remove(id);
 				write       = write || addrem || remrem;
 			}
-			if (write && !c->bTemporary) {
+			if (write && !c->hasAttribute(ChannelAttribute::Temporary)) {
 				m_dbWrapper.updateChannelData(iServerNum, *c);
 			}
 		}
@@ -2273,11 +2273,11 @@ void Server::userEnterChannel(User *p, Channel *c, MumbleProto::UserState &mpus)
 
 	clearACLCache(p);
 
-	if (p->iId >= 0 && !p->cChannel->bTemporary) {
+	if (p->iId >= 0 && !p->cChannel->hasAttribute(ChannelAttribute::Temporary)) {
 		m_dbWrapper.setLastChannel(iServerNum, *static_cast< ServerUser * >(p));
 	}
 
-	if (old && old->bTemporary && old->qlUsers.isEmpty()) {
+	if (old && old->hasAttribute(ChannelAttribute::Temporary) && old->qlUsers.isEmpty()) {
 		auto func_ptr = std::mem_fn< void(unsigned int) >(&Server::removeChannel);
 		QCoreApplication::instance()->postEvent(this, new ExecEvent(std::bind(func_ptr, this, old->iId)));
 	}
@@ -3149,7 +3149,7 @@ void Server::addChannelListener(const ServerUser &user, const Channel &channel) 
 		return;
 	}
 
-	if (user.iId >= 0 && !channel.bTemporary) {
+	if (user.iId >= 0 && !channel.hasAttribute(ChannelAttribute::Temporary)) {
 		m_dbWrapper.addChannelListenerIfNotExists(iServerNum, static_cast< unsigned int >(user.iId), channel.iId);
 
 		// If the listener existed already, there might have been a volume adjustment for it stored, which
@@ -3170,7 +3170,7 @@ void Server::setChannelListenerVolume(const ServerUser &user, const Channel &cha
 	if (m_channelListenerManager.isListening(user.uiSession, channel.iId)
 		|| (user.iId >= 0
 			&& m_dbWrapper.channelListenerExists(iServerNum, static_cast< unsigned int >(user.iId), channel.iId))) {
-		if (user.iId >= 0 && !channel.bTemporary) {
+		if (user.iId >= 0 && !channel.hasAttribute(ChannelAttribute::Temporary)) {
 			m_dbWrapper.storeChannelListenerVolume(iServerNum, static_cast< unsigned int >(user.iId), channel.iId,
 												   volume);
 		}
@@ -3190,7 +3190,7 @@ void Server::disableChannelListener(const ServerUser &user, const Channel &chann
 		return;
 	}
 
-	if (user.iId >= 0 && !channel.bTemporary) {
+	if (user.iId >= 0 && !channel.hasAttribute(ChannelAttribute::Temporary)) {
 		m_dbWrapper.disableChannelListenerIfExists(iServerNum, static_cast< unsigned int >(user.iId), channel.iId);
 	}
 
@@ -3198,7 +3198,7 @@ void Server::disableChannelListener(const ServerUser &user, const Channel &chann
 }
 
 void Server::deleteChannelListener(const ServerUser &user, const Channel &channel) {
-	if (user.iId >= 0 && !channel.bTemporary) {
+	if (user.iId >= 0 && !channel.hasAttribute(ChannelAttribute::Temporary)) {
 		m_dbWrapper.deleteChannelListener(iServerNum, static_cast< unsigned int >(user.iId), channel.iId);
 	}
 
@@ -3276,7 +3276,7 @@ bool Server::registerUser(ServerUser &user) {
 
 	user.iId = id;
 
-	if (!user.cChannel->bTemporary) {
+	if (!user.cChannel->hasAttribute(ChannelAttribute::Temporary)) {
 		m_dbWrapper.setLastChannel(iServerNum, user);
 	}
 
@@ -3436,7 +3436,7 @@ Channel *Server::createNewChannel(Channel *parent, const QString &name, bool tem
 	}
 
 	Channel *c    = new Channel(id, name, parent);
-	c->bTemporary = temporary;
+	c->setAttribute(ChannelAttribute::Temporary, temporary);
 	c->iPosition  = position;
 	c->uiMaxUsers = maxUsers;
 	qhChannels.insert(id, c);
@@ -3446,6 +3446,149 @@ Channel *Server::createNewChannel(Channel *parent, const QString &name, bool tem
 	}
 
 	return c;
+}
+
+// ---------------------------------------------------------------------------
+// Generic channel provisioning for the plugin host bridge
+//
+// These are content-agnostic: they expose the existing private-rooms creation
+// primitive (hidden / persistent-chat / expiry / invitee ACLs) programmatically
+// so a plugin can compose higher-level features. They run on the server's own
+// thread (the host bridge marshals off-thread calls via QMetaObject::invokeMethod),
+// so they touch qhChannels / the DB exactly like msgChannelState does and need
+// no extra locking.
+// ---------------------------------------------------------------------------
+
+// Add an "allow SeeChannel|Enter|Traverse" ACL for a registered user on `c`.
+static void grantUserSeeEnter(Channel *c, int userId) {
+	ChanACL *allow    = new ChanACL(c);
+	allow->bApplyHere = true;
+	allow->bApplySubs = false;
+	allow->iUserId    = userId;
+	allow->pDeny      = ChanACL::None;
+	allow->pAllow     = ChanACL::SeeChannel | ChanACL::Enter | ChanACL::Traverse;
+}
+
+unsigned int Server::createChannelForPlugin(unsigned int parentId, const QString &name, bool hidden,
+											bool registeredCanManage, uint32_t pchatProtocol,
+											uint32_t expiryMode, uint32_t expiryDuration,
+											const QVector< unsigned int > &inviteeUserIds) {
+	Channel *p = qhChannels.value(parentId);
+	if (!p) {
+		return 0;
+	}
+	// Idempotent across restarts / concurrent triggers: reuse a same-named child.
+	for (Channel *sibling : p->qlChannels) {
+		if (sibling->qsName == name) {
+			return sibling->iId;
+		}
+	}
+	if (iChannelCountLimit != 0 && qhChannels.count() >= iChannelCountLimit) {
+		return 0;
+	}
+
+	Channel *c         = createNewChannel(p, name);
+	c->setAttribute(ChannelAttribute::Hidden, hidden);
+	c->uiPChatProtocol = pchatProtocol;
+	c->uiCreatedAt     = static_cast< uint32_t >(QDateTime::currentSecsSinceEpoch());
+	c->iLastActivity   = c->uiCreatedAt;
+	if (expiryMode != 0 && expiryDuration > 0) {
+		c->uiExpiryMode     = expiryMode;
+		c->uiExpiryDuration = expiryDuration;
+	}
+
+	bool aclChanged = false;
+
+	// Invisible, non-enterable registered-users container: nobody may see or
+	// enter the node itself (deny @all SeeChannel|Enter), but the `auth` group
+	// (registered users, iId >= 0) may traverse *through* it to reach the
+	// sub-channels created inside, and create those sub-channels. Only the
+	// sub-channels are ever visible/enterable - the container is pure plumbing.
+	// The deny applies here only (bApplySubs = false), so children govern their
+	// own visibility/entry via their own ACLs.
+	if (registeredCanManage) {
+		ChanACL *deny    = new ChanACL(c);
+		deny->bApplyHere = true;
+		deny->bApplySubs = false;
+		deny->qsGroup    = QLatin1String("all");
+		deny->pAllow     = ChanACL::None;
+		deny->pDeny      = ChanACL::SeeChannel | ChanACL::Enter;
+
+		ChanACL *allow    = new ChanACL(c);
+		allow->bApplyHere = true;
+		allow->bApplySubs = false;
+		allow->qsGroup    = QLatin1String("auth");
+		allow->pDeny      = ChanACL::None;
+		allow->pAllow     = ChanACL::Traverse | ChanACL::MakeChannel | ChanACL::MakeTempChannel;
+		aclChanged = true;
+	}
+
+	// Private channel: deny see/enter/traverse to @all, allow each invitee.
+	if (!inviteeUserIds.isEmpty()) {
+		ChanACL *deny    = new ChanACL(c);
+		deny->bApplyHere = true;
+		deny->bApplySubs = false;
+		deny->qsGroup    = QLatin1String("all");
+		deny->pAllow     = ChanACL::None;
+		deny->pDeny      = ChanACL::SeeChannel | ChanACL::Enter | ChanACL::Traverse;
+		for (unsigned int uid : inviteeUserIds) {
+			grantUserSeeEnter(c, static_cast< int >(uid));
+		}
+		aclChanged = true;
+	}
+
+	if (aclChanged) {
+		clearACLCache();
+	}
+
+	m_dbWrapper.updateChannelData(iServerNum, *c);
+
+	MumbleProto::ChannelState mpcs;
+	mpcs.set_channel_id(c->iId);
+	mpcs.set_parent(p->iId);
+	mpcs.set_name(u8(c->qsName));
+	if (c->hasAttribute(ChannelAttribute::Hidden))
+		mpcs.set_hidden(true);
+	if (c->isPersistentChat())
+		mpcs.set_pchat_protocol(static_cast< MumbleProto::PchatProtocol >(c->uiPChatProtocol));
+	if (c->uiExpiryMode != 0) {
+		mpcs.set_expiry_mode(c->uiExpiryMode);
+		mpcs.set_expiry_duration_secs(c->uiExpiryDuration);
+		mpcs.set_expires_at(static_cast< quint64 >(c->uiCreatedAt) + c->uiExpiryDuration);
+	}
+	sendToObservers(c, mpcs);
+
+	// A newly created expiring channel may hold the earliest deadline.
+	rescheduleChannelExpiry();
+	return c->iId;
+}
+
+bool Server::grantChannelAccess(unsigned int channelId, unsigned int userId) {
+	Channel *c = qhChannels.value(channelId);
+	if (!c) {
+		return false;
+	}
+	// Already granted? (idempotent re-joins.)
+	for (const ChanACL *acl : c->qlACL) {
+		if (acl->iUserId == static_cast< int >(userId) && acl->pAllow.testFlag(ChanACL::Enter)) {
+			return true;
+		}
+	}
+	grantUserSeeEnter(c, static_cast< int >(userId));
+	clearACLCache();
+	m_dbWrapper.updateChannelData(iServerNum, *c);
+
+	// Re-broadcast so the newly-permitted user (and other observers) learn the
+	// channel exists; observer filtering now lets the granted user through.
+	MumbleProto::ChannelState mpcs;
+	mpcs.set_channel_id(c->iId);
+	if (c->cParent) {
+		mpcs.set_parent(c->cParent->iId);
+	}
+	mpcs.set_name(u8(c->qsName));
+	mpcs.set_hidden(c->hasAttribute(ChannelAttribute::Hidden));
+	sendToObservers(c, mpcs);
+	return true;
 }
 
 void Server::linkChannels(Channel &first, Channel &second) {
@@ -3458,7 +3601,7 @@ void Server::linkChannels(Channel &first, Channel &second) {
 		return;
 	}
 
-	if (first.bTemporary || second.bTemporary) {
+	if (first.hasAttribute(ChannelAttribute::Temporary) || second.hasAttribute(ChannelAttribute::Temporary)) {
 		return;
 	}
 
@@ -3475,7 +3618,7 @@ void Server::unlinkChannels(Channel &first, Channel &second) {
 		return;
 	}
 
-	if (first.bTemporary || second.bTemporary) {
+	if (first.hasAttribute(ChannelAttribute::Temporary) || second.hasAttribute(ChannelAttribute::Temporary)) {
 		return;
 	}
 

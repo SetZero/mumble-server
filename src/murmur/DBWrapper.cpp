@@ -396,7 +396,7 @@ void readChildren(::msdb::ServerDatabase &db, Channel *parent, Server &server) {
 		::msdb::DBChannel channelInfo = db.getChannelTable().getChannelData(server.iServerNum, currentChildID);
 
 		Channel *currentChild     = new Channel(currentChildID, QString::fromStdString(channelInfo.name), parent);
-		currentChild->bInheritACL = channelInfo.inheritACL;
+		currentChild->setAttribute(ChannelAttribute::InheritACL, channelInfo.inheritACL);
 
 		server.qhChannels.insert(currentChildID, currentChild);
 
@@ -411,7 +411,7 @@ void DBWrapper::initializeChannels(Server &server) {
 	::msdb::DBChannel root = m_serverDB.getChannelTable().getChannelData(server.iServerNum, Mumble::ROOT_CHANNEL_ID);
 
 	Channel *rootChannel     = new Channel(Mumble::ROOT_CHANNEL_ID, QString::fromStdString(root.name), &server);
-	rootChannel->bInheritACL = root.inheritACL;
+	rootChannel->setAttribute(ChannelAttribute::InheritACL, root.inheritACL);
 
 	server.qhChannels.insert(rootChannel->iId, rootChannel);
 
@@ -460,9 +460,9 @@ void DBWrapper::initializeChannelDetails(Server &server) {
 		}
 
 		// Read hidden-channel + expiry properties
-		currentChannel->bHidden = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+		currentChannel->setAttribute(ChannelAttribute::Hidden, m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
 									  server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::Hidden)
-								  != 0;
+								  != 0);
 		currentChannel->uiExpiryMode = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
 			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::ExpiryMode);
 		currentChannel->uiExpiryDuration = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
@@ -558,7 +558,7 @@ unsigned int DBWrapper::getNextAvailableChannelID(unsigned int serverID) {
 	dbChannel.channelID  = channel.iId;
 	dbChannel.name       = channel.qsName.toStdString();
 	dbChannel.parentID   = channel.cParent ? channel.cParent->iId : channel.iId;
-	dbChannel.inheritACL = channel.bInheritACL;
+	dbChannel.inheritACL = channel.hasAttribute(ChannelAttribute::InheritACL);
 
 	return dbChannel;
 }
@@ -624,7 +624,7 @@ unsigned int DBWrapper::getNextAvailableChannelID(unsigned int serverID) {
 void DBWrapper::createChannel(unsigned int serverID, const Channel &channel) {
 	assertValidID(serverID);
 	assertValidID(channel.iId);
-	assert(!channel.bTemporary);
+	assert(!channel.hasAttribute(ChannelAttribute::Temporary));
 
 	createChannel(channelToDB(serverID, channel), static_cast< unsigned int >(channel.iPosition), channel.uiMaxUsers,
 				  channel.qsDesc.toStdString());
@@ -674,9 +674,9 @@ void DBWrapper::updateChannelData(unsigned int serverID, const Channel &channel)
 
 	assertValidID(serverID);
 	assertValidID(channel.iId);
-	assert(!channel.bTemporary);
+	assert(!channel.hasAttribute(ChannelAttribute::Temporary));
 
-	if (channel.bTemporary) {
+	if (channel.hasAttribute(ChannelAttribute::Temporary)) {
 		// Temporary channels by definition are not stored in the DB
 		return;
 	}
@@ -724,7 +724,7 @@ void DBWrapper::updateChannelData(unsigned int serverID, const Channel &channel)
 
 	// Update hidden-channel + expiry properties
 	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::Hidden,
-													 std::to_string(channel.bHidden ? 1 : 0));
+													 std::to_string(channel.hasAttribute(ChannelAttribute::Hidden) ? 1 : 0));
 	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::ExpiryMode,
 													 std::to_string(channel.uiExpiryMode));
 	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::ExpiryDuration,
@@ -809,8 +809,8 @@ void DBWrapper::addChannelLink(unsigned int serverID, const Channel &first, cons
 	assertValidID(serverID);
 	assertValidID(first.iId);
 	assertValidID(second.iId);
-	assert(!first.bTemporary);
-	assert(!second.bTemporary);
+	assert(!first.hasAttribute(ChannelAttribute::Temporary));
+	assert(!second.hasAttribute(ChannelAttribute::Temporary));
 	assert(first.iId != second.iId);
 
 	::msdb::DBChannelLink link(serverID, first.iId, second.iId);
@@ -826,8 +826,8 @@ void DBWrapper::removeChannelLink(unsigned int serverID, const Channel &first, c
 	assertValidID(serverID);
 	assertValidID(first.iId);
 	assertValidID(second.iId);
-	assert(!first.bTemporary);
-	assert(!second.bTemporary);
+	assert(!first.hasAttribute(ChannelAttribute::Temporary));
+	assert(!second.hasAttribute(ChannelAttribute::Temporary));
 	assert(first.iId != second.iId);
 
 	::msdb::DBChannelLink link(serverID, first.iId, second.iId);

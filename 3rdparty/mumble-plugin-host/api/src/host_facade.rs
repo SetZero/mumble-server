@@ -171,6 +171,50 @@ impl<'a> Host<'a> {
         self.ctx.current_channel(server_id, session).into_option()
     }
 
+    // ---- Channel management ---------------------------------------
+
+    /// Create a sub-channel under `parent` (or return an existing same-named
+    /// child) with the given standard, content-agnostic channel properties.
+    /// See [`PluginContext::create_channel`] for the parameter meaning.
+    #[must_use]
+    #[allow(clippy::too_many_arguments, reason = "mirrors the server's channel-property surface")]
+    pub fn create_channel(
+        &self,
+        server_id: ServerId,
+        parent: ChannelId,
+        name: &str,
+        hidden: bool,
+        registered_can_manage: bool,
+        pchat_protocol: u32,
+        expiry_mode: u32,
+        expiry_duration_secs: u32,
+        invitee_uids: &[u32],
+    ) -> Option<ChannelId> {
+        self.ctx
+            .create_channel(
+                server_id,
+                parent,
+                RStr::from_str(name),
+                hidden,
+                registered_can_manage,
+                pchat_protocol,
+                expiry_mode,
+                expiry_duration_secs,
+                RSlice::from_slice(invitee_uids),
+            )
+            .into_option()
+    }
+
+    /// Grant a registered `user_id` access to an existing private `channel`.
+    pub fn grant_channel_access(
+        &self,
+        server_id: ServerId,
+        channel: ChannelId,
+        user_id: u32,
+    ) -> bool {
+        self.ctx.grant_channel_access(server_id, channel, user_id)
+    }
+
     /// Returns `true` if the session is currently connected.
     #[must_use]
     pub fn is_session_active(&self, server_id: ServerId, session: SessionId) -> bool {
