@@ -160,19 +160,66 @@ public:
 	}
 };
 
-/// Checks whether the given channel has restrictions affecting the ENTER privilege
+/// Checks whether the given channel is password/token enter-restricted, i.e. a
+/// regular user must supply a password (token) to enter.
+///
+/// A bare "deny Enter to @all" is NOT sufficient: invitee-gated private rooms
+/// (and scheduled meeting rooms) deny Enter to @all but grant it back to
+/// specific registered users by user id, so those users enter with no password.
+/// Treating such rooms as password-protected makes the client pop a spurious
+/// password prompt. We therefore report restricted only when Enter is denied
+/// and NOT granted to any specific registered user (the remaining gate is then a
+/// password/token group).
 ///
 /// @param c A pointer to the Channel that should be checked
-/// @return Whether the provided channel has an ACL denying ENTER
+/// @return Whether entering @p c requires a password/token
 bool isChannelEnterRestricted(Channel *c) {
-	// A channel is enter restricted if there's an ACL denying enter privileges
+	bool deniesEnter         = false;
+	bool grantsEnterToUserId = false;
 	for (ChanACL *acl : c->qlACL) {
 		if (acl->pDeny & ChanACL::Enter) {
-			return true;
+			deniesEnter = true;
+		}
+		if ((acl->pAllow & ChanACL::Enter) && acl->iUserId >= 0) {
+			grantsEnterToUserId = true;
 		}
 	}
 
-	return false;
+	return deniesEnter && !grantsEnterToUserId;
+}
+
+/// Reserved sentinel channel id for a "presence-hidden" user: announced to Fancy
+/// clients so they can show the user as online without learning which (hidden)
+/// channel the user is actually in. It is never a real channel id (ids are
+/// assigned from 0 upward). The Fancy client renders such a user as online but
+/// in no channel; the stock client cannot represent this (Channel::get() of an
+/// unknown id falls back to the root channel), so presence-hidden states must
+/// ONLY ever be sent to Fancy clients.
+static constexpr unsigned int PRESENCE_HIDDEN_CHANNEL_ID = 0xFFFFFFFFu;
+
+/// Fill @p mpus with a presence-only announce for @p u: enough identity to show
+/// them online and attribute their messages (name, id, hash, texture), but
+/// parked in PRESENCE_HIDDEN_CHANNEL_ID instead of their real (hidden) channel.
+/// @p recipient only affects the texture encoding (blob vs hash). Send ONLY to
+/// Fancy clients.
+static void serializePresenceOnly(MumbleProto::UserState &mpus, const ServerUser &u,
+								  const ServerUser &recipient) {
+	mpus.Clear();
+	mpus.set_session(u.uiSession);
+	mpus.set_name(u8(u.qsName));
+	mpus.set_channel_id(PRESENCE_HIDDEN_CHANNEL_ID);
+	if (u.iId >= 0)
+		mpus.set_user_id(static_cast< unsigned int >(u.iId));
+	if (!u.qsHash.isEmpty())
+		mpus.set_hash(u8(u.qsHash));
+	if (recipient.usesBlobHashes()) {
+		if (!u.qbaTextureHash.isEmpty())
+			mpus.set_texture_hash(blob(u.qbaTextureHash));
+	} else if (!u.qbaTexture.isEmpty()) {
+		mpus.set_texture(blob(u.qbaTexture));
+	}
+	if (u.isFancyClient())
+		mpus.add_client_features(MumbleProto::UserState::FEATURE_PCHAT_E2EE);
 }
 
 void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg) {
@@ -549,10 +596,18 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		if (u == uSource)
 			continue;
 
-		// Presence hiding: never reveal a user who is currently inside a hidden
-		// channel that the newcomer is not allowed to see.
-		if (!uSource->canSee(u->cChannel))
+		// Presence hiding: don't reveal which (hidden) channel a user the newcomer
+		// can't see is in. We still announce them as online (Fancy clients only)
+		// via a presence-only state parked in the sentinel channel, so they show
+		// up in friends/member lists; the real channel is never disclosed. Stock
+		// clients can't represent this (they'd root the user), so they get nothing.
+		if (!uSource->canSee(u->cChannel)) {
+			if (uSource->isFancyClient()) {
+				serializePresenceOnly(mpus, *u, *uSource);
+				sendMessage(uSource, mpus);
+			}
 			continue;
+		}
 
 		mpus.Clear();
 		mpus.set_session(u->uiSession);
@@ -1334,13 +1389,23 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 				const bool seesNow   = peer->canSee(newChannel);
 
 				if (sawBefore && !seesNow) {
-					// Moved out of view (e.g. into a hidden channel): tell the peer
-					// the user left, otherwise they'd appear frozen in the old
-					// channel.
-					MumbleProto::UserRemove vanish;
-					vanish.set_session(pDstServerUser->uiSession);
-					QByteArray vanishCache;
-					peer->sendMessage(vanish, Mumble::Protocol::TCPMessageType::UserRemove, vanishCache);
+					// Moved out of view (e.g. into a hidden channel): the peer must
+					// stop showing the user in the old channel. Fancy peers get a
+					// presence-only state (parked in the sentinel channel) so the
+					// user stays online but in no visible channel; stock peers can't
+					// represent that, so they get a UserRemove (the user goes offline
+					// for them) - otherwise they'd appear frozen in the old channel.
+					if (peer->isFancyClient()) {
+						MumbleProto::UserState presence;
+						serializePresenceOnly(presence, *pDstServerUser, *peer);
+						QByteArray presenceCache;
+						peer->sendMessage(presence, Mumble::Protocol::TCPMessageType::UserState, presenceCache);
+					} else {
+						MumbleProto::UserRemove vanish;
+						vanish.set_session(pDstServerUser->uiSession);
+						QByteArray vanishCache;
+						peer->sendMessage(vanish, Mumble::Protocol::TCPMessageType::UserRemove, vanishCache);
+					}
 				} else if (!sawBefore && seesNow) {
 					// Moved back into view (e.g. leaving a hidden channel): the peer
 					// was previously sent a UserRemove and no longer knows this
@@ -2119,25 +2184,21 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 		// target (tree/direct/listener/push delivery), announce just the sender's
 		// identity first so the message is attributed to the real user.
 		//
-		// We deliberately omit the channel id: the recipient learns who is talking
-		// to them, but not which hidden channel the sender sits in (keeping the
-		// channel-id-never-leaks invariant of the visibility policy intact).
-		if (uSource->cChannel && !u->canSee(uSource->cChannel)) {
+		// The announce parks the sender in the sentinel channel (never the real,
+		// hidden one): the recipient learns who is talking to them, but not which
+		// hidden channel the sender sits in (the channel-id-never-leaks invariant).
+		//
+		// Sent ONLY to Fancy clients: they understand the sentinel channel as
+		// "presence-hidden" and keep the user resolvable + online without placing
+		// them in a visible channel. The stock Mumble client cannot - its
+		// msgUserState() falls back to the root channel for an unknown channel id
+		// (Channel::get(ROOT_CHANNEL_ID)), so an announce would park the sender at
+		// root, re-leaking their presence. A legacy recipient therefore gets no
+		// announce and simply attributes the message to "Server", which is the
+		// correct graceful degradation (no presence leak, no client change).
+		if (uSource->cChannel && !u->canSee(uSource->cChannel) && u->isFancyClient()) {
 			MumbleProto::UserState ident;
-			ident.set_session(uSource->uiSession);
-			ident.set_name(u8(uSource->qsName));
-			if (uSource->iId >= 0)
-				ident.set_user_id(static_cast< unsigned int >(uSource->iId));
-			if (!uSource->qsHash.isEmpty())
-				ident.set_hash(u8(uSource->qsHash));
-			if (u->usesBlobHashes()) {
-				if (!uSource->qbaTextureHash.isEmpty())
-					ident.set_texture_hash(blob(uSource->qbaTextureHash));
-			} else if (!uSource->qbaTexture.isEmpty()) {
-				ident.set_texture(blob(uSource->qbaTexture));
-			}
-			if (uSource->isFancyClient())
-				ident.add_client_features(MumbleProto::UserState::FEATURE_PCHAT_E2EE);
+			serializePresenceOnly(ident, *uSource, *u);
 			sendMessage(u, ident);
 		}
 		sendMessage(u, msg);
