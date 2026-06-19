@@ -40,6 +40,11 @@ enum class ChannelAttribute : std::size_t {
 	Hidden = 1,
 	/// Channel inherits its parent's ACLs (the default for a new channel).
 	InheritACL = 2,
+	/// Channel is detached: it has no parent (like the root), never appears in
+	/// any channel tree, and is only ever sent to Fancy clients. Used for
+	/// meeting rooms. A detached channel is implicitly hidden from the tree, but
+	/// unlike Hidden it is not nested anywhere.
+	Detached = 3,
 };
 
 class Channel : public QObject {

@@ -584,9 +584,14 @@ public:
 	/// (registered-users) group may see, traverse and create sub-channels in,
 	/// hidden from guests (deny @all SeeChannel). Returns the channel id, or 0
 	/// on failure. The server ascribes no domain meaning to any of this.
+	/// Create a channel on behalf of a plugin. When @p detached is true the
+	/// channel is parentless (like the root) and marked ChannelAttribute::Detached:
+	/// it never appears in the channel tree and is only ever sent to Fancy clients
+	/// (@p parentId is then ignored). Otherwise it is created under @p parentId.
 	unsigned int createChannelForPlugin(unsigned int parentId, const QString &name, bool hidden,
-										bool registeredCanManage, uint32_t pchatProtocol, uint32_t expiryMode,
-										uint32_t expiryDuration, const QVector< unsigned int > &inviteeUserIds);
+										bool registeredCanManage, bool detached, uint32_t pchatProtocol,
+										uint32_t expiryMode, uint32_t expiryDuration,
+										const QVector< unsigned int > &inviteeUserIds);
 	/// Grant a registered user SeeChannel|Enter|Traverse on an existing private
 	/// channel (admission to an invitee-gated room). Returns true on success.
 	bool grantChannelAccess(unsigned int channelId, unsigned int userId);

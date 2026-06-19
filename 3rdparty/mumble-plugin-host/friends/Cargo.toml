@@ -1,0 +1,30 @@
+# =========================================================================
+# mumble-friends: friend direct-message rooms for Fancy Mumble.
+#
+# Backs a friend chat between two *registered* users (or a user's self-notepad)
+# with a detached, Signal-E2E (`signal_v1`), persisted channel: parentless,
+# never shown in the channel tree, delivered only to Fancy clients, with both
+# users as invitees. End-to-end encryption + server persistence come for free
+# from the pchat subsystem. The host/server ascribe no meaning to "friends" -
+# only this plugin does. No port, no disk storage (just live session->uid maps).
+# =========================================================================
+
+[package]
+name = "mumble-friends"
+version = "0.1.0"
+edition = "2021"
+description = "Friend direct-message (E2E persisted) room provisioning plugin for Fancy Mumble"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mumble-plugin-api = { path = "../api" }
+abi_stable = "0.11"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true

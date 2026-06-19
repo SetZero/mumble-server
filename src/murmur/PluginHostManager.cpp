@@ -663,7 +663,7 @@ Qt::ConnectionType serverThreadConnection(const Server *server) {
 
 bool PluginHostManager::createChannelTrampoline(void *userData, uint32_t /*serverId*/, uint32_t parent,
                                                 const char *name, bool hidden, bool registeredCanManage,
-                                                uint32_t pchatProtocol, uint32_t expiryMode,
+                                                bool detached, uint32_t pchatProtocol, uint32_t expiryMode,
                                                 uint32_t expiryDuration, const uint32_t *inviteeUids,
                                                 size_t inviteeLen, uint32_t *outChannel) {
         auto *self = static_cast< PluginHostManager * >(userData);
@@ -683,11 +683,11 @@ bool PluginHostManager::createChannelTrampoline(void *userData, uint32_t /*serve
                 unsigned int id = 0;
                 QMetaObject::invokeMethod(
                         server,
-                        [server, parent, qsName, hidden, registeredCanManage, pchatProtocol, expiryMode,
+                        [server, parent, qsName, hidden, registeredCanManage, detached, pchatProtocol, expiryMode,
                          expiryDuration, invitees]() {
                                 return server->createChannelForPlugin(parent, qsName, hidden, registeredCanManage,
-                                                                      pchatProtocol, expiryMode, expiryDuration,
-                                                                      invitees);
+                                                                      detached, pchatProtocol, expiryMode,
+                                                                      expiryDuration, invitees);
                         },
                         serverThreadConnection(server), &id);
                 if (id == 0) {

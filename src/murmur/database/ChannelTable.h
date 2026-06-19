@@ -65,6 +65,12 @@ namespace server {
 
 			std::vector< unsigned int > getChildrenOf(unsigned int serverID, unsigned int channelID);
 
+			/// @returns the ids of all *detached* channels: self-parented rows
+			///   (parent_id == channel_id) other than the root (id 0). Detached
+			///   channels are parentless like the root, so getChildrenOf (which
+			///   excludes self-parents) never reaches them.
+			std::vector< unsigned int > getDetachedChannelIds(unsigned int serverID);
+
 			void migrate(unsigned int fromSchemaVersion, unsigned int toSchemaVersion) override;
 		};
 

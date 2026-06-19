@@ -417,6 +417,21 @@ void DBWrapper::initializeChannels(Server &server) {
 
 	readChildren(m_serverDB, rootChannel, server);
 
+	// Detached channels are stored self-parented (parent_id == channel_id) like
+	// the root, so getChildrenOf (which excludes self-parents) never returns them
+	// during the tree walk above. Load them here as parentless channels (QObject-
+	// parented to the server, cParent == nullptr, exactly like the root) with the
+	// Detached attribute set.
+	for (unsigned int detachedID : m_serverDB.getChannelTable().getDetachedChannelIds(server.iServerNum)) {
+		::msdb::DBChannel info = m_serverDB.getChannelTable().getChannelData(server.iServerNum, detachedID);
+
+		Channel *detached = new Channel(detachedID, QString::fromStdString(info.name), &server);
+		detached->setAttribute(ChannelAttribute::InheritACL, info.inheritACL);
+		detached->setAttribute(ChannelAttribute::Detached);
+
+		server.qhChannels.insert(detachedID, detached);
+	}
+
 	initializeChannelDetails(server);
 
 	WRAPPER_END

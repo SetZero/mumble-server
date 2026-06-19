@@ -3470,24 +3470,43 @@ static void grantUserSeeEnter(Channel *c, int userId) {
 }
 
 unsigned int Server::createChannelForPlugin(unsigned int parentId, const QString &name, bool hidden,
-											bool registeredCanManage, uint32_t pchatProtocol,
+											bool registeredCanManage, bool detached, uint32_t pchatProtocol,
 											uint32_t expiryMode, uint32_t expiryDuration,
 											const QVector< unsigned int > &inviteeUserIds) {
-	Channel *p = qhChannels.value(parentId);
-	if (!p) {
+	Channel *root = qhChannels.value(0);
+	// A detached channel is parentless; it is created under root transiently then
+	// severed (parentId is ignored). Otherwise it nests under parentId.
+	Channel *p = detached ? root : qhChannels.value(parentId);
+	if (!p || !root) {
 		return 0;
 	}
-	// Idempotent across restarts / concurrent triggers: reuse a same-named child.
-	for (Channel *sibling : p->qlChannels) {
-		if (sibling->qsName == name) {
-			return sibling->iId;
+	// Idempotent across restarts / concurrent triggers: reuse a same-named
+	// channel. A detached channel has no parent, so search globally.
+	if (detached) {
+		for (Channel *existing : qhChannels) {
+			if (existing->hasAttribute(ChannelAttribute::Detached) && existing->qsName == name) {
+				return existing->iId;
+			}
+		}
+	} else {
+		for (Channel *sibling : p->qlChannels) {
+			if (sibling->qsName == name) {
+				return sibling->iId;
+			}
 		}
 	}
 	if (iChannelCountLimit != 0 && qhChannels.count() >= iChannelCountLimit) {
 		return 0;
 	}
 
-	Channel *c         = createNewChannel(p, name);
+	Channel *c = createNewChannel(p, name);
+	if (detached) {
+		// Sever from the tree: keep QObject parentage (memory cleanup), but make
+		// it parentless (cParent == nullptr) so it never appears in the tree and
+		// persists self-parented (parent_id == channel_id) like the root.
+		root->removeChannel(c);
+		c->setAttribute(ChannelAttribute::Detached);
+	}
 	c->setAttribute(ChannelAttribute::Hidden, hidden);
 	c->uiPChatProtocol = pchatProtocol;
 	c->uiCreatedAt     = static_cast< uint32_t >(QDateTime::currentSecsSinceEpoch());
@@ -3545,10 +3564,13 @@ unsigned int Server::createChannelForPlugin(unsigned int parentId, const QString
 
 	MumbleProto::ChannelState mpcs;
 	mpcs.set_channel_id(c->iId);
-	mpcs.set_parent(p->iId);
+	if (!detached)
+		mpcs.set_parent(p->iId);
 	mpcs.set_name(u8(c->qsName));
 	if (c->hasAttribute(ChannelAttribute::Hidden))
 		mpcs.set_hidden(true);
+	if (c->hasAttribute(ChannelAttribute::Detached))
+		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_DETACHED);
 	if (c->isPersistentChat())
 		mpcs.set_pchat_protocol(static_cast< MumbleProto::PchatProtocol >(c->uiPChatProtocol));
 	if (c->uiExpiryMode != 0) {
@@ -3556,7 +3578,18 @@ unsigned int Server::createChannelForPlugin(unsigned int parentId, const QString
 		mpcs.set_expiry_duration_secs(c->uiExpiryDuration);
 		mpcs.set_expires_at(static_cast< quint64 >(c->uiCreatedAt) + c->uiExpiryDuration);
 	}
-	sendToObservers(c, mpcs);
+	if (detached) {
+		// Detached channels go ONLY to Fancy clients (a stock client would place a
+		// parentless channel under the root). canSee still gates per recipient, so
+		// e.g. a meeting room only reaches its invitees.
+		QByteArray cache;
+		for (ServerUser *u : qhUsers) {
+			if (u->sState == ServerUser::Authenticated && u->isFancyClient() && u->canSee(c))
+				u->sendMessage(mpcs, Mumble::Protocol::TCPMessageType::ChannelState, cache);
+		}
+	} else {
+		sendToObservers(c, mpcs);
+	}
 
 	// A newly created expiring channel may hold the earliest deadline.
 	rescheduleChannelExpiry();
@@ -3580,14 +3613,26 @@ bool Server::grantChannelAccess(unsigned int channelId, unsigned int userId) {
 
 	// Re-broadcast so the newly-permitted user (and other observers) learn the
 	// channel exists; observer filtering now lets the granted user through.
+	const bool detached = c->hasAttribute(ChannelAttribute::Detached);
 	MumbleProto::ChannelState mpcs;
 	mpcs.set_channel_id(c->iId);
-	if (c->cParent) {
+	if (c->cParent && !detached) {
 		mpcs.set_parent(c->cParent->iId);
 	}
 	mpcs.set_name(u8(c->qsName));
 	mpcs.set_hidden(c->hasAttribute(ChannelAttribute::Hidden));
-	sendToObservers(c, mpcs);
+	if (detached)
+		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_DETACHED);
+	if (detached) {
+		// Detached channels reach Fancy clients only (see createChannelForPlugin).
+		QByteArray cache;
+		for (ServerUser *u : qhUsers) {
+			if (u->sState == ServerUser::Authenticated && u->isFancyClient() && u->canSee(c))
+				u->sendMessage(mpcs, Mumble::Protocol::TCPMessageType::ChannelState, cache);
+		}
+	} else {
+		sendToObservers(c, mpcs);
+	}
 	return true;
 }
 

@@ -242,6 +242,39 @@ namespace server {
 			}
 		}
 
+		std::vector< unsigned int > ChannelTable::getDetachedChannelIds(unsigned int serverID) {
+			try {
+				::mdb::TransactionHolder transaction = ensureTransaction();
+
+				std::vector< unsigned int > ids;
+				soci::row row;
+
+				// Detached channels are stored self-parented (parent_id == channel_id)
+				// like the root; exclude the root itself (id 0).
+				soci::statement stmt =
+					(m_sql.prepare << "SELECT \"" << column::channel_id << "\" FROM \"" << NAME << "\" WHERE \""
+								   << column::server_id << "\" = :serverID AND \"" << column::parent_id << "\" = \""
+								   << column::channel_id << "\" AND NOT \"" << column::channel_id << "\" = 0",
+					 soci::use(serverID, "serverID"), soci::into(row));
+
+				stmt.execute(false);
+
+				while (stmt.fetch()) {
+					assert(row.size() == 1);
+					assert(row.get_properties(0).get_data_type() == soci::dt_integer);
+
+					ids.push_back(static_cast< unsigned int >(row.get< int >(0)));
+				}
+
+				transaction.commit();
+
+				return ids;
+			} catch (const soci::soci_error &) {
+				std::throw_with_nested(::mdb::AccessException(
+					"Failed at fetching detached channels on server with ID " + std::to_string(serverID)));
+			}
+		}
+
 
 		void ChannelTable::migrate(unsigned int fromSchemaVersion, unsigned int toSchemaVersion) {
 			// Note: Always hard-code old table and column names in this function in order to ensure that this

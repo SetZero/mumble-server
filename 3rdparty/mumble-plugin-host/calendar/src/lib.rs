@@ -62,20 +62,13 @@ const MSG_INVITE_LINK: &str = "calendar.inviteLink";
 /// Keep a meeting room around this long after the meeting *ends* before the
 /// server's expiry reaper deletes it.
 const MEETING_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
-/// Canonical name of the hidden node under which meeting rooms are provisioned.
-/// This plugin (and the client's calendar UI) is the only place that knows it;
-/// the server/host treat it as an ordinary hidden channel.
-const MEETINGS_NODE_NAME: &str = "__meetings";
-/// Parent for the meetings node: the server's root channel (id 0).
+/// Nominal parent passed to create_channel for a meeting room. Detached channels
+/// are parentless, so this is ignored by the host; kept as the server's root (0).
 const ROOT_CHANNEL_ID: u32 = 0;
 /// `signal_v1` persistent-chat protocol selector (Signal sender-key group E2E).
 const PCHAT_SIGNAL_V1: u32 = 4;
 /// Absolute channel-expiry mode (removed at created_at + duration).
 const EXPIRY_ABSOLUTE: u32 = 1;
-/// No persistent-chat protocol.
-const PCHAT_NONE: u32 = 0;
-/// No channel expiry.
-const EXPIRY_NONE: u32 = 0;
 /// Upper bound on how long the scheduler sleeps between scans (heartbeat); new
 /// or changed meetings wake it sooner via the condvar.
 const SCHED_HEARTBEAT: Duration = Duration::from_secs(3600);
@@ -328,33 +321,20 @@ fn ensure_room(
         (room_name(&ev.title, event_id), invitee_uids(ev), expiry_secs)
     };
 
-    // Compose the room from generic channel primitives. First ensure the hidden
-    // `__meetings` node exists under root: a hidden, registered-users-managed
-    // container (registered users may see/traverse/create there - so meeting
-    // rooms nest *inside* it - while it stays hidden from guests). Then create
-    // the room under it as a hidden, Signal-E2E (`signal_v1`), absolutely-expiring
-    // private channel for the invitees. The host/server ascribe no meaning to the
-    // `__meetings` name or the `signal_v1` choice - only this plugin does.
-    let root = ctx
-        .create_channel(
-            server_id,
-            ROOT_CHANNEL_ID,
-            RStr::from_str(MEETINGS_NODE_NAME),
-            true,  // hidden
-            true,  // registered_can_manage
-            PCHAT_NONE,
-            EXPIRY_NONE,
-            0,
-            RSlice::from_slice(&[]),
-        )
-        .into_option()?;
+    // Create the meeting room as a DETACHED channel: parentless (like the root),
+    // only ever sent to Fancy clients, and never shown in the channel tree. It is
+    // a Signal-E2E (`signal_v1`), absolutely-expiring, invitee-gated private
+    // channel. No container node is needed - the host/server ascribe no meaning to
+    // "meetings"; the detached flag plus the invitee ACLs do all the work. The
+    // parent argument is ignored for detached channels.
     let cid = ctx
         .create_channel(
             server_id,
-            root,
+            ROOT_CHANNEL_ID,
             RStr::from_str(&name),
-            true,  // hidden
-            false, // registered_can_manage (the room is invitee-gated, not shared)
+            false, // hidden (detached is already tree-invisible; invitee ACLs gate access)
+            false, // registered_can_manage
+            true,  // detached
             PCHAT_SIGNAL_V1,
             EXPIRY_ABSOLUTE,
             expiry_secs,

@@ -147,7 +147,7 @@ private:
         // thread-aware connection type.
         static bool createChannelTrampoline(void *userData, uint32_t serverId, uint32_t parent,
                                             const char *name, bool hidden, bool registeredCanManage,
-                                            uint32_t pchatProtocol, uint32_t expiryMode,
+                                            bool detached, uint32_t pchatProtocol, uint32_t expiryMode,
                                             uint32_t expiryDuration, const uint32_t *inviteeUids,
                                             size_t inviteeLen, uint32_t *outChannel);
         static bool grantChannelAccessTrampoline(void *userData, uint32_t serverId, uint32_t channel,

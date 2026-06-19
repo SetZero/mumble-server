@@ -180,6 +180,7 @@ typedef struct PluginHostCallbacks {
                          const char *name,
                          bool hidden,
                          bool registered_can_manage,
+                         bool detached,
                          uint32_t pchat_protocol,
                          uint32_t expiry_mode,
                          uint32_t expiry_duration_secs,

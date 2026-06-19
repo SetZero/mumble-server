@@ -205,12 +205,13 @@ pub trait PluginContext: Send + Sync + 'static {
         name: RStr<'_>,
         hidden: bool,
         registered_can_manage: bool,
+        detached: bool,
         pchat_protocol: u32,
         expiry_mode: u32,
         expiry_duration_secs: u32,
         invitee_uids: RSlice<'_, u32>,
     ) -> ROption<ChannelId> {
-        let _ = (server_id, parent, name, hidden, registered_can_manage, pchat_protocol, expiry_mode, expiry_duration_secs, invitee_uids);
+        let _ = (server_id, parent, name, hidden, registered_can_manage, detached, pchat_protocol, expiry_mode, expiry_duration_secs, invitee_uids);
         abi_stable::std_types::RNone
     }
 

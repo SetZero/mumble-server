@@ -188,6 +188,75 @@ bool isChannelEnterRestricted(Channel *c) {
 	return deniesEnter && !grantsEnterToUserId;
 }
 
+/// Populate the Fancy `attributes` set on a ChannelState for @p recipient. This
+/// supersedes (for Fancy clients) the can_enter / is_enter_restricted / hidden /
+/// temporary booleans, and adds the detached marker. The legacy booleans are
+/// still set by callers for non-Fancy clients.
+static void serializeChannelAttributes(MumbleProto::ChannelState &mpcs, Channel *c, ServerUser *recipient) {
+	if (recipient->hasPermission(c, ChanACL::Enter))
+		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_CAN_ENTER);
+	if (isChannelEnterRestricted(c))
+		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_ENTER_RESTRICTED);
+	if (c->hasAttribute(ChannelAttribute::Hidden))
+		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_HIDDEN);
+	if (c->hasAttribute(ChannelAttribute::Temporary))
+		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_TEMPORARY);
+	if (c->hasAttribute(ChannelAttribute::Detached))
+		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_DETACHED);
+}
+
+/// Build the ChannelState for @p c as seen by @p recipient, for the channel
+/// listing. Used both by the tree BFS and the separate detached-channel pass.
+/// @p includeParent is false for detached channels, which are parentless and
+/// must never carry a parent ref (otherwise a client would place them in the
+/// tree). @p rootName is only consulted for the root channel (id 0).
+static void serializeChannelTreeState(MumbleProto::ChannelState &mpcs, Channel *c, ServerUser *recipient,
+									  const QString &rootName, bool includeParent) {
+	mpcs.Clear();
+	mpcs.set_channel_id(c->iId);
+	if (includeParent && c->cParent)
+		mpcs.set_parent(c->cParent->iId);
+	if (c->iId == 0)
+		mpcs.set_name(u8(rootName.isEmpty() ? QLatin1String("Root") : rootName));
+	else
+		mpcs.set_name(u8(c->qsName));
+
+	mpcs.set_position(c->iPosition);
+
+	if (recipient->usesBlobHashes() && !c->qbaDescHash.isEmpty())
+		mpcs.set_description_hash(blob(c->qbaDescHash));
+	else if (!c->qsDesc.isEmpty())
+		mpcs.set_description(u8(c->qsDesc));
+
+	mpcs.set_max_users(c->uiMaxUsers);
+
+	if (c->hasAttribute(ChannelAttribute::Hidden))
+		mpcs.set_hidden(true);
+
+	if (c->uiExpiryMode != 0) {
+		mpcs.set_expiry_mode(c->uiExpiryMode);
+		mpcs.set_expiry_duration_secs(c->uiExpiryDuration);
+		const quint64 deadline =
+			(c->uiExpiryMode == 2)
+				? static_cast< quint64 >(c->iLastActivity) + c->uiExpiryDuration
+				: static_cast< quint64 >(c->uiCreatedAt) + c->uiExpiryDuration;
+		mpcs.set_expires_at(deadline);
+	}
+
+	if (c->isPersistentChat()) {
+		mpcs.set_pchat_protocol(static_cast< MumbleProto::PchatProtocol >(c->uiPChatProtocol));
+		mpcs.set_pchat_max_history(c->uiPChatMaxHistory);
+		mpcs.set_pchat_retention_days(c->uiPChatRetentionDays);
+		for (const auto &kc : c->qslPChatKeyCustodians)
+			mpcs.add_pchat_key_custodians(u8(kc));
+	}
+
+	// Enter restrictions (legacy booleans + the Fancy attribute set).
+	mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
+	mpcs.set_can_enter(recipient->hasPermission(c, ChanACL::Enter));
+	serializeChannelAttributes(mpcs, c, recipient);
+}
+
 /// Reserved sentinel channel id for a "presence-hidden" user: announced to Fancy
 /// clients so they can show the user as online without learning which (hidden)
 /// channel the user is actually in. It is never a real channel id (ids are
@@ -252,6 +321,7 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			}
 			mpcs.set_channel_id(static_cast< unsigned int >(chan->iId));
 			mpcs.set_can_enter(uSource->hasPermission(chan, ChanACL::Enter));
+			serializeChannelAttributes(mpcs, chan, uSource);
 			// As no ACLs have changed, we don't need to update the is_access_restricted message field
 
 			sendMessage(uSource, mpcs);
@@ -460,57 +530,26 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 
 		chans.insert(c);
 
-		mpcs.Clear();
-
-		mpcs.set_channel_id(c->iId);
-		if (c->cParent)
-			mpcs.set_parent(c->cParent->iId);
-		if (c->iId == 0)
-			mpcs.set_name(u8(qsRegName.isEmpty() ? QLatin1String("Root") : qsRegName));
-		else
-			mpcs.set_name(u8(c->qsName));
-
-		mpcs.set_position(c->iPosition);
-
-		if ((uSource->m_version >= Version::fromComponents(1, 2, 2)) && !c->qbaDescHash.isEmpty())
-			mpcs.set_description_hash(blob(c->qbaDescHash));
-		else if (!c->qsDesc.isEmpty())
-			mpcs.set_description(u8(c->qsDesc));
-
-		mpcs.set_max_users(c->uiMaxUsers);
-
-		if (c->hasAttribute(ChannelAttribute::Hidden))
-			mpcs.set_hidden(true);
-
-		if (c->uiExpiryMode != 0) {
-			mpcs.set_expiry_mode(c->uiExpiryMode);
-			mpcs.set_expiry_duration_secs(c->uiExpiryDuration);
-			const quint64 deadline =
-				(c->uiExpiryMode == 2)
-					? static_cast< quint64 >(c->iLastActivity) + c->uiExpiryDuration
-					: static_cast< quint64 >(c->uiCreatedAt) + c->uiExpiryDuration;
-			mpcs.set_expires_at(deadline);
-		}
-
-		if (c->isPersistentChat()) {
-			mpcs.set_pchat_protocol(
-				static_cast< MumbleProto::PchatProtocol >(c->uiPChatProtocol));
-			mpcs.set_pchat_max_history(c->uiPChatMaxHistory);
-			mpcs.set_pchat_retention_days(c->uiPChatRetentionDays);
-			for (const auto &kc : c->qslPChatKeyCustodians)
-				mpcs.add_pchat_key_custodians(u8(kc));
-			qWarning("pchat: sending channel tree for channelId=%d pchat_protocol=%u to session=%u",
-				   c->iId, c->uiPChatProtocol, uSource->uiSession);
-		}
-
-		// Include info about enter restrictions of this channel
-		mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
-		mpcs.set_can_enter(uSource->hasPermission(c, ChanACL::Enter));
-
+		serializeChannelTreeState(mpcs, c, uSource, qsRegName, /*includeParent=*/true);
 		sendMessage(uSource, mpcs);
 
 		for (Channel *chan : c->qlChannels) {
 			q.enqueue(chan);
+		}
+	}
+
+	// Detached channels (parentless, Fancy-only): the tree BFS above never reaches
+	// them - they are not children of any channel - so send them in a separate
+	// pass, and only to Fancy clients. A stock client would fall back to placing a
+	// parentless channel under the root (Channel::get of an absent parent), which
+	// is exactly what "detached" must avoid. canSee still gates per recipient, so
+	// e.g. a detached meeting room only reaches its invitees.
+	if (uSource->isFancyClient()) {
+		for (Channel *dc : qhChannels) {
+			if (!dc->hasAttribute(ChannelAttribute::Detached) || !uSource->canSee(dc))
+				continue;
+			serializeChannelTreeState(mpcs, dc, uSource, qsRegName, /*includeParent=*/false);
+			sendMessage(uSource, mpcs);
 		}
 	}
 
@@ -2609,6 +2648,7 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 			}
 			mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
 			mpcs.set_can_enter(user->hasPermission(c, ChanACL::Enter));
+			serializeChannelAttributes(mpcs, c, user);
 
 			sendMessage(user, mpcs);
 		}

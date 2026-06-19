@@ -1943,6 +1943,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mumble-friends"
+version = "0.1.0"
+dependencies = [
+ "abi_stable",
+ "mumble-plugin-api",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "mumble-link-preview"
 version = "0.1.0"
 dependencies = [
