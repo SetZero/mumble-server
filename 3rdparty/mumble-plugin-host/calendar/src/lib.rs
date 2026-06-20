@@ -12,10 +12,11 @@
 //! * `calendar.availability` - a user's free/busy blocks; broadcast to everyone on
 //!   the virtual server and remembered for connect-time catch-up.
 //!
-//! On top of the relay it also **provisions the actual meeting rooms**: a hidden,
-//! end-to-end-encrypted (`signal_v1`) channel under the server's `__meetings` root,
-//! created server-authoritatively when a meeting's start time arrives (a background
-//! scheduler thread) or when the first participant asks to join (`calendar.join`).
+//! On top of the relay it also **provisions the actual meeting rooms**: a
+//! detached (parentless, Fancy-only, tree-invisible) end-to-end-encrypted
+//! (`signal_v1`) channel, created server-authoritatively when a meeting's start
+//! time arrives (a background scheduler thread) or when the first participant
+//! asks to join (`calendar.join`).
 //! Rooms inherit an absolute expiry so they self-destruct ~1 week after the meeting.
 //! Organisers can mint a Teams-style invite link (`calendar.inviteLink`) carrying an
 //! HMAC token that admits any *registered* user.
@@ -296,10 +297,10 @@ fn event_id_of(v: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Ensure the meeting room for `event_id` exists, creating it under the
-/// server's `__meetings` root if needed.  Idempotent: returns the existing
-/// channel id when already provisioned.  Returns `None` when the host could
-/// not create the channel (e.g. an older server without the callbacks).
+/// Ensure the meeting room for `event_id` exists, creating it as a detached
+/// (parentless) channel if needed.  Idempotent: returns the existing channel id
+/// when already provisioned.  Returns `None` when the host could not create the
+/// channel (e.g. an older server without the callbacks).
 fn ensure_room(
     shared: &Shared,
     ctx: &PluginContext_TO<RArc<()>>,

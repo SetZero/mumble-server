@@ -2099,6 +2099,13 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 	if (!dest)
 		dest = chan->cParent;
 
+	// A detached/parentless channel (cParent == nullptr, like the root) has no
+	// parent to absorb its users and child channels.  Fall back to the root
+	// channel so removal never dereferences a null destination - doing so would
+	// crash the server (e.g. deleting a meeting room or friend DM channel).
+	if (!dest)
+		dest = qhChannels.value(0);
+
 	{
 		QWriteLocker wl(&qrwlVoiceThread);
 		chan->unlink(nullptr);
@@ -2115,7 +2122,7 @@ void Server::removeChannel(Channel *chan, Channel *dest) {
 		}
 
 		Channel *target = dest;
-		while (target->cParent
+		while (target && target->cParent
 			   && (!static_cast< ServerUser * >(p)->hasPermission(target, ChanACL::Enter)
 				   || isChannelFull(target, static_cast< ServerUser * >(p))))
 			target = target->cParent;
