@@ -134,27 +134,33 @@ fn enforce_share_permissions(
     channel_id: u32,
     mode: AccessMode,
 ) -> Result<(), ApiError> {
-    // Defence-in-depth: the channel id is a client-supplied value in the
-    // upload form, so verify that the session is actually in the channel
-    // they claim before consulting per-channel ACLs.  Without this a user
-    // could pick a channel they had `SHARE_FILES` in, then attach the
-    // resulting URL to a chat in a different channel they did not have
-    // sharing rights in (M-1).
-    match plugin_ctx.current_channel(0, session_id) {
-        Some(actual) if actual != channel_id => {
-            tracing::warn!(
-                session = session_id,
-                claimed_channel = channel_id,
-                actual_channel = actual,
-                "upload: rejected channel-id mismatch"
-            );
-            return Err(ApiError::forbidden(
-                "channel mismatch: you can only upload from the channel you are in",
-            ));
-        }
-        // `None` means the host doesn't expose `current_channel` (older
-        // build) - fall through and rely on per-channel ACLs alone.
-        _ => {}
+    // Defence-in-depth: the channel id is a client-supplied value in the upload
+    // form, so verify the session may actually use the channel they claim before
+    // consulting per-channel ACLs. We gate on channel *access* (SeeChannel /
+    // Enter), not physical presence: 1:1 friend chats are "peeked" - read without
+    // joining - so the uploader legitimately sits in another channel (e.g. root)
+    // while sharing into a friend room they have access to.
+    //
+    // This deliberately relaxes the former presence check (`current_channel ==
+    // channel_id`), which was the M-1 mitigation: it aimed to stop a user
+    // uploading "from" a channel A they hold SHARE_FILES in while standing in a
+    // channel B, then posting the link into B. That was only ever friction (a
+    // user could move to A, upload, move back) and never governed where the URL
+    // is posted. The substantive controls are unchanged: the per-channel
+    // SHARE_FILES ACL below gates the upload target, and downloads are access-
+    // gated per channel (see `ensure_channel_access`), so this matches the
+    // download side. To fully restore M-1 for normal tree channels while keeping
+    // peek uploads, gate on "in the channel OR an access-only *detached* room" -
+    // which needs the host to expose channel detached-ness.
+    if !plugin_ctx.user_has_channel_access(0, session_id, channel_id) {
+        tracing::warn!(
+            session = session_id,
+            claimed_channel = channel_id,
+            "upload: rejected - no access to claimed channel"
+        );
+        return Err(ApiError::forbidden(
+            "you do not have access to the channel you are uploading to",
+        ));
     }
     if !plugin_ctx.has_permission(0, session_id, channel_id, Permissions::SHARE_FILES) {
         tracing::warn!(
@@ -583,15 +589,16 @@ mod tests {
     #[derive(Debug, Default)]
     struct PermCtx {
         granted: Mutex<HashSet<(u32, Permissions)>>,
-        current_channel: Mutex<Option<u32>>,
+        /// Channels the session may NOT see/enter; everything else is accessible.
+        no_access: Mutex<HashSet<u32>>,
     }
 
     impl PermCtx {
         fn grant(&self, channel: u32, perm: Permissions) {
             let _ = self.granted.lock().unwrap().insert((channel, perm));
         }
-        fn set_current_channel(&self, c: Option<u32>) {
-            *self.current_channel.lock().unwrap() = c;
+        fn deny_access(&self, channel: u32) {
+            let _ = self.no_access.lock().unwrap().insert(channel);
         }
     }
 
@@ -608,8 +615,8 @@ mod tests {
         fn is_session_active(&self, _: u32, _: u32) -> bool {
             true
         }
-        fn user_has_channel_access(&self, _: u32, _: u32, _: u32) -> bool {
-            true
+        fn user_has_channel_access(&self, _: u32, _: u32, channel: u32) -> bool {
+            !self.no_access.lock().unwrap().contains(&channel)
         }
         fn has_permission(
             &self,
@@ -620,9 +627,6 @@ mod tests {
         ) -> bool {
             let granted = self.granted.lock().unwrap();
             perm.iter().all(|flag| granted.contains(&(channel, flag)))
-        }
-        fn current_channel(&self, _server: u32, _session: u32) -> Option<u32> {
-            *self.current_channel.lock().unwrap()
         }
         fn get_config(&self, _: &str) -> Option<String> {
             None
@@ -701,25 +705,27 @@ mod tests {
     }
 
     #[test]
-    fn channel_id_mismatch_is_rejected() {
+    fn upload_to_inaccessible_channel_is_rejected() {
         let ctx = PermCtx::default();
         ctx.grant(5, Permissions::SHARE_FILES);
         ctx.grant(5, Permissions::SHARE_FILES_PUBLIC);
-        // Session is actually in channel 7 but is claiming channel 5.
-        ctx.set_current_channel(Some(7));
+        // The session has SHARE_FILES on channel 5 (e.g. a forged channel id) but
+        // cannot actually see/enter it -> rejected before the ACL even matters.
+        ctx.deny_access(5);
         assert_forbidden(
             enforce_share_permissions(&ctx, 1, 5, AccessMode::Public),
-            "channel mismatch",
+            "access to the channel",
         );
     }
 
     #[test]
-    fn channel_id_match_is_allowed() {
+    fn upload_to_accessible_channel_is_allowed_without_being_in_it() {
         let ctx = PermCtx::default();
         ctx.grant(5, Permissions::SHARE_FILES);
         ctx.grant(5, Permissions::SHARE_FILES_PUBLIC);
-        ctx.set_current_channel(Some(5));
+        // The session is NOT in channel 5 (it's peeking a 1:1 friend room) but has
+        // access to it - the upload must be allowed.
         enforce_share_permissions(&ctx, 1, 5, AccessMode::Public)
-            .expect("matching channel should be allowed");
+            .expect("upload to an accessible channel should be allowed even when not in it");
     }
 }
