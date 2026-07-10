@@ -2960,8 +2960,12 @@ int Server::authenticate(QString &name, const QString &password, int sessionId, 
 				// Note: The provided password could be intended to be used as a server-password but given that the
 				// chosen name matches a registered user, we can't allow this user to authenticate via server password.
 				return AUTHENTICATION_FAILED;
-			} else if (userID == Mumble::SUPERUSER_ID) {
-				// We force SuperUser to use password authentication
+			} else if (knownUserID == static_cast< int >(Mumble::SUPERUSER_ID)) {
+				// We force SuperUser to use password authentication. Test knownUserID (the
+				// registered account id), NOT userID: at this point userID is still
+				// UNKNOWN_USER (it is only set on the password-success path above), so the
+				// old `userID == SUPERUSER_ID` check never fired - it left a password-less
+				// SuperUser (e.g. one created via -disablesu) unprotected here.
 				return AUTHENTICATION_FAILED;
 			}
 		}
@@ -2969,8 +2973,13 @@ int Server::authenticate(QString &name, const QString &password, int sessionId, 
 		if (userID < 0 && certhash.isEmpty()) {
 			// The only alternative to password-based authentication is the one based on certificates.
 			// If none was provided and password authentication did not apply, then we report that
-			// we don't know this user.
-			return UNKNOWN_USER;
+			// we don't know this user - UNLESS the requested name belongs to a registered account.
+			// In that case the connection is an (unauthenticated) attempt to use a reserved name, so
+			// it must fail as AUTHENTICATION_FAILED rather than fall through to a guest login that
+			// would impersonate the registered user. This mirrors the certificate-mismatch branch
+			// below; without it, providing *no* credentials was more permissive than providing
+			// *wrong* ones (a name-impersonation hole for password-less, certificate-registered users).
+			return usedReservedName ? AUTHENTICATION_FAILED : UNKNOWN_USER;
 		}
 
 		if (userID < 0) {
