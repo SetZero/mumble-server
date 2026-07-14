@@ -3586,12 +3586,13 @@ unsigned int Server::createChannelForPlugin(unsigned int parentId, const QString
 		mpcs.set_expires_at(static_cast< quint64 >(c->uiCreatedAt) + c->uiExpiryDuration);
 	}
 	if (detached) {
-		// Detached channels go ONLY to Fancy clients (a stock client would place a
-		// parentless channel under the root). canSee still gates per recipient, so
-		// e.g. a meeting room only reaches its invitees.
+		// Detached channels go ONLY to clients that understand out-of-tree channels
+		// (a stock or pre-0.3.0 Fancy client would place a parentless channel under
+		// the root). canSee still gates per recipient, so e.g. a meeting room only
+		// reaches its invitees.
 		QByteArray cache;
 		for (ServerUser *u : qhUsers) {
-			if (u->sState == ServerUser::Authenticated && u->isFancyClient() && u->canSee(c))
+			if (u->sState == ServerUser::Authenticated && u->supportsOutOfTreeChannels() && u->canSee(c))
 				u->sendMessage(mpcs, Mumble::Protocol::TCPMessageType::ChannelState, cache);
 		}
 	} else {
@@ -3631,10 +3632,11 @@ bool Server::grantChannelAccess(unsigned int channelId, unsigned int userId) {
 	if (detached)
 		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_DETACHED);
 	if (detached) {
-		// Detached channels reach Fancy clients only (see createChannelForPlugin).
+		// Detached channels reach out-of-tree-capable clients only (see
+		// createChannelForPlugin).
 		QByteArray cache;
 		for (ServerUser *u : qhUsers) {
-			if (u->sState == ServerUser::Authenticated && u->isFancyClient() && u->canSee(c))
+			if (u->sState == ServerUser::Authenticated && u->supportsOutOfTreeChannels() && u->canSee(c))
 				u->sendMessage(mpcs, Mumble::Protocol::TCPMessageType::ChannelState, cache);
 		}
 	} else {

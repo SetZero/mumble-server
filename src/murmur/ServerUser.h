@@ -129,6 +129,14 @@ public:
 	/// for sending any Fancy-only message to it.
 	bool isFancyClient() const;
 
+	/// Whether this client understands detached ("out-of-tree") channels: parentless
+	/// channels (`__dm:` friend chats, scheduled meeting rooms) that must never be
+	/// placed in the channel tree. Support landed in Fancy client 0.3.0; older Fancy
+	/// clients (0.2.x) advertise a Fancy version but would root a parentless channel
+	/// under the tree, leaking `__dm` rooms into their channel list. Detached
+	/// ChannelStates must therefore be sent only to clients where this returns true.
+	bool supportsOutOfTreeChannels() const;
+
 	// Permission / visibility queries about *this* user, grouped on the user they
 	// concern (rather than spread across the Server message handlers). Each
 	// delegates to the server's AclSubsystem (Server::aclCache()), which locks the

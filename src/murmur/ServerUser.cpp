@@ -53,6 +53,13 @@ bool ServerUser::isFancyClient() const {
 	return m_FancyVersion.has_value();
 }
 
+bool ServerUser::supportsOutOfTreeChannels() const {
+	// Detached / out-of-tree channel support landed in Fancy client 0.3.0. Older
+	// Fancy clients advertise a version but would place a parentless channel under
+	// the root, so they must not receive detached ChannelStates.
+	return m_FancyVersion.has_value() && m_FancyVersion.value() >= Version::fromComponents(0, 3, 0);
+}
+
 bool ServerUser::canSee(Channel *c) {
 	return s->aclCache().evaluate([&](ChanACL::ACLCache &cache, IChannelVisibilityPolicy &visibility) {
 		return visibility.canSee(*this, *c, &cache);

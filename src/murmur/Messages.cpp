@@ -319,6 +319,12 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			if (chan->iId != 0 && !uSource->canSee(chan)) {
 				continue;
 			}
+			// Detached (out-of-tree) channels must not reach clients that can't place
+			// them out of tree; such a client would otherwise root the parentless
+			// channel, leaking e.g. a `__dm:` friend chat into its channel list.
+			if (chan->hasAttribute(ChannelAttribute::Detached) && !uSource->supportsOutOfTreeChannels()) {
+				continue;
+			}
 			mpcs.set_channel_id(static_cast< unsigned int >(chan->iId));
 			mpcs.set_can_enter(uSource->hasPermission(chan, ChanACL::Enter));
 			serializeChannelAttributes(mpcs, chan, uSource);
@@ -538,13 +544,14 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		}
 	}
 
-	// Detached channels (parentless, Fancy-only): the tree BFS above never reaches
+	// Detached channels (parentless, out-of-tree): the tree BFS above never reaches
 	// them - they are not children of any channel - so send them in a separate
-	// pass, and only to Fancy clients. A stock client would fall back to placing a
-	// parentless channel under the root (Channel::get of an absent parent), which
-	// is exactly what "detached" must avoid. canSee still gates per recipient, so
-	// e.g. a detached meeting room only reaches its invitees.
-	if (uSource->isFancyClient()) {
+	// pass, and only to clients that understand out-of-tree channels. A stock (or
+	// pre-0.3.0 Fancy) client would fall back to placing a parentless channel under
+	// the root (Channel::get of an absent parent), which is exactly what "detached"
+	// must avoid. canSee still gates per recipient, so e.g. a detached meeting room
+	// only reaches its invitees.
+	if (uSource->supportsOutOfTreeChannels()) {
 		for (Channel *dc : qhChannels) {
 			if (!dc->hasAttribute(ChannelAttribute::Detached) || !uSource->canSee(dc))
 				continue;
