@@ -19,16 +19,18 @@ use super::{SfuConfig, REMB_BITRATE_BPS, REMB_INTERVAL, STATS_INTERVAL};
 // ---------------------------------------------------------------------------
 
 /// A single broadcast session: one inbound (broadcaster) + N outbound (viewers).
+/// The inbound peer may carry several video tracks (screen + camera), each on
+/// its own mid; all of them are forwarded to every viewer.
 #[derive(Debug)]
 pub struct BroadcastSession {
     pub(super) broadcaster_session: u32,
     pub(super) inbound: Option<Rtc>,
     pub(super) outbound: HashMap<u32, Rtc>,
     pub(super) stats: SessionStats,
-    pub(super) last_pli_forwarded: Option<Instant>,
+    pub(super) last_pli_forwarded: HashMap<Mid, Instant>,
     pub(super) needs_initial_keyframe: bool,
     pub(super) last_remb_sent: Option<Instant>,
-    pub(super) inbound_mid: Option<Mid>,
+    pub(super) inbound_mids: Vec<Mid>,
 }
 
 impl BroadcastSession {
@@ -38,10 +40,10 @@ impl BroadcastSession {
             inbound: None,
             outbound: HashMap::new(),
             stats: SessionStats::default(),
-            last_pli_forwarded: None,
+            last_pli_forwarded: HashMap::new(),
             needs_initial_keyframe: false,
             last_remb_sent: None,
-            inbound_mid: None,
+            inbound_mids: Vec::new(),
         }
     }
 
@@ -53,6 +55,10 @@ impl BroadcastSession {
     ) -> Result<String, Box<dyn std::error::Error>> {
         let (rtc, answer_sdp) = Self::create_receiving_peer(config, socket, sdp)?;
         self.inbound = Some(rtc);
+        // A re-offer (broadcaster replaced its capture set) starts a fresh
+        // peer whose track set/mids may differ; re-discover them.
+        self.inbound_mids.clear();
+        self.last_pli_forwarded.clear();
         Ok(answer_sdp)
     }
 
@@ -129,7 +135,7 @@ impl BroadcastSession {
     pub(super) async fn drive(&mut self, socket: &UdpSocket) {
         let forwarded_media = self.poll_inbound(socket).await;
         self.stats.frames_forwarded += forwarded_media.len() as u32;
-        self.discover_inbound_mid(&forwarded_media);
+        self.discover_inbound_mids(&forwarded_media);
         self.send_remb();
         let keyframe_requests = self.forward_to_viewers(&forwarded_media, socket).await;
         self.request_initial_keyframe(&keyframe_requests, &forwarded_media);
@@ -168,24 +174,28 @@ impl BroadcastSession {
         media
     }
 
-    fn discover_inbound_mid(&mut self, media: &[str0m::media::MediaData]) {
-        if self.inbound_mid.is_some() {
-            return;
-        }
-        if let Some(first) = media.first() {
-            self.inbound_mid = Some(first.mid);
-            debug!(
-                "SFU: discovered inbound mid={} for broadcaster {}",
-                first.mid, self.broadcaster_session,
-            );
+    /// Learn the broadcaster's video mids from the media actually flowing.
+    /// A multi-track broadcast (screen + camera) surfaces one mid per track.
+    fn discover_inbound_mids(&mut self, media: &[str0m::media::MediaData]) {
+        for frame in media {
+            if !self.inbound_mids.contains(&frame.mid) {
+                self.inbound_mids.push(frame.mid);
+                debug!(
+                    "SFU: discovered inbound mid={} for broadcaster {} ({} total)",
+                    frame.mid, self.broadcaster_session, self.inbound_mids.len(),
+                );
+            }
         }
     }
 
     /// Periodically send REMB to tell the broadcaster we can handle a generous
     /// bitrate.  This replaces TWCC-based congestion control (see
-    /// [`Self::create_receiving_peer`] for rationale).
+    /// [`Self::create_receiving_peer`] for rationale).  Sent per inbound mid;
+    /// the allowance is per-track, matching the per-track encoders client-side.
     fn send_remb(&mut self) {
-        let Some(mid) = self.inbound_mid else { return };
+        if self.inbound_mids.is_empty() {
+            return;
+        }
         let Some(rtc) = &mut self.inbound else { return };
 
         let due = self.last_remb_sent
@@ -195,11 +205,16 @@ impl BroadcastSession {
             return;
         }
 
-        if let Some(stream) = rtc.direct_api().stream_rx_by_mid(mid, None) {
-            stream.request_remb(Bitrate::from(REMB_BITRATE_BPS as f64));
-            self.last_remb_sent = Some(Instant::now());
-            trace!("SFU: sent REMB {REMB_BITRATE_BPS} bps to broadcaster {}", self.broadcaster_session);
+        for mid in &self.inbound_mids {
+            if let Some(stream) = rtc.direct_api().stream_rx_by_mid(*mid, None) {
+                stream.request_remb(Bitrate::from(REMB_BITRATE_BPS as f64));
+                trace!(
+                    "SFU: sent REMB {REMB_BITRATE_BPS} bps to broadcaster {} (mid {mid})",
+                    self.broadcaster_session,
+                );
+            }
         }
+        self.last_remb_sent = Some(Instant::now());
     }
 
     // -- Peer creation (associated functions) --------------------------------

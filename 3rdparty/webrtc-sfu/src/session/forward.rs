@@ -101,6 +101,9 @@ impl BroadcastSession {
         }
     }
 
+    /// When a viewer just joined, ask the broadcaster for an IDR on EVERY
+    /// video track it sends - a screen+camera share must deliver both
+    /// pictures immediately, not whenever the periodic keyframe lands.
     pub(super) fn request_initial_keyframe(
         &mut self,
         keyframe_requests: &[str0m::media::KeyframeRequest],
@@ -109,58 +112,85 @@ impl BroadcastSession {
         if !self.needs_initial_keyframe {
             return;
         }
+        // All known track mids; before any media flowed, fall back to the
+        // mids named by the viewers' own keyframe requests.
+        let mut mids: Vec<_> = self.inbound_mids.clone();
+        for source in media.iter().map(|m| m.mid).chain(keyframe_requests.iter().map(|r| r.mid)) {
+            if !mids.contains(&source) {
+                mids.push(source);
+            }
+        }
+        if mids.is_empty() {
+            return;
+        }
         let Some(rtc) = &mut self.inbound else { return };
-        let mid = media.first().map(|m| m.mid)
-            .or_else(|| keyframe_requests.first().map(|r| r.mid));
-        let Some(mid) = mid else { return };
 
-        if let Some(mut writer) = rtc.writer(mid) {
+        let mut requested = false;
+        for mid in mids {
+            let Some(mut writer) = rtc.writer(mid) else { continue };
             match writer.request_keyframe(None, KeyframeRequestKind::Pli) {
                 Ok(()) => {
                     debug!(
-                        "SFU: requested initial keyframe from broadcaster {} for new viewer(s)",
+                        "SFU: requested initial keyframe from broadcaster {} (mid {mid}) for new viewer(s)",
                         self.broadcaster_session,
                     );
-                    self.last_pli_forwarded = Some(Instant::now());
-                    self.needs_initial_keyframe = false;
+                    self.last_pli_forwarded.insert(mid, Instant::now());
+                    requested = true;
                 }
                 Err(e) => warn!(
-                    "SFU: failed to request initial keyframe from broadcaster {}: {e}",
+                    "SFU: failed to request initial keyframe from broadcaster {} (mid {mid}): {e}",
                     self.broadcaster_session,
                 ),
             }
         }
+        if requested {
+            self.needs_initial_keyframe = false;
+        }
     }
 
+    /// Forward viewer PLIs to the broadcaster, rate-limited PER TRACK so a
+    /// lossy camera track cannot starve the screen track of keyframes (and
+    /// vice versa).
     pub(super) fn forward_rate_limited_pli(&mut self, keyframe_requests: &[str0m::media::KeyframeRequest]) {
         if keyframe_requests.is_empty() {
             return;
         }
         let now = Instant::now();
-        let allowed = self.last_pli_forwarded
-            .map(|t| now.duration_since(t) >= PLI_MIN_INTERVAL)
-            .unwrap_or(true);
-
-        if !allowed {
-            trace!(
-                "SFU: suppressed {} PLI(s) for broadcaster {} (rate limited)",
-                keyframe_requests.len(), self.broadcaster_session,
-            );
-            return;
-        }
-
         let Some(rtc) = &mut self.inbound else { return };
-        let req = &keyframe_requests[0];
-        if let Some(mut writer) = rtc.writer(req.mid) {
-            match writer.request_keyframe(req.rid, req.kind) {
-                Ok(()) => {
-                    debug!("SFU: forwarded PLI to broadcaster {}", self.broadcaster_session);
-                    self.last_pli_forwarded = Some(now);
+
+        let mut handled: Vec<str0m::media::Mid> = Vec::new();
+        for req in keyframe_requests {
+            if handled.contains(&req.mid) {
+                continue; // one forward per mid per drive tick
+            }
+            handled.push(req.mid);
+
+            let allowed = self.last_pli_forwarded
+                .get(&req.mid)
+                .map(|t| now.duration_since(*t) >= PLI_MIN_INTERVAL)
+                .unwrap_or(true);
+            if !allowed {
+                trace!(
+                    "SFU: suppressed PLI for broadcaster {} (mid {}, rate limited)",
+                    self.broadcaster_session, req.mid,
+                );
+                continue;
+            }
+
+            if let Some(mut writer) = rtc.writer(req.mid) {
+                match writer.request_keyframe(req.rid, req.kind) {
+                    Ok(()) => {
+                        debug!(
+                            "SFU: forwarded PLI to broadcaster {} (mid {})",
+                            self.broadcaster_session, req.mid,
+                        );
+                        self.last_pli_forwarded.insert(req.mid, now);
+                    }
+                    Err(e) => warn!(
+                        "SFU: failed to forward PLI to broadcaster {} (mid {}): {e}",
+                        self.broadcaster_session, req.mid,
+                    ),
                 }
-                Err(e) => warn!(
-                    "SFU: failed to forward PLI to broadcaster {}: {e}",
-                    self.broadcaster_session,
-                ),
             }
         }
     }
