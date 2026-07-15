@@ -25,6 +25,8 @@
 #include "crypto/CryptState.h"
 
 #include "murmur/database/UserProperty.h"
+#include "murmur/database/ForumTable.h"
+#include "murmur/database/ScheduledMessageTable.h"
 
 #include <algorithm>
 #include <cassert>
@@ -5023,6 +5025,410 @@ void Server::msgFancyPollVote(ServerUser *uSource, MumbleProto::FancyPollVote &m
 	}
 }
 
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: forums (IDs 157-160) and scheduled messages (IDs 161-165)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Minimum Fancy client version that understands forums / scheduled messages.
+const Version::full_t minVersionForumsScheduled = Version::fromComponents(0, 3, 3);
+
+// Space-separated list of channel ids -> vector. Robust to empty input.
+std::vector< unsigned int > splitIdList(const std::string &s) {
+	std::vector< unsigned int > out;
+	std::size_t i = 0;
+	while (i < s.size()) {
+		while (i < s.size() && s[i] == ' ') {
+			++i;
+		}
+		std::size_t start = i;
+		while (i < s.size() && s[i] != ' ') {
+			++i;
+		}
+		if (i > start) {
+			try {
+				out.push_back(static_cast< unsigned int >(std::stoul(s.substr(start, i - start))));
+			} catch (const std::exception &) {
+				// Skip malformed tokens.
+			}
+		}
+	}
+	return out;
+}
+
+// repeated uint32 protobuf field -> space-separated string.
+template< typename Field > std::string joinIdField(const Field &ids) {
+	std::string out;
+	for (int i = 0; i < ids.size(); ++i) {
+		if (i) {
+			out += ' ';
+		}
+		out += std::to_string(ids.Get(i));
+	}
+	return out;
+}
+
+void forumPostToProto(const ::mumble::server::db::ForumStoredPost &p, MumbleProto::FancyForumPost &out) {
+	out.set_channel_id(p.channelId);
+	out.set_post_id(p.postId);
+	out.set_thread_id(p.threadId);
+	if (!p.title.empty()) {
+		out.set_title(p.title);
+	}
+	out.set_body(p.body);
+	out.set_author_hash(p.authorHash);
+	out.set_author_name(p.authorName);
+	out.set_created_at(static_cast< uint64_t >(p.createdAt));
+	if (p.editedAt > 0) {
+		out.set_edited_at(static_cast< uint64_t >(p.editedAt));
+	}
+	if (p.deleted) {
+		out.set_deleted(true);
+	}
+}
+
+void scheduledToProto(const ::mumble::server::db::ScheduledStoredMessage &m, MumbleProto::FancyScheduledMessage &out) {
+	out.set_schedule_id(m.scheduleId);
+	for (unsigned int id : splitIdList(m.channelIds)) {
+		out.add_channel_id(id);
+	}
+	for (unsigned int id : splitIdList(m.treeIds)) {
+		out.add_tree_id(id);
+	}
+	out.set_message(m.message);
+	out.set_deliver_at(static_cast< uint64_t >(m.deliverAt));
+	out.set_creator_hash(m.creatorHash);
+	out.set_creator_name(m.creatorName);
+	out.set_created_at(static_cast< uint64_t >(m.createdAt));
+	out.set_status(static_cast< MumbleProto::FancyScheduledStatus >(m.status));
+}
+
+} // namespace
+
+// Broadcast a forum post to every authenticated Fancy client currently in the
+// post's channel.  Clients not in the channel pick posts up via FancyForumFetch.
+void Server::broadcastForumPost(unsigned int channelId, const MumbleProto::FancyForumPost &post) {
+	Channel *c = qhChannels.value(channelId);
+	if (!c) {
+		return;
+	}
+	for (User *p : c->qlUsers) {
+		auto *su = static_cast< ServerUser * >(p);
+		if (su->sState != ServerUser::Authenticated) {
+			continue;
+		}
+		if (!su->m_FancyVersion.has_value() || su->m_FancyVersion.value() < minVersionForumsScheduled) {
+			continue;
+		}
+		sendMessage(su, post);
+	}
+}
+
+void Server::msgFancyForumPost(ServerUser *uSource, MumbleProto::FancyForumPost &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (!msg.has_channel_id()) {
+		return;
+	}
+	Channel *c = qhChannels.value(msg.channel_id());
+	if (!c) {
+		return;
+	}
+	// Posting to a forum requires the same permission as sending a text message.
+	if (!uSource->hasPermission(c, ChanACL::TextMessage)) {
+		PERM_DENIED(uSource, c, ChanACL::TextMessage);
+		return;
+	}
+
+	QString body = u8(msg.body());
+	bool changed = false;
+	if (!isTextAllowed(body, changed)) {
+		PERM_DENIED_TYPE(TextTooLong);
+		return;
+	}
+	if (body.isEmpty()) {
+		return;
+	}
+
+	auto &forumTable    = m_dbWrapper.getServerDB().getForumTable();
+	const long long now = QDateTime::currentMSecsSinceEpoch();
+
+	::mumble::server::db::ForumStoredPost post;
+	post.serverID   = iServerNum;
+	post.channelId  = msg.channel_id();
+	post.body       = u8(body);
+	post.authorHash = uSource->qsHash.toStdString();
+	post.authorName = uSource->qsName.toStdString();
+
+	const bool isEdit = msg.has_post_id() && !msg.post_id().empty();
+	if (isEdit) {
+		auto existing = forumTable.getPost(iServerNum, msg.post_id());
+		if (!existing || existing->deleted) {
+			return;
+		}
+		// Only the author (or a channel admin with Write) may edit.
+		const bool isOwner = existing->authorHash == uSource->qsHash.toStdString();
+		if (!isOwner && !uSource->hasPermission(c, ChanACL::Write)) {
+			PERM_DENIED(uSource, c, ChanACL::Write);
+			return;
+		}
+		post.postId    = existing->postId;
+		post.threadId  = existing->threadId;
+		post.title     = msg.has_title() ? u8(msg.title()).toStdString() : existing->title;
+		post.createdAt = existing->createdAt;
+		post.editedAt  = now;
+	} else {
+		post.postId    = u8(QUuid::createUuid().toString(QUuid::WithoutBraces));
+		post.createdAt = now;
+		post.editedAt  = 0;
+		if (msg.has_thread_id() && !msg.thread_id().empty()) {
+			// Reply within an existing thread.
+			auto root = forumTable.getPost(iServerNum, msg.thread_id());
+			if (!root || root->deleted) {
+				return;
+			}
+			post.threadId = msg.thread_id();
+		} else {
+			// New thread: the post is its own root and carries the title.
+			post.threadId = post.postId;
+			post.title    = u8(msg.title()).toStdString();
+		}
+	}
+
+	if (!forumTable.storePost(post)) {
+		return;
+	}
+
+	MumbleProto::FancyForumPost out;
+	forumPostToProto(post, out);
+	out.set_author_session(uSource->uiSession);
+	broadcastForumPost(post.channelId, out);
+
+	log(uSource, QString("forum post %1 in channel %2 (%3)")
+					 .arg(u8(post.postId))
+					 .arg(post.channelId)
+					 .arg(isEdit ? QLatin1String("edit") : QLatin1String("new")));
+}
+
+void Server::msgFancyForumFetch(ServerUser *uSource, MumbleProto::FancyForumFetch &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (!msg.has_channel_id()) {
+		return;
+	}
+	Channel *c = qhChannels.value(msg.channel_id());
+	if (!c) {
+		return;
+	}
+	// Reading a forum requires text-message permission on the channel.
+	if (!uSource->hasPermission(c, ChanACL::TextMessage)) {
+		PERM_DENIED(uSource, c, ChanACL::TextMessage);
+		return;
+	}
+
+	auto &forumTable   = m_dbWrapper.getServerDB().getForumTable();
+	unsigned int limit = msg.has_limit() ? msg.limit() : 50;
+	if (limit == 0 || limit > 200) {
+		limit = 50;
+	}
+
+	MumbleProto::FancyForumFetchResponse reply;
+	reply.set_channel_id(msg.channel_id());
+
+	if (msg.has_thread_id() && !msg.thread_id().empty()) {
+		reply.set_thread_id(msg.thread_id());
+		for (const auto &p : forumTable.listThreadPosts(iServerNum, msg.thread_id(), limit)) {
+			forumPostToProto(p, *reply.add_posts());
+		}
+	} else {
+		for (const auto &p : forumTable.listThreadRoots(iServerNum, msg.channel_id(), limit)) {
+			MumbleProto::FancyForumPost *pp = reply.add_posts();
+			forumPostToProto(p, *pp);
+			pp->set_reply_count(p.replyCount);
+		}
+	}
+	sendMessage(uSource, reply);
+}
+
+// Server -> Client only; ignore inbound.
+void Server::msgFancyForumFetchResponse(ServerUser *, MumbleProto::FancyForumFetchResponse &) {}
+
+void Server::msgFancyForumDelete(ServerUser *uSource, MumbleProto::FancyForumDelete &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (!msg.has_channel_id() || !msg.has_post_id() || msg.post_id().empty()) {
+		return;
+	}
+	Channel *c = qhChannels.value(msg.channel_id());
+	if (!c) {
+		return;
+	}
+	auto &forumTable = m_dbWrapper.getServerDB().getForumTable();
+	auto existing    = forumTable.getPost(iServerNum, msg.post_id());
+	if (!existing || existing->deleted) {
+		return;
+	}
+	// Only the author or a channel admin (Write) may delete.
+	const bool isOwner = existing->authorHash == uSource->qsHash.toStdString();
+	if (!isOwner && !uSource->hasPermission(c, ChanACL::Write)) {
+		PERM_DENIED(uSource, c, ChanACL::Write);
+		return;
+	}
+
+	std::vector< std::string > deletedIds;
+	const bool isThreadRoot = existing->threadId == existing->postId;
+	if (isThreadRoot) {
+		deletedIds = forumTable.markThreadDeleted(iServerNum, existing->threadId);
+	} else if (forumTable.markDeleted(iServerNum, existing->postId)) {
+		deletedIds.push_back(existing->postId);
+	}
+
+	for (const auto &id : deletedIds) {
+		MumbleProto::FancyForumPost out;
+		out.set_channel_id(msg.channel_id());
+		out.set_post_id(id);
+		out.set_thread_id(existing->threadId);
+		out.set_deleted(true);
+		broadcastForumPost(msg.channel_id(), out);
+	}
+}
+
+void Server::msgFancyScheduledMessage(ServerUser *uSource, MumbleProto::FancyScheduledMessage &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	auto reject = [&](const char *reason, const std::string &scheduleId = std::string()) {
+		MumbleProto::FancyScheduledMessageAck ack;
+		if (!scheduleId.empty()) {
+			ack.set_schedule_id(scheduleId);
+		}
+		ack.set_status(MumbleProto::FANCY_SCHEDULED_REJECTED);
+		ack.set_reason(reason);
+		sendMessage(uSource, ack);
+	};
+
+	if (uSource->qsHash.isEmpty()) {
+		reject("A registered certificate is required to schedule messages.");
+		return;
+	}
+	if (msg.channel_id_size() == 0 && msg.tree_id_size() == 0) {
+		reject("No target channel specified.");
+		return;
+	}
+
+	QString body = u8(msg.message());
+	bool changed = false;
+	if (!isTextAllowed(body, changed) || body.isEmpty()) {
+		reject("The message is empty or too long.");
+		return;
+	}
+
+	const long long now      = QDateTime::currentMSecsSinceEpoch();
+	const long long deliverAt = msg.has_deliver_at() ? static_cast< long long >(msg.deliver_at()) : 0;
+	if (deliverAt <= now) {
+		reject("The delivery time must be in the future.");
+		return;
+	}
+
+	// Best-effort permission check now; re-checked at delivery time.
+	for (int i = 0; i < msg.channel_id_size(); ++i) {
+		Channel *c = qhChannels.value(msg.channel_id(i));
+		if (!c || !uSource->hasPermission(c, ChanACL::TextMessage)) {
+			Channel *denyChannel = c ? c : uSource->cChannel;
+			PERM_DENIED(uSource, denyChannel, ChanACL::TextMessage);
+			return;
+		}
+	}
+	for (int i = 0; i < msg.tree_id_size(); ++i) {
+		Channel *c = qhChannels.value(msg.tree_id(i));
+		if (!c || !uSource->hasPermission(c, ChanACL::TextMessage)) {
+			Channel *denyChannel = c ? c : uSource->cChannel;
+			PERM_DENIED(uSource, denyChannel, ChanACL::TextMessage);
+			return;
+		}
+	}
+
+	::mumble::server::db::ScheduledStoredMessage stored;
+	stored.serverID    = iServerNum;
+	stored.scheduleId  = u8(QUuid::createUuid().toString(QUuid::WithoutBraces));
+	stored.channelIds  = joinIdField(msg.channel_id());
+	stored.treeIds     = joinIdField(msg.tree_id());
+	stored.message     = u8(body);
+	stored.deliverAt   = deliverAt;
+	stored.creatorHash = uSource->qsHash.toStdString();
+	stored.creatorName = uSource->qsName.toStdString();
+	stored.createdAt   = now;
+	stored.status      = ::mumble::server::db::ScheduledMessageTable::Pending;
+
+	auto &table = m_dbWrapper.getServerDB().getScheduledMessageTable();
+	if (!table.store(stored)) {
+		reject("Failed to store the scheduled message.", stored.scheduleId);
+		return;
+	}
+
+	rescheduleScheduledMessages();
+
+	MumbleProto::FancyScheduledMessageAck ack;
+	ack.set_schedule_id(stored.scheduleId);
+	ack.set_status(MumbleProto::FANCY_SCHEDULED_PENDING);
+	sendMessage(uSource, ack);
+
+	log(uSource, QString("scheduled message %1 for delivery at %2")
+					 .arg(u8(stored.scheduleId))
+					 .arg(deliverAt));
+}
+
+void Server::msgFancyScheduledMessageList(ServerUser *uSource, MumbleProto::FancyScheduledMessageList &) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	MumbleProto::FancyScheduledMessageListResponse reply;
+	if (!uSource->qsHash.isEmpty()) {
+		auto &table = m_dbWrapper.getServerDB().getScheduledMessageTable();
+		for (const auto &m : table.listByCreator(iServerNum, uSource->qsHash.toStdString(), true)) {
+			scheduledToProto(m, *reply.add_messages());
+		}
+	}
+	sendMessage(uSource, reply);
+}
+
+// Server -> Client only; ignore inbound.
+void Server::msgFancyScheduledMessageListResponse(ServerUser *, MumbleProto::FancyScheduledMessageListResponse &) {}
+
+void Server::msgFancyScheduledMessageCancel(ServerUser *uSource, MumbleProto::FancyScheduledMessageCancel &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	if (!msg.has_schedule_id() || msg.schedule_id().empty() || uSource->qsHash.isEmpty()) {
+		return;
+	}
+	auto &table   = m_dbWrapper.getServerDB().getScheduledMessageTable();
+	auto existing = table.get(iServerNum, msg.schedule_id());
+
+	MumbleProto::FancyScheduledMessageAck ack;
+	ack.set_schedule_id(msg.schedule_id());
+	if (!existing || existing->creatorHash != uSource->qsHash.toStdString()
+		|| existing->status != ::mumble::server::db::ScheduledMessageTable::Pending) {
+		ack.set_status(MumbleProto::FANCY_SCHEDULED_REJECTED);
+		ack.set_reason("The scheduled message was not found or can no longer be cancelled.");
+		sendMessage(uSource, ack);
+		return;
+	}
+
+	table.updateStatus(iServerNum, msg.schedule_id(), ::mumble::server::db::ScheduledMessageTable::Cancelled);
+	rescheduleScheduledMessages();
+
+	ack.set_status(MumbleProto::FANCY_SCHEDULED_CANCELLED);
+	sendMessage(uSource, ack);
+}
+
+// Server -> Client only; ignore inbound.
+void Server::msgFancyScheduledMessageAck(ServerUser *, MumbleProto::FancyScheduledMessageAck &) {}
 
 #undef RATELIMIT
 #undef MSG_SETUP

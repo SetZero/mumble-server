@@ -28,6 +28,7 @@
 #include "Version.h"
 
 #include "database/ServerDatabase.h"
+#include "database/ScheduledMessageTable.h"
 
 #ifdef USE_ZEROCONF
 #	include "Zeroconf.h"
@@ -41,6 +42,7 @@
 #include <QtCore/QCoreApplication>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSet>
+#include <QtCore/QUuid>
 #include <QtCore/QXmlStreamAttributes>
 #include <QtCore/QtEndian>
 #include <QtNetwork/QHostInfo>
@@ -256,11 +258,19 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	m_channelExpiryTimer.setSingleShot(true);
 	connect(&m_channelExpiryTimer, &QTimer::timeout, this, [this]() { onChannelExpiryTimer(); });
 
+	// Scheduled-message delivery: a single-shot timer armed to the earliest
+	// pending deliver_at (see rescheduleScheduledMessages).
+	m_scheduledMessageTimer.setSingleShot(true);
+	connect(&m_scheduledMessageTimer, &QTimer::timeout, this, [this]() { onScheduledMessageTimer(); });
+
 	m_dbWrapper.initializeChannels(*this);
 	m_dbWrapper.initializeChannelLinks(*this);
 
 	// Schedule expiry for any persisted expiring channels just loaded.
 	rescheduleChannelExpiry();
+
+	// Arm delivery for any scheduled messages persisted from a previous run.
+	rescheduleScheduledMessages();
 
 	// Initialize persistent chat manager.
 	// defineLimit(op, burst, refill-per-SECOND). The original values passed 60
@@ -2389,6 +2399,139 @@ void Server::onChannelExpiryTimer() {
 	// Re-arm for the next deadline (sliding channels whose activity pushed their
 	// deadline out are simply rescheduled here rather than reaped).
 	rescheduleChannelExpiry();
+}
+
+// Space-separated channel-id list -> vector, tolerating malformed tokens.
+static std::vector< unsigned int > splitScheduledIds(const std::string &s) {
+	std::vector< unsigned int > out;
+	std::size_t i = 0;
+	while (i < s.size()) {
+		while (i < s.size() && s[i] == ' ') {
+			++i;
+		}
+		std::size_t start = i;
+		while (i < s.size() && s[i] != ' ') {
+			++i;
+		}
+		if (i > start) {
+			try {
+				out.push_back(static_cast< unsigned int >(std::stoul(s.substr(start, i - start))));
+			} catch (const std::exception &) {
+				// Skip malformed tokens.
+			}
+		}
+	}
+	return out;
+}
+
+void Server::rescheduleScheduledMessages() {
+	auto &table = m_dbWrapper.getServerDB().getScheduledMessageTable();
+	std::optional< long long > next = table.nextPendingDeliverAt(iServerNum);
+	if (!next.has_value()) {
+		m_scheduledMessageTimer.stop();
+		return;
+	}
+
+	const long long now = QDateTime::currentMSecsSinceEpoch();
+	long long ms        = next.value() - now;
+	if (ms < 0) {
+		ms = 0;
+	}
+	// Cap a single sleep at one day and re-arm on wake, mirroring the channel
+	// expiry reaper, so a far-future delivery costs only a handful of wakeups.
+	constexpr long long MAX_SLEEP_MS = 86400000;
+	if (ms > MAX_SLEEP_MS) {
+		ms = MAX_SLEEP_MS;
+	}
+	m_scheduledMessageTimer.start(static_cast< int >(ms));
+}
+
+void Server::onScheduledMessageTimer() {
+	auto &table         = m_dbWrapper.getServerDB().getScheduledMessageTable();
+	const long long now = QDateTime::currentMSecsSinceEpoch();
+
+	// Collect the due messages, then deliver + mark each. listDue only returns
+	// still-pending rows, so cancelled messages are naturally skipped.
+	for (const auto &msg : table.listDue(iServerNum, now)) {
+		deliverScheduledMessage(msg);
+		table.updateStatus(iServerNum, msg.scheduleId, ::mumble::server::db::ScheduledMessageTable::Delivered);
+	}
+
+	// Re-arm for the next pending delivery (a sub-day sleep may just re-arm).
+	rescheduleScheduledMessages();
+}
+
+void Server::deliverScheduledMessage(const ::mumble::server::db::ScheduledStoredMessage &msg) {
+	const std::vector< unsigned int > channelIds = splitScheduledIds(msg.channelIds);
+	const std::vector< unsigned int > treeIds    = splitScheduledIds(msg.treeIds);
+
+	// Attribute the message to the creator's live session if they are online;
+	// otherwise it is delivered without an actor (i.e. as a server message).
+	ServerUser *creator = nullptr;
+	for (ServerUser *u : qhUsers) {
+		if (u->sState == ServerUser::Authenticated && u->qsHash.toStdString() == msg.creatorHash) {
+			creator = u;
+			break;
+		}
+	}
+
+	MumbleProto::TextMessage tmsg;
+	if (creator) {
+		tmsg.set_actor(creator->uiSession);
+	}
+	tmsg.set_message(msg.message);
+	tmsg.set_message_id(u8(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+	tmsg.set_timestamp(static_cast< uint64_t >(QDateTime::currentMSecsSinceEpoch()));
+
+	QSet< ServerUser * > users;
+	QQueue< Channel * > q;
+
+	for (unsigned int id : channelIds) {
+		Channel *c = qhChannels.value(id);
+		if (!c) {
+			continue;
+		}
+		tmsg.add_channel_id(id);
+		for (User *p : c->qlUsers) {
+			users.insert(static_cast< ServerUser * >(p));
+		}
+		for (unsigned int session : m_channelListenerManager.getListenersForChannel(c->iId)) {
+			if (ServerUser *su = qhUsers.value(session)) {
+				users.insert(su);
+			}
+		}
+	}
+
+	for (unsigned int id : treeIds) {
+		Channel *c = qhChannels.value(id);
+		if (!c) {
+			continue;
+		}
+		tmsg.add_tree_id(id);
+		q.enqueue(c);
+	}
+	while (!q.isEmpty()) {
+		Channel *c = q.dequeue();
+		for (Channel *sub : c->qlChannels) {
+			q.enqueue(sub);
+		}
+		for (User *p : c->qlUsers) {
+			users.insert(static_cast< ServerUser * >(p));
+		}
+		for (unsigned int session : m_channelListenerManager.getListenersForChannel(c->iId)) {
+			if (ServerUser *su = qhUsers.value(session)) {
+				users.insert(su);
+			}
+		}
+	}
+
+	for (ServerUser *u : users) {
+		sendMessage(u, tmsg);
+	}
+
+	log(QString("Delivered scheduled message %1 to %2 recipient(s)")
+			.arg(u8(msg.scheduleId))
+			.arg(users.size()));
 }
 
 void Server::sendClientPermission(ServerUser *u, Channel *c, bool explicitlyRequested) {

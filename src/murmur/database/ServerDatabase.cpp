@@ -15,7 +15,9 @@
 #include "GroupTable.h"
 #include "LogTable.h"
 #include "PChatMemberJoinTable.h"
+#include "ForumTable.h"
 #include "PChatMessageTable.h"
+#include "ScheduledMessageTable.h"
 #include "PChatPendingKeyRequestsTable.h"
 #include "PChatUserKeysTable.h"
 #include "PChatKeyHoldersTable.h"
@@ -62,6 +64,8 @@ namespace server {
 				PChatOfflineQueueTable,
                                 PChatReactionTable,
 				PChatPinTable,
+				ForumTable,
+				ScheduledMessageTable,
 			};
 		}
 
@@ -153,6 +157,12 @@ namespace server {
 			id = addTable(std::make_unique< PChatPinTable >(m_sql, m_backend, getServerTable()));
 			assert(id == TableIndex::PChatPinTable);
 
+			id = addTable(std::make_unique< ForumTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::ForumTable);
+
+			id = addTable(std::make_unique< ScheduledMessageTable >(m_sql, m_backend, getServerTable()));
+			assert(id == TableIndex::ScheduledMessageTable);
+
 			// Mark id as unused in case the asserts are disabled (e.g. in release builds)
 			(void) id;
 		}
@@ -193,6 +203,8 @@ namespace server {
 		GET_TABLE_IMPL(PChatOfflineQueueTable)
 		GET_TABLE_IMPL(PChatReactionTable)
 		GET_TABLE_IMPL(PChatPinTable)
+		GET_TABLE_IMPL(ForumTable)
+		GET_TABLE_IMPL(ScheduledMessageTable)
 
 #undef GET_TABLE_IMPL
 
