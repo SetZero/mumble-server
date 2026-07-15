@@ -75,6 +75,14 @@ class ServerUser;
 class User;
 class QNetworkAccessManager;
 
+namespace mumble {
+namespace server {
+	namespace db {
+		struct ScheduledStoredMessage;
+	}
+} // namespace server
+} // namespace mumble
+
 struct TextMessage {
 	QList< unsigned int > qlSessions;
 	QList< unsigned int > qlChannels;
@@ -399,6 +407,22 @@ public:
 	/// Fired by m_channelExpiryTimer: reap channels whose deadline has passed
 	/// (recomputing sliding deadlines lazily), then re-arm to the next one.
 	void onChannelExpiryTimer();
+
+	/// Single-shot timer that fires when the next scheduled message is due.
+	/// Armed to the earliest pending deliver_at (capped at one day per sleep)
+	/// so the server sleeps between deliveries. Runs on the main event loop.
+	QTimer m_scheduledMessageTimer;
+	/// Fired by m_scheduledMessageTimer: deliver every scheduled message whose
+	/// deliver_at has passed, then re-arm to the next pending one.
+	void onScheduledMessageTimer();
+	/// Re-arm m_scheduledMessageTimer to the earliest pending scheduled message
+	/// (stops the timer when none remain). Call after scheduling / cancelling.
+	void rescheduleScheduledMessages();
+	/// Deliver one stored scheduled message to its target channels/trees as a
+	/// regular TextMessage, then mark it delivered.
+	void deliverScheduledMessage(const ::mumble::server::db::ScheduledStoredMessage &msg);
+	/// Broadcast a forum post to the Fancy clients currently in its channel.
+	void broadcastForumPost(unsigned int channelId, const MumbleProto::FancyForumPost &post);
 
 	// Link-preview glue over the generic plugin host.  Declared before
 	// m_pluginHost so the host (whose plugin runtime delivers the responses this
