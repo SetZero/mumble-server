@@ -171,6 +171,11 @@ public:
 	QString qsWelcomeTextFile;
 	bool bCertRequired;
 	bool bForceExternalAuth;
+	/// Whether registered users may enrol / use a TOTP second factor
+	/// (self-service account settings). Runtime-toggleable via the
+	/// `allowaccounttotp` server setting; enforcement in msgAuthenticate
+	/// is skipped while disabled.
+	bool bAllowAccountTotp;
 	unsigned int m_botCount = 0;
 
 	QString qsRegName;
@@ -441,6 +446,13 @@ public:
 	/// settings) to `u`.  No-op unless `u` has Write on the root channel and
 	/// reports a Fancy version new enough to understand it.
 	void sendFancyServerSettings(ServerUser *u);
+
+	/// Build and send the self-service account snapshot (registration state,
+	/// auth mode, email, 2FA) for `u`'s own account to `u`.
+	void sendFancyAccountSettings(ServerUser *u);
+
+	/// Send a FancyAccountAck for `action` to `u`.  `error` empty = success.
+	void sendFancyAccountAck(ServerUser *u, unsigned int action, const QString &error = QString());
 
 	void addListener(QHash< ServerUser *, VolumeAdjustment > &listeners, ServerUser &user, const Channel &channel);
 	void processMsg(ServerUser *u, Mumble::Protocol::AudioData audioData, AudioReceiverBuffer &buffer,

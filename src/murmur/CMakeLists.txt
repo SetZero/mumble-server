@@ -28,6 +28,8 @@ add_library(mumble_server_object_lib OBJECT
 	"Meta.h"
 	"PBKDF2.cpp"
 	"PBKDF2.h"
+	"Totp.cpp"
+	"Totp.h"
 	"Register.cpp"
 	"RPC.cpp"
 	"Server.cpp"

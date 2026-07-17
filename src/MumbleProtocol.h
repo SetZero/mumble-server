@@ -100,6 +100,9 @@
     PROCESS_MUMBLE_TCP_MESSAGE(FancyPluginAdminAck, 151) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyServerSettings, 152) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyServerSettingsUpdate, 153) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyAccountSettings, 154) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyAccountSettingsUpdate, 155) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyAccountAck, 156) \
     PROCESS_MUMBLE_TCP_MESSAGE(PluginMessage, 200) \
     PROCESS_MUMBLE_TCP_MESSAGE(PluginRegistry, 201)
 

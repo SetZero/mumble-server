@@ -474,6 +474,7 @@ void Server::readParams() {
 	rollingStatsWindow                 = Meta::mp->rollingStatsWindow;
 	bCertRequired                      = Meta::mp->bCertRequired;
 	bForceExternalAuth                 = Meta::mp->bForceExternalAuth;
+	bAllowAccountTotp                  = true;
 	qrUserName                         = Meta::mp->qrUserName;
 	qrChannelName                      = Meta::mp->qrChannelName;
 	iMessageLimit                      = Meta::mp->iMessageLimit;
@@ -580,6 +581,7 @@ void Server::readParams() {
 	m_dbWrapper.getConfigurationTo(iServerNum, "allowping", bAllowPing);
 	m_dbWrapper.getConfigurationTo(iServerNum, "certrequired", bCertRequired);
 	m_dbWrapper.getConfigurationTo(iServerNum, "forceExternalAuth", bForceExternalAuth);
+	m_dbWrapper.getConfigurationTo(iServerNum, "allowaccounttotp", bAllowAccountTotp);
 
 	QString suggestVersion = Version::toConfigString(m_suggestVersion);
 	m_dbWrapper.getConfigurationTo(iServerNum, "suggestversion", suggestVersion);
@@ -724,6 +726,8 @@ void Server::setLiveConf(const QString &key, const QString &value) {
 		qurlRegWeb = !v.isNull() ? v : Meta::mp->qurlRegWeb;
 	else if (key == "certrequired")
 		bCertRequired = !v.isNull() ? QVariant(v).toBool() : Meta::mp->bCertRequired;
+	else if (key == "allowaccounttotp")
+		bAllowAccountTotp = !v.isNull() ? QVariant(v).toBool() : true;
 	else if (key == "forceExternalAuth")
 		bForceExternalAuth = !v.isNull() ? QVariant(v).toBool() : Meta::mp->bForceExternalAuth;
 	else if (key == "bonjour") {

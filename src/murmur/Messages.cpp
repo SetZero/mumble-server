@@ -17,6 +17,7 @@
 #include "PluginHostManager.h"
 #include "LinkPreviewBridge.h"
 #include "ServerUser.h"
+#include "Totp.h"
 #include "User.h"
 #include "UserStateSerializer.h"
 #include "Version.h"
@@ -379,6 +380,31 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		rtType = MumbleProto::Reject_RejectType_AuthenticatorFail;
 	} else {
 		ok = true;
+	}
+
+	// Fancy extension: registered accounts (except SuperUser) may have enrolled
+	// a TOTP second factor via the self-service account settings. Enforce it
+	// here, after primary (password / certificate) authentication succeeded.
+	// Fail closed: a missing or wrong code rejects the login. Accounts only
+	// known to an external authenticator are skipped (their auth policy lives
+	// there), as is enforcement while the admin has disabled the feature.
+	if (ok && id > 0 && static_cast< unsigned int >(id) != Mumble::SUPERUSER_ID && bAllowAccountTotp
+		&& m_dbWrapper.registeredUserExists(iServerNum, static_cast< unsigned int >(id))) {
+		const std::string totpSecret = m_dbWrapper.getUserProperty(
+			iServerNum, static_cast< unsigned int >(id), ::mumble::server::db::UserProperty::TOTPSecret);
+		if (!totpSecret.empty()) {
+			const QString code = u8(msg.totp_code()).trimmed();
+			if (code.isEmpty()) {
+				reason = "Two-factor authentication code required";
+				rtType = MumbleProto::Reject_RejectType_TOTPRequired;
+				ok     = false;
+			} else if (!Totp::verify(QString::fromStdString(totpSecret), code,
+									 QDateTime::currentSecsSinceEpoch())) {
+				reason = "Invalid two-factor authentication code";
+				rtType = MumbleProto::Reject_RejectType_TOTPInvalid;
+				ok     = false;
+			}
+		}
 	}
 
 	ServerUser *uOld = nullptr;
@@ -4020,6 +4046,7 @@ const CoreSettingDef CORE_SERVER_SETTINGS[] = {
 	{ "suggestpositional", "bool", "Suggestions", "Suggest positional audio", false },
 	{ "suggestversion", "string", "Suggestions", "Suggested client version", false },
 	{ "registername", "string", "Registration", "Server name", false },
+	{ "allowaccounttotp", "bool", "Registration", "Allow account 2FA (TOTP)", false },
 	{ "registerpassword", "password", "Registration", "Registration password", true },
 	{ "registerhostname", "string", "Registration", "Registration hostname", false },
 	{ "registerurl", "string", "Registration", "Registration URL", false },
@@ -4067,6 +4094,10 @@ QString coreSettingDefault(const QString &key) {
 	}
 	if (key == QLatin1String("allowrecording")) {
 		return Meta::mp->allowRecording ? QStringLiteral("true") : QStringLiteral("false");
+	}
+	if (key == QLatin1String("allowaccounttotp")) {
+		// Fancy-only setting with no MetaParams member; compiled-in default is on.
+		return QStringLiteral("true");
 	}
 	return Meta::mp->qmConfig.value(key);
 }
@@ -4251,6 +4282,308 @@ void Server::msgFancyServerSettingsUpdate(ServerUser *uSource,
 	log(uSource, QString("server settings updated (%1 change(s), revision %2)")
 					 .arg(applied)
 					 .arg(m_serverSettingsRevision));
+}
+
+
+// ---------------------------------------------------------------------------
+// Fancy Mumble: self-service account settings (IDs 154-156) - introduced in
+// 0.4.1
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Machine-readable FancyAccountAck error codes (the client localises them).
+constexpr const char *ACCOUNT_ERR_NOT_REGISTERED    = "not_registered";
+constexpr const char *ACCOUNT_ERR_PASSWORD_SHORT    = "password_too_short";
+constexpr const char *ACCOUNT_ERR_PASSWORD_LONG     = "password_too_long";
+constexpr const char *ACCOUNT_ERR_NO_CERTIFICATE    = "no_certificate";
+constexpr const char *ACCOUNT_ERR_CERT_MISMATCH     = "cert_mismatch";
+constexpr const char *ACCOUNT_ERR_INVALID_NAME      = "invalid_name";
+constexpr const char *ACCOUNT_ERR_NAME_TAKEN        = "name_taken";
+constexpr const char *ACCOUNT_ERR_INVALID_EMAIL     = "invalid_email";
+constexpr const char *ACCOUNT_ERR_UNREGISTER_FAILED = "unregister_failed";
+constexpr const char *ACCOUNT_ERR_TOTP_DISABLED     = "totp_disabled_by_admin";
+constexpr const char *ACCOUNT_ERR_TOTP_NOT_PENDING  = "totp_not_pending";
+constexpr const char *ACCOUNT_ERR_TOTP_NOT_ENABLED  = "totp_not_enabled";
+constexpr const char *ACCOUNT_ERR_TOTP_WRONG_CODE   = "totp_wrong_code";
+constexpr const char *ACCOUNT_ERR_TOTP_FAILED       = "totp_generation_failed";
+
+const int ACCOUNT_PASSWORD_MIN_LENGTH = 8;
+const int ACCOUNT_PASSWORD_MAX_LENGTH = 512;
+const int ACCOUNT_EMAIL_MAX_LENGTH    = 320;
+
+// Deliberately loose: one '@' with a non-empty local and domain part and no
+// whitespace/control characters. Deliverability is not our problem - the
+// dangerous inputs are the structural ones (header injection, log spoofing).
+bool isPlausibleEmail(const QString &email) {
+	if (email.length() > ACCOUNT_EMAIL_MAX_LENGTH) {
+		return false;
+	}
+	const qsizetype at = email.indexOf(QLatin1Char('@'));
+	if (at <= 0 || at != email.lastIndexOf(QLatin1Char('@')) || at == email.length() - 1) {
+		return false;
+	}
+	for (const QChar c : email) {
+		if (c.isSpace() || c.category() == QChar::Other_Control) {
+			return false;
+		}
+	}
+	return true;
+}
+
+} // namespace
+
+void Server::sendFancyAccountSettings(ServerUser *u) {
+	if (!u || u->sState != ServerUser::Authenticated || !u->m_FancyVersion.has_value()) {
+		return;
+	}
+
+	MumbleProto::FancyAccountSettings msg;
+
+	const int id          = u->iId;
+	const bool registered = id > 0 && static_cast< unsigned int >(id) != Mumble::SUPERUSER_ID
+							&& !getRegisteredUserName(id).isEmpty();
+	msg.set_registered(registered);
+
+	if (registered) {
+		const unsigned int uid = static_cast< unsigned int >(id);
+		msg.set_user_id(uid);
+		msg.set_name(u8(getRegisteredUserName(id)));
+
+		const std::string email = m_dbWrapper.getUserProperty(iServerNum, uid, ::mumble::server::db::UserProperty::Email);
+		if (!email.empty()) {
+			msg.set_email(email);
+		}
+
+		const ::mumble::server::db::DBUserData userData = m_dbWrapper.getRegisteredUserData(iServerNum, uid);
+		msg.set_has_password(!userData.password.passwordHash.empty());
+
+		msg.set_totp_enabled(
+			!m_dbWrapper.getUserProperty(iServerNum, uid, ::mumble::server::db::UserProperty::TOTPSecret).empty());
+
+		const std::string certHash =
+			m_dbWrapper.getUserProperty(iServerNum, uid, ::mumble::server::db::UserProperty::CertificateHash);
+		if (!certHash.empty()) {
+			msg.set_cert_hash(certHash);
+		}
+		msg.set_cert_matches_session(!u->qsHash.isEmpty() && u->qsHash.toStdString() == certHash);
+	}
+
+	sendMessage(u, msg);
+}
+
+void Server::sendFancyAccountAck(ServerUser *u, unsigned int action, const QString &error) {
+	if (!u) {
+		return;
+	}
+	MumbleProto::FancyAccountAck msg;
+	msg.set_action(action);
+	msg.set_ok(error.isEmpty());
+	if (!error.isEmpty()) {
+		msg.set_error(u8(error));
+	}
+	sendMessage(u, msg);
+}
+
+void Server::msgFancyAccountSettings(ServerUser *, MumbleProto::FancyAccountSettings &) {
+	// Server -> Client only; ignore inbound.
+}
+
+void Server::msgFancyAccountAck(ServerUser *, MumbleProto::FancyAccountAck &) {
+	// Server -> Client only; ignore inbound.
+}
+
+void Server::msgFancyAccountSettingsUpdate(ServerUser *uSource, MumbleProto::FancyAccountSettingsUpdate &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	const unsigned int action = static_cast< unsigned int >(msg.action());
+
+	// Every action operates on the *sending* session's own registration. The
+	// SuperUser account is excluded: it must keep password authentication and
+	// is managed out-of-band.
+	const int id = uSource->iId;
+	if (id < 0 || static_cast< unsigned int >(id) == Mumble::SUPERUSER_ID) {
+		sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_NOT_REGISTERED));
+		return;
+	}
+
+	if (msg.action() == MumbleProto::FancyAccountSettingsUpdate::QUERY) {
+		sendFancyAccountSettings(uSource);
+		return;
+	}
+
+	const unsigned int uid = static_cast< unsigned int >(id);
+	if (getRegisteredUserName(id).isEmpty()) {
+		// Registration is already gone (e.g. self-unregistered earlier in
+		// this session, or an admin removed it meanwhile).
+		sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_NOT_REGISTERED));
+		return;
+	}
+
+	switch (msg.action()) {
+		case MumbleProto::FancyAccountSettingsUpdate::SET_PASSWORD: {
+			// Note: passwords are used verbatim - no trimming.
+			const QString password = u8(msg.value());
+			if (password.length() < ACCOUNT_PASSWORD_MIN_LENGTH) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_PASSWORD_SHORT));
+				return;
+			}
+			if (password.length() > ACCOUNT_PASSWORD_MAX_LENGTH) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_PASSWORD_LONG));
+				return;
+			}
+			// kdfIterations = 0 -> use the server-wide Meta default.
+			m_dbWrapper.storeRegisteredUserPassword(iServerNum, uid, password, 0);
+			log(uSource, QString::fromLatin1("Account: password auth enabled/changed for user %1").arg(id));
+			sendFancyAccountAck(uSource, action);
+			sendFancyAccountSettings(uSource);
+			return;
+		}
+		case MumbleProto::FancyAccountSettingsUpdate::CLEAR_PASSWORD: {
+			// Lockout guard: without a stored certificate the account would
+			// become unreachable (no password AND no cert never authenticates).
+			// Additionally require that the *current* session presented that
+			// exact certificate, so cert-only login is proven to work.
+			const std::string certHash =
+				m_dbWrapper.getUserProperty(iServerNum, uid, ::mumble::server::db::UserProperty::CertificateHash);
+			if (certHash.empty()) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_NO_CERTIFICATE));
+				return;
+			}
+			if (uSource->qsHash.isEmpty() || uSource->qsHash.toStdString() != certHash) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_CERT_MISMATCH));
+				return;
+			}
+			m_dbWrapper.storeRegisteredUserPassword(iServerNum, uid, QString(), 0);
+			log(uSource, QString::fromLatin1("Account: password auth disabled for user %1 (cert-only login)").arg(id));
+			sendFancyAccountAck(uSource, action);
+			sendFancyAccountSettings(uSource);
+			return;
+		}
+		case MumbleProto::FancyAccountSettingsUpdate::RENAME: {
+			const QString name = u8(msg.value()).trimmed();
+			if (!validateUserName(name)) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_INVALID_NAME));
+				return;
+			}
+			QMap< int, QString > info;
+			info.insert(static_cast< int >(::mumble::server::db::UserProperty::Name), name);
+			if (!setUserProperties(id, info)) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_NAME_TAKEN));
+				return;
+			}
+			log(uSource, QString::fromLatin1("Account: user %1 renamed themselves to '%2'").arg(QString::number(id), name));
+
+			uSource->qsName = name;
+			MumbleProto::UserState mpus;
+			mpus.set_session(uSource->uiSession);
+			mpus.set_actor(uSource->uiSession);
+			mpus.set_name(u8(name));
+			sendAll(mpus);
+
+			sendFancyAccountAck(uSource, action);
+			sendFancyAccountSettings(uSource);
+			return;
+		}
+		case MumbleProto::FancyAccountSettingsUpdate::SET_EMAIL: {
+			const QString email = u8(msg.value()).trimmed();
+			if (!email.isEmpty() && !isPlausibleEmail(email)) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_INVALID_EMAIL));
+				return;
+			}
+			// Deliberately loud log line: the stored email doubles as an
+			// authentication fallback for CA-verified certificates, so a
+			// change is security-relevant (see Server::authenticate).
+			m_dbWrapper.storeUserProperty(iServerNum, uid, ::mumble::server::db::UserProperty::Email,
+										  email.toStdString());
+			log(uSource, QString::fromLatin1("Account: user %1 %2 their contact email")
+							 .arg(QString::number(id), email.isEmpty() ? QLatin1String("cleared") : QLatin1String("changed")));
+			sendFancyAccountAck(uSource, action);
+			sendFancyAccountSettings(uSource);
+			return;
+		}
+		case MumbleProto::FancyAccountSettingsUpdate::UNREGISTER: {
+			log(uSource, QString::fromLatin1("Account: user %1 unregistered themselves").arg(id));
+			if (!unregisterUser(id)) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_UNREGISTER_FAILED));
+				return;
+			}
+			// Like an admin-initiated unregister of an online user, the
+			// session keeps its (now stale) user id until reconnect; the
+			// snapshot below already reports registered = false.
+			sendFancyAccountAck(uSource, action);
+			sendFancyAccountSettings(uSource);
+			return;
+		}
+		case MumbleProto::FancyAccountSettingsUpdate::TOTP_BEGIN: {
+			if (!bAllowAccountTotp) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_TOTP_DISABLED));
+				return;
+			}
+			const QString secret = Totp::generateSecret();
+			if (secret.isEmpty()) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_TOTP_FAILED));
+				return;
+			}
+			uSource->qsPendingTotpSecret = secret;
+
+			const QString issuer = qsRegName.isEmpty() ? QStringLiteral("Fancy Mumble") : qsRegName;
+			MumbleProto::FancyAccountAck ack;
+			ack.set_action(action);
+			ack.set_ok(true);
+			ack.set_totp_secret(u8(secret));
+			ack.set_totp_uri(u8(Totp::buildProvisioningUri(issuer, getRegisteredUserName(id), secret)));
+			sendMessage(uSource, ack);
+			return;
+		}
+		case MumbleProto::FancyAccountSettingsUpdate::TOTP_VERIFY: {
+			if (!bAllowAccountTotp) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_TOTP_DISABLED));
+				return;
+			}
+			if (uSource->qsPendingTotpSecret.isEmpty()) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_TOTP_NOT_PENDING));
+				return;
+			}
+			const QString code = u8(msg.value()).trimmed();
+			if (!Totp::verify(uSource->qsPendingTotpSecret, code, QDateTime::currentSecsSinceEpoch())) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_TOTP_WRONG_CODE));
+				return;
+			}
+			m_dbWrapper.storeUserProperty(iServerNum, uid, ::mumble::server::db::UserProperty::TOTPSecret,
+										  uSource->qsPendingTotpSecret.toStdString());
+			uSource->qsPendingTotpSecret.clear();
+			log(uSource, QString::fromLatin1("Account: TOTP 2FA enabled for user %1").arg(id));
+			sendFancyAccountAck(uSource, action);
+			sendFancyAccountSettings(uSource);
+			return;
+		}
+		case MumbleProto::FancyAccountSettingsUpdate::TOTP_DISABLE: {
+			const std::string secret =
+				m_dbWrapper.getUserProperty(iServerNum, uid, ::mumble::server::db::UserProperty::TOTPSecret);
+			if (secret.empty()) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_TOTP_NOT_ENABLED));
+				return;
+			}
+			// Proof of possession: disabling requires a currently valid code.
+			const QString code = u8(msg.value()).trimmed();
+			if (!Totp::verify(QString::fromStdString(secret), code, QDateTime::currentSecsSinceEpoch())) {
+				sendFancyAccountAck(uSource, action, QLatin1String(ACCOUNT_ERR_TOTP_WRONG_CODE));
+				return;
+			}
+			m_dbWrapper.storeUserProperty(iServerNum, uid, ::mumble::server::db::UserProperty::TOTPSecret,
+										  std::string());
+			log(uSource, QString::fromLatin1("Account: TOTP 2FA disabled for user %1").arg(id));
+			sendFancyAccountAck(uSource, action);
+			sendFancyAccountSettings(uSource);
+			return;
+		}
+		default:
+			// QUERY handled above; unknown actions are ignored (forward
+			// compatibility with newer clients).
+			return;
+	}
 }
 
 

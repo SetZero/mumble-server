@@ -21,6 +21,10 @@ namespace server {
 			Password,
 			LastActive,
 			kdfIterations,
+			// Fancy extension: base32-encoded RFC 6238 TOTP shared secret.
+			// Empty / absent = two-factor authentication disabled. Must never
+			// be handed out to clients (see DBWrapper::getUserProperties).
+			TOTPSecret,
 		};
 
 	} // namespace db
