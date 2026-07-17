@@ -41,12 +41,16 @@ StoreResult ServerSideStorage::storeMessage(const MessageContext &ctx) {
 		return result;
 	}
 
-	if (ctx.replacesId) {
+	// Only accept (and relay) a replaces_id that names a message THIS sender
+	// stored in this channel. Copying the client-supplied value through
+	// unconditionally let a malicious sender put someone ELSE's message id in
+	// replaces_id: the sender-scoped supersede below correctly refused to touch
+	// the victim's row, but the relayed PchatMessageDeliver still carried the
+	// id and every online client replaced the victim's message in its view.
+	if (ctx.replacesId && !ctx.replacesId->empty()
+		&& m_msgTable.messageExists(ctx.serverNum, ctx.channelId, ctx.senderHash, *ctx.replacesId)) {
 		result.replacesId = *ctx.replacesId;
-		if (!result.replacesId.empty()
-			&& m_msgTable.messageExists(ctx.serverNum, ctx.channelId, ctx.senderHash, result.replacesId)) {
-			m_msgTable.markSuperseded(ctx.serverNum, ctx.channelId, ctx.senderHash, result.replacesId, ctx.messageId);
-		}
+		m_msgTable.markSuperseded(ctx.serverNum, ctx.channelId, ctx.senderHash, result.replacesId, ctx.messageId);
 	}
 
 	msdb::PChatStoredMessage storedMsg;

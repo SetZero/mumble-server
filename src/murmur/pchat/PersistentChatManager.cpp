@@ -108,11 +108,16 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 	if (!m_config.enabled) {
 		return;
 	}
+	// Dropped messages must still be acked: the sender shows the message
+	// optimistically and, without a REJECTED ack, it looks delivered to them
+	// while nobody else ever receives it.
 	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
+		sendAck(senderSession, msg.message_id(), MumbleProto::PCHAT_ACK_REJECTED, "registration_required");
 		return;
 	}
 	if (!m_rateLimiter.allow(std::to_string(senderSession), "msg")) {
 		qWarning("pchat: rate-limited msg from session=%u", senderSession);
+		sendAck(senderSession, msg.message_id(), MumbleProto::PCHAT_ACK_REJECTED, "rate_limited");
 		return;
 	}
 
@@ -1267,14 +1272,38 @@ void PersistentChatManager::handlePchatDeleteMessages(unsigned int senderSession
 // ---- Emoji Reactions ----
 
 void PersistentChatManager::handlePchatReaction(unsigned int senderSession, const MumbleProto::PchatReaction &msg) {
+        if (!m_config.enabled) {
+                return;
+        }
         if (!msg.has_channel_id() || !msg.has_message_id() || !msg.has_action()) {
+                return;
+        }
+        if (!m_rateLimiter.allow(std::to_string(senderSession), "reaction")) {
+                qWarning("pchat: rate-limited reaction from session=%u", senderSession);
                 return;
         }
 
         const auto channelId = msg.channel_id();
         const auto &messageId = msg.message_id();
 
+        // The sender must at least be able to enter the channel; reactions in
+        // channels the user cannot access are both an information leak and an
+        // unthrottled broadcast/DB-write vector.
+        if (!m_bridge.hasEnterPermission(senderSession, channelId)) {
+                qWarning("pchat: reaction rejected - no enter permission session=%u channel=%u",
+                         senderSession, channelId);
+                return;
+        }
+
         const bool isPersistent = m_bridge.getChannelPChatProtocol(channelId) != Protocol::None;
+
+        // On encrypted persistent channels, only key-verified sessions may
+        // react - the same gate that protects sending and fetching.
+        if (isPersistent && !isSessionVerified(channelId, senderSession)) {
+                qWarning("pchat: reaction rejected - session not verified session=%u channel=%u",
+                         senderSession, channelId);
+                return;
+        }
 
         // Validate sender cert hash
         std::string certHash = m_bridge.getCertHash(senderSession);
@@ -1307,6 +1336,15 @@ void PersistentChatManager::handlePchatReaction(unsigned int senderSession, cons
         }
 
 		if(emojiStr.empty()) {
+			return;
+		}
+
+		// Cap the emoji payload: a grapheme cluster or shortcode is tens of
+		// bytes at most; anything larger is garbage that would be stored and
+		// broadcast verbatim.
+		if (emojiStr.size() > 64) {
+			qWarning("pchat: reaction rejected - emoji too large (%zu bytes) session=%u",
+					 emojiStr.size(), senderSession);
 			return;
 		}
 
@@ -1355,14 +1393,36 @@ void PersistentChatManager::handlePchatReaction(unsigned int senderSession, cons
 // ---- Message Pinning ----
 
 void PersistentChatManager::handlePchatPin(unsigned int senderSession, const MumbleProto::PchatPin &msg) {
+	if (!m_config.enabled) {
+		return;
+	}
 	if (!msg.has_channel_id() || !msg.has_message_id()) {
+		return;
+	}
+	if (!m_rateLimiter.allow(std::to_string(senderSession), "pin")) {
+		qWarning("pchat: rate-limited pin from session=%u", senderSession);
 		return;
 	}
 
 	const auto channelId = msg.channel_id();
 	const auto &messageId = msg.message_id();
 
+	// Pinning is visible to (and stored for) the whole channel: require the
+	// sender to be able to enter it, and on encrypted persistent channels to
+	// have passed the key challenge - the same gate as sending.
+	if (!m_bridge.hasEnterPermission(senderSession, channelId)) {
+		qWarning("pchat: pin rejected - no enter permission session=%u channel=%u",
+				 senderSession, channelId);
+		return;
+	}
+
 	const bool isPersistent = m_bridge.getChannelPChatProtocol(channelId) != Protocol::None;
+
+	if (isPersistent && !isSessionVerified(channelId, senderSession)) {
+		qWarning("pchat: pin rejected - session not verified session=%u channel=%u",
+				 senderSession, channelId);
+		return;
+	}
 
 	std::string certHash = m_bridge.getCertHash(senderSession);
 	if (certHash.empty()) {

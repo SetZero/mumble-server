@@ -262,12 +262,19 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	// Schedule expiry for any persisted expiring channels just loaded.
 	rescheduleChannelExpiry();
 
-	// Initialize persistent chat manager
+	// Initialize persistent chat manager.
+	// defineLimit(op, burst, refill-per-SECOND). The original values passed 60
+	// as the refill rate - 60 tokens/s sustained, which never throttled
+	// anything (the buckets refilled faster than clients could realistically
+	// drain them). The intent was clearly "per minute"; these are the same
+	// budgets expressed in the unit the limiter actually uses.
 	m_pchatRateLimiter = std::make_unique< pchat::TokenBucketRateLimiter >();
-	m_pchatRateLimiter->defineLimit("msg", 30, 60);
-	m_pchatRateLimiter->defineLimit("fetch", 10, 60);
-	m_pchatRateLimiter->defineLimit("key_announce", 5, 60);
-	m_pchatRateLimiter->defineLimit("key_exchange", 20, 60);
+	m_pchatRateLimiter->defineLimit("msg", 30, 1.0);
+	m_pchatRateLimiter->defineLimit("fetch", 10, 0.5);
+	m_pchatRateLimiter->defineLimit("key_announce", 5, 0.2);
+	m_pchatRateLimiter->defineLimit("key_exchange", 20, 1.0);
+	m_pchatRateLimiter->defineLimit("reaction", 15, 2.0);
+	m_pchatRateLimiter->defineLimit("pin", 5, 0.5);
 
 	m_pchatBridge = std::make_unique< pchat::ServerBridge >(*this);
 
