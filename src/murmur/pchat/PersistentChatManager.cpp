@@ -1122,13 +1122,53 @@ void PersistentChatManager::handlePchatKeyChallengeResponse(unsigned int senderS
 		result.set_passed(true);
 		qDebug("pchat: challenge for channel %u - session %u passed", channelId, senderSession);
 	} else {
-		// Proof does not match - the client holds a wrong key.
+		// Proof does not match - the client holds a different key than the one
+		// the reference HMAC was established with.
+		//
+		// The reference lives only in server memory and never expires, so it can
+		// outlive every key that could still prove against it. If this session's
+		// cert is the ONLY recorded holder for the channel, nobody else can ever
+		// pass the challenge either - rejecting here would lock the channel
+		// forever (a sole holder whose key legitimately changed, e.g. after an
+		// app-data reset, hits exactly this). Drop the stale reference and issue
+		// a fresh challenge instead: their next proof re-establishes the
+		// reference, keeping them the recorded holder. Old messages encrypted
+		// with the lost key stay unreadable, but the channel works again.
+		std::string certHash = m_bridge.getCertHash(senderSession);
+		unsigned int serverNum = m_bridge.serverNum();
+
+		bool otherHolderExists = false;
+		for (const auto &h : m_holdersTable.getChannelHolders(serverNum, channelId)) {
+			if (h.certHash != certHash) {
+				otherHolderExists = true;
+				break;
+			}
+		}
+
+		if (!otherHolderExists) {
+			qWarning("pchat: challenge for channel %u - session %u mismatched but is the sole "
+					 "recorded holder; resetting stale challenge state and re-challenging",
+					 channelId, senderSession);
+			m_challengeState.erase(channelId);
+			auto &fresh = m_challengeState[channelId];
+			fresh.sharedChallenge.resize(32);
+			CryptographicRandom::fillBuffer(fresh.sharedChallenge.data(),
+											static_cast< int >(fresh.sharedChallenge.size()));
+			fresh.pendingChallenges[senderSession] = fresh.sharedChallenge;
+
+			MumbleProto::PchatKeyChallenge challengeMsg;
+			challengeMsg.set_channel_id(channelId);
+			challengeMsg.set_challenge(
+				std::string(fresh.sharedChallenge.begin(), fresh.sharedChallenge.end()));
+			m_bridge.sendPchatKeyChallenge(senderSession, challengeMsg);
+			return;
+		}
+
 		result.set_passed(false);
 
 		// Remove this user as a key holder since their key is invalid.
-		std::string certHash = m_bridge.getCertHash(senderSession);
 		if (!certHash.empty()) {
-			m_holdersTable.removeHolder(m_bridge.serverNum(), channelId, certHash);
+			m_holdersTable.removeHolder(serverNum, channelId, certHash);
 		}
 
 		qWarning("pchat: challenge for channel %u - session %u FAILED (wrong key)",
