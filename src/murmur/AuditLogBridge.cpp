@@ -207,10 +207,12 @@ void AuditLogBridge::pushConfig(ServerUser *u) {
 	if (!u || u->sState != ServerUser::Authenticated) {
 		return;
 	}
-	// The Audit tab is gated at fancy 0.4.2 client-side; older clients drop
-	// the unknown message anyway, so only the permission gate is hard.
-	if (!u->m_FancyVersion.has_value()
-		|| u->m_FancyVersion.value() < Version::fromComponents(0, 4, 2)) {
+	// Only Fancy clients can render this. The exact version is deliberately
+	// not gated: the handshake advertises the client's protocol-crate version
+	// (0.3.x today), which does not track per-feature support - a client that
+	// lacks the Audit tab simply drops the unknown message type (same
+	// reasoning as sendFancyServerSettings).
+	if (!u->m_FancyVersion.has_value()) {
 		return;
 	}
 	Channel *root = m_server->qhChannels.value(0);
