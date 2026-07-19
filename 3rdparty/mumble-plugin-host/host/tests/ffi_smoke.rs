@@ -13,6 +13,10 @@
 // These crates are dependencies of the cdylib but not used directly here.
 use abi_stable as _;
 use flate2 as _;
+// Linux-only dependency (ELF pre-validation in the loader), so the silencer has
+// to be target-gated too or it fails to resolve elsewhere.
+#[cfg(target_os = "linux")]
+use goblin as _;
 use mumble_plugin_api as _;
 use rand as _;
 use serde as _;
