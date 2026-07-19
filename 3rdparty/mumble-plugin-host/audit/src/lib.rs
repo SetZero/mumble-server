@@ -41,32 +41,48 @@ pub mod runtime;
 pub mod store;
 pub mod toggles;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use abi_stable::std_types::ROption::RNone;
 use abi_stable::std_types::RResult::{RErr, ROk};
-use abi_stable::std_types::{RArc, RStr, RString, RVec};
+use abi_stable::std_types::{RArc, RSlice, RStr, RString};
 use mumble_plugin_api::{
-    MumblePlugin, PluginContext_TO, PluginInfo, PluginMessageIn, PluginMessageOut, PluginResult,
+    MumblePlugin, PluginContext_TO, PluginInfo, PluginMessageIn, PluginResult,
 };
 
 use crate::authz::PERM_WRITE;
 use crate::config::PLUGIN_NAME;
-use crate::model::{AuditEntry, Source};
+use crate::event_log::ServerEvent;
+use crate::model::{AuditEntry, Identity, Source};
 use crate::runtime::AuditRuntime;
 use crate::store::Query;
+use crate::toggles::Part;
 
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Client → plugin: run an audit query. Payload is a JSON filter (see
-/// [`parse_query`]). Requires `Write` on root (the `ViewAudit` gate, §9.1).
+/// Core/bridge → plugin: run an audit query on behalf of an authorized admin.
+/// Payload is a JSON filter (see [`parse_query`]) carrying a `request_id`.
+/// Requires `Write` on root (the `ViewAudit` gate, §9.1).
 const MSG_QUERY: &str = "audit.query";
-/// Plugin → client: audit query results as a JSON array of entries.
+/// Plugin → bridge: audit query results as a JSON array of entries, routed
+/// back through the host's request/response seam (packed into a
+/// `FancyAuditResponse` by the murmur-side `AuditLogBridge`).
 const MSG_RESULT: &str = "audit.result";
-/// Client → plugin: verify a server's hash chain (§7.1).
+/// Core/bridge → plugin: verify a server's hash chain (§7.1).
 const MSG_VERIFY: &str = "audit.verify";
-/// Plugin → client: the verify outcome as JSON.
+/// Plugin → bridge: the verify outcome as JSON.
 const MSG_VERIFY_RESULT: &str = "audit.verify.result";
+/// Core → plugin: one authoritative moderation event to ingest (§7.10).
+/// Server-originated only: the bridge stamps `sender_session == 0`, which no
+/// real client session ever carries, so client-forged ingests are dropped.
+const MSG_INGEST: &str = "audit.ingest";
+/// Core/bridge → plugin: request the config snapshot (toggle matrix + chain
+/// status). Requires `Write` on root (the `ConfigureAudit` gate).
+const MSG_CONFIG_GET: &str = "audit.config.get";
+/// Core/bridge → plugin: apply changed toggles. Same gate as get.
+const MSG_CONFIG_SET: &str = "audit.config.set";
+/// Plugin → bridge: the config snapshot (packed into `FancyAuditConfig`).
+const MSG_CONFIG: &str = "audit.config";
 
 /// Root channel id — the scope the audit permissions are checked against (§5).
 const ROOT_CHANNEL: u32 = 0;
@@ -75,12 +91,16 @@ const ROOT_CHANNEL: u32 = 0;
 /// could not be opened (the plugin still loads, inert, and says why).
 struct AuditPlugin {
     runtime: Mutex<Option<AuditRuntime>>,
+    /// Monotonic config-snapshot revision (bumped on every accepted update)
+    /// so clients can drop stale `FancyAuditConfig` snapshots.
+    config_revision: AtomicU64,
 }
 
 impl AuditPlugin {
     fn new() -> Self {
         Self {
             runtime: Mutex::new(None),
+            config_revision: AtomicU64::new(1),
         }
     }
 
@@ -95,6 +115,7 @@ impl AuditPlugin {
     /// Handle an authorized `audit.query`, replying with matching entries.
     fn handle_query(&self, ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn) {
         let server_id = msg.server_id;
+        let request_id = request_id_of(msg.payload.as_slice());
         let authorized =
             ctx.has_permission(server_id, msg.sender_session, ROOT_CHANNEL, PERM_WRITE);
         // Non-authorized queries get an empty result, never a partial leak (§5).
@@ -105,9 +126,10 @@ impl AuditPlugin {
             Vec::new()
         };
         let payload = entries_to_json(&entries);
-        send(
+        respond(
             ctx,
             server_id,
+            &request_id,
             msg.sender_session,
             MSG_RESULT,
             payload.as_bytes(),
@@ -117,24 +139,237 @@ impl AuditPlugin {
     /// Handle an authorized `audit.verify`, replying with the chain outcome.
     fn handle_verify(&self, ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn) {
         let server_id = msg.server_id;
+        let request_id = request_id_of(msg.payload.as_slice());
         if !ctx.has_permission(server_id, msg.sender_session, ROOT_CHANNEL, PERM_WRITE) {
             return;
         }
         let outcome = self.with_runtime(|rt| rt.verify(i32_server(server_id)));
         let payload = verify_to_json(outcome);
-        send(
+        respond(
             ctx,
             server_id,
+            &request_id,
             msg.sender_session,
             MSG_VERIFY_RESULT,
             payload.as_bytes(),
         );
     }
 
+    /// Ingest one server-authoritative event (bridge-originated only).
+    fn handle_ingest(&self, msg: &PluginMessageIn) {
+        // Real client sessions are never 0; the murmur bridge stamps 0 on the
+        // events it emits, so anything else is a forged client message.
+        if msg.sender_session != 0 {
+            tracing::warn!(
+                session = msg.sender_session,
+                "audit: dropping client-originated ingest"
+            );
+            return;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(msg.payload.as_slice()) else {
+            return;
+        };
+        let Some(offset) = value.get("offset").and_then(serde_json::Value::as_u64) else {
+            return;
+        };
+        let Some(event_json) = value.get("event") else {
+            return;
+        };
+        let Some(event) = parse_server_event(i32_server(msg.server_id), event_json) else {
+            return;
+        };
+        let outcome = self.with_runtime(|rt| rt.ingest(&event, offset));
+        if let Some(Err(e)) = outcome {
+            tracing::error!(error = %e, kind = %event.kind, "audit: ingest failed");
+        }
+    }
+
+    /// Reply with the config snapshot (toggle matrix + chain status).
+    fn handle_config_get(&self, ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn) {
+        let server_id = msg.server_id;
+        if !ctx.has_permission(server_id, msg.sender_session, ROOT_CHANNEL, PERM_WRITE) {
+            return;
+        }
+        let request_id = request_id_of(msg.payload.as_slice());
+        let payload = self.config_snapshot_json(server_id);
+        respond(
+            ctx,
+            server_id,
+            &request_id,
+            msg.sender_session,
+            MSG_CONFIG,
+            payload.as_bytes(),
+        );
+    }
+
+    /// Apply changed toggles, then reply with the fresh snapshot.
+    fn handle_config_set(&self, ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn) {
+        let server_id = msg.server_id;
+        if !ctx.has_permission(server_id, msg.sender_session, ROOT_CHANNEL, PERM_WRITE) {
+            return;
+        }
+        let request_id = request_id_of(msg.payload.as_slice());
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(msg.payload.as_slice()) {
+            let actor = Identity {
+                user_id: None,
+                hash: None,
+                name: Some(msg.sender_name.to_string()),
+            };
+            let now_ms = now_ms();
+            let settings = value
+                .get("settings")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            for setting in &settings {
+                let Some(key) = setting.get("key").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let Some(part) = key
+                    .strip_prefix(TOGGLE_KEY_PREFIX)
+                    .and_then(Part::from_str)
+                else {
+                    continue;
+                };
+                let enable = setting
+                    .get("value")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|v| v == "true");
+                let changed = self.with_runtime(|rt| {
+                    rt.set_toggle(part, enable, i32_server(server_id), now_ms, actor.clone())
+                });
+                if let Some(Err(e)) = changed {
+                    tracing::error!(error = %e, part = part.as_str(), "audit: toggle update failed");
+                }
+            }
+            let _ = self.config_revision.fetch_add(1, Ordering::Relaxed);
+        }
+        let payload = self.config_snapshot_json(server_id);
+        respond(
+            ctx,
+            server_id,
+            &request_id,
+            msg.sender_session,
+            MSG_CONFIG,
+            payload.as_bytes(),
+        );
+    }
+
+    /// The config snapshot as JSON for the bridge to pack into
+    /// `FancyAuditConfig`: generic `Setting` rows for every toggle, the chain
+    /// height, and the snapshot revision.
+    fn config_snapshot_json(&self, server_id: u32) -> String {
+        let toggles = self
+            .with_runtime(AuditRuntime::toggle_snapshot)
+            .unwrap_or_default();
+        let settings: Vec<serde_json::Value> = toggles
+            .into_iter()
+            .map(|(part, enabled)| {
+                serde_json::json!({
+                    "key": format!("{TOGGLE_KEY_PREFIX}{}", part.as_str()),
+                    "type": "bool",
+                    "group": group_for(part),
+                    "label": part.as_str(),
+                    "value": if enabled { "true" } else { "false" },
+                })
+            })
+            .collect();
+        let chain_height = self
+            .with_runtime(|rt| match rt.verify(i32_server(server_id)) {
+                Ok(chain::VerifyOutcome::Intact { checked, .. }) => checked,
+                Ok(chain::VerifyOutcome::Broken { index, .. }) => index,
+                Err(_) => 0,
+            })
+            .unwrap_or(0);
+        serde_json::json!({
+            "settings": settings,
+            "revision": self.config_revision.load(Ordering::Relaxed),
+            "advanced_sql_available": false,
+            "chain_height": chain_height,
+        })
+        .to_string()
+    }
+
     fn run_query(&self, server_id: u32, payload: &[u8]) -> Option<Vec<AuditEntry>> {
         let value = serde_json::from_slice::<serde_json::Value>(payload).ok()?;
         let query = parse_query(&value);
         self.with_runtime(|rt| rt.query(i32_server(server_id), &query).unwrap_or_default())
+    }
+}
+
+/// Config key prefix for the per-part toggles, matching the generic
+/// plugin-setting key convention (`plugin.<name>.<key>`).
+const TOGGLE_KEY_PREFIX: &str = "plugin.fancy-audit.part.";
+
+/// Group heading for a part's Setting row in the config UI.
+fn group_for(part: Part) -> &'static str {
+    let s = part.as_str();
+    if s.starts_with("audit.") {
+        "Audit"
+    } else if s.starts_with("signal.") {
+        "Signals"
+    } else if s.starts_with("telemetry.") {
+        "Telemetry"
+    } else {
+        "General"
+    }
+}
+
+/// Current unix time in milliseconds.
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "unix millis fit i64 for the next ~292 million years"
+)]
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// Pull the correlation `request_id` out of a request payload.
+fn request_id_of(payload: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| {
+            v.get("request_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_default()
+}
+
+/// Parse one bridge event into a [`ServerEvent`].
+fn parse_server_event(server_id: i32, value: &serde_json::Value) -> Option<ServerEvent> {
+    let kind = value.get("kind")?.as_str()?.to_owned();
+    let ts_ms = value
+        .get("ts_ms")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_else(now_ms);
+    let mut event = ServerEvent::new(server_id, ts_ms, kind);
+    event.actor = parse_identity(value.get("actor"));
+    event.target = parse_identity(value.get("target"));
+    event.channel_id = value.get("channel_id").and_then(serde_json::Value::as_i64);
+    event.detail_json = value
+        .get("detail_json")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Some(event)
+}
+
+fn parse_identity(value: Option<&serde_json::Value>) -> Identity {
+    let Some(value) = value else {
+        return Identity::default();
+    };
+    Identity {
+        user_id: value.get("user_id").and_then(serde_json::Value::as_i64),
+        hash: value
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        name: value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
     }
 }
 
@@ -226,24 +461,26 @@ fn hex(bytes: &[u8; 32]) -> String {
     out
 }
 
-/// Send `payload` to a single session on `server_id`.
-fn send(
+/// Deliver a typed response through the host's server-side request/response
+/// seam. The murmur `AuditLogBridge` registered a handler per response type
+/// and packs the JSON into the matching `FancyAudit*` wire message for
+/// `session` (mirroring the link-preview bridge).
+fn respond(
     ctx: &PluginContext_TO<RArc<()>>,
     server_id: u32,
+    request_id: &str,
     session: u32,
-    payload_type: &str,
+    response_type: &str,
     payload: &[u8],
 ) {
-    let out = PluginMessageOut {
+    if let RErr(e) = ctx.send_request_response(
         server_id,
-        plugin_name: RString::from(PLUGIN_NAME),
-        payload_type: RString::from(payload_type),
-        payload: RVec::from(payload.to_vec()),
-        target_sessions: RVec::from(vec![session]),
-        channel_id: RNone,
-    };
-    if let RErr(e) = ctx.send_plugin_message(out) {
-        tracing::warn!(error = %e, "audit: send_plugin_message failed");
+        RStr::from_str(response_type),
+        RStr::from_str(request_id),
+        session,
+        RSlice::from_slice(payload),
+    ) {
+        tracing::warn!(error = %e, response_type, "audit: send_request_response failed");
     }
 }
 
@@ -325,6 +562,9 @@ impl MumblePlugin for AuditPlugin {
         match msg.payload_type.as_str() {
             MSG_QUERY => self.handle_query(ctx, &msg),
             MSG_VERIFY => self.handle_verify(ctx, &msg),
+            MSG_INGEST => self.handle_ingest(&msg),
+            MSG_CONFIG_GET => self.handle_config_get(ctx, &msg),
+            MSG_CONFIG_SET => self.handle_config_set(ctx, &msg),
             _ => {}
         }
         ROk(())

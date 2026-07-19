@@ -29,6 +29,7 @@
 
 class PluginHostManager;
 class LinkPreviewBridge;
+class AuditLogBridge;
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
 #include "QtUtils.h"
@@ -138,6 +139,7 @@ private:
 
 	friend class PluginHostManager;
 	friend class LinkPreviewBridge;
+	friend class AuditLogBridge;
 
 protected:
 	bool bRunning;
@@ -404,6 +406,11 @@ public:
 	// m_pluginHost so the host (whose plugin runtime delivers the responses this
 	// bridge handles) is destroyed first, while this bridge is still alive.
 	std::unique_ptr< LinkPreviewBridge > m_linkPreviewBridge;
+
+	// Audit-log bridge: same request/response pattern as the link-preview
+	// bridge, translating FancyAudit* wire messages to/from the fancy-audit
+	// plugin and publishing core moderation events into its ingest pipeline.
+	std::unique_ptr< AuditLogBridge > m_auditBridge;
 
 	std::unique_ptr< PluginHostManager > m_pluginHost;
 

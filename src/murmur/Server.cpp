@@ -23,6 +23,7 @@
 #include "QtUtils.h"
 #include "ServerUser.h"
 #include "PluginHostManager.h"
+#include "AuditLogBridge.h"
 #include "LinkPreviewBridge.h"
 #include "User.h"
 #include "Version.h"
@@ -317,6 +318,10 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	// Link-preview bridge: registers a response handler with the (generic)
 	// plugin host and forwards client link-preview requests to the plugin.
 	m_linkPreviewBridge = std::make_unique< LinkPreviewBridge >(this, m_pluginHost.get());
+
+	// Audit-log bridge: translates FancyAudit* wire messages to/from the
+	// fancy-audit plugin and feeds it core moderation events.
+	m_auditBridge = std::make_unique< AuditLogBridge >(this, m_pluginHost.get());
 
 
 	// Initialize WebRTC SFU manager

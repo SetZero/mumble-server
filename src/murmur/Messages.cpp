@@ -15,6 +15,7 @@
 #include "QtUtils.h"
 #include "Server.h"
 #include "PluginHostManager.h"
+#include "AuditLogBridge.h"
 #include "LinkPreviewBridge.h"
 #include "MumbleDeprecation.h"
 #include "ServerUser.h"
@@ -884,6 +885,12 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 	// the permission + Fancy-version gate).
 	sendFancyServerSettings(uSource);
 
+	// Same pattern for the audit-log config snapshot (Audit tab, fancy 0.4.2+
+	// root-Write admins; the bridge enforces both gates).
+	if (m_auditBridge) {
+		m_auditBridge->pushConfig(uSource);
+	}
+
 	log(uSource, "Authenticated");
 
 	m_events.userConnected(uSource);
@@ -1565,6 +1572,17 @@ void Server::msgUserRemove(ServerUser *uSource, MumbleProto::UserRemove &msg) {
 		log(uSource, QString("Kickbanned %1 (%2)").arg(QString(*pDstServerUser), u8(msg.reason())));
 	else
 		log(uSource, QString("Kicked %1 (%2)").arg(QString(*pDstServerUser), u8(msg.reason())));
+
+	if (m_auditBridge) {
+		QJsonObject detail;
+		const QString reason = u8(msg.reason());
+		if (!reason.isEmpty()) {
+			detail.insert(QStringLiteral("reason"), reason);
+		}
+		m_auditBridge->emitEvent(ban ? QStringLiteral("ban") : QStringLiteral("kick"), uSource,
+								 pDstServerUser, -1, detail);
+	}
+
 	pDstServerUser->disconnectSocket();
 }
 
@@ -1758,6 +1776,15 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		msg.set_channel_id(c->iId);
 		log(uSource, QString("Added channel %1 under %2").arg(QString(*c), QString(*p)));
 		m_events.channelCreated(c);
+
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("name"), c->qsName);
+			detail.insert(QStringLiteral("parent_id"), static_cast< qint64 >(p->iId));
+			detail.insert(QStringLiteral("temporary"), c->hasAttribute(ChannelAttribute::Temporary));
+			m_auditBridge->emitEvent(QStringLiteral("channel.create"), uSource, nullptr,
+									 static_cast< int64_t >(c->iId), detail);
+		}
 
 		if (c->isPersistentChat() && m_pchatManager) {
 			m_pchatManager->onPersistentChannelCreated(
@@ -2015,6 +2042,13 @@ void Server::msgChannelRemove(ServerUser *uSource, MumbleProto::ChannelRemove &m
 	}
 
 	log(uSource, QString("Removed channel %1").arg(*c));
+
+	if (m_auditBridge) {
+		QJsonObject detail;
+		detail.insert(QStringLiteral("name"), c->qsName);
+		m_auditBridge->emitEvent(QStringLiteral("channel.remove"), uSource, nullptr,
+								 static_cast< int64_t >(c->iId), detail);
+	}
 
 	removeChannel(c);
 }
@@ -2686,6 +2720,13 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
 		}
 		log(uSource, QString("Updated ACL in channel %1").arg(*c));
+
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("channel_name"), c->qsName);
+			m_auditBridge->emitEvent(QStringLiteral("acl"), uSource, nullptr,
+									 static_cast< int64_t >(c->iId), detail);
+		}
 
 		// Send refreshed enter states of this channel to all clients who may see
 		// it. Skipping users who can't see a hidden channel avoids leaking its id
@@ -5033,12 +5074,42 @@ void Server::msgFancyPollVote(ServerUser *uSource, MumbleProto::FancyPollVote &m
 #undef PERM_DENIED_FALLBACK
 #undef PERM_DENIED_HASH
 
-// Audit log (docs/audit-log.md): the wire contract is pinned (IDs 166-171)
-// but the query/config handling is phase-3 and not implemented yet. The
-// dispatch macro references these symbols, so provide accept-and-drop stubs
-// until the plugin-backed implementation lands.
-void Server::msgFancyAuditQuery(ServerUser *, MumbleProto::FancyAuditQuery &) {}
+// Audit log (docs/audit-log.md section 5): the AuditLogBridge translates the
+// wire messages to/from the fancy-audit plugin over the generic plugin-host
+// request/response seam.
+
+void Server::msgFancyAuditQuery(ServerUser *uSource, MumbleProto::FancyAuditQuery &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	// ViewAudit resolves to Write on root today (§9.1). The plugin re-checks
+	// through the host permission callback; this is the fail-fast gate.
+	Channel *root = qhChannels.value(0);
+	if (!root || !uSource->hasPermission(root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (m_auditBridge) {
+		m_auditBridge->handleQuery(uSource, msg);
+	}
+}
+
+void Server::msgFancyAuditConfigUpdate(ServerUser *uSource, MumbleProto::FancyAuditConfigUpdate &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	// ConfigureAudit resolves to Write on root today (§9.2).
+	Channel *root = qhChannels.value(0);
+	if (!root || !uSource->hasPermission(root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (m_auditBridge) {
+		m_auditBridge->handleConfigUpdate(uSource, msg);
+	}
+}
+
+// Server -> Client only; ignore inbound.
 void Server::msgFancyAuditResponse(ServerUser *, MumbleProto::FancyAuditResponse &) {}
 void Server::msgFancyAuditEvent(ServerUser *, MumbleProto::FancyAuditEvent &) {}
 void Server::msgFancyAuditConfig(ServerUser *, MumbleProto::FancyAuditConfig &) {}
-void Server::msgFancyAuditConfigUpdate(ServerUser *, MumbleProto::FancyAuditConfigUpdate &) {}
