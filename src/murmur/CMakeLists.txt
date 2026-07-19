@@ -179,6 +179,20 @@ else()
         set(_ph_target_subdir "release")
     endif()
 
+    # WASM component plugins are the plugin host's default feature set, but they
+    # pull in the whole wasmtime runtime, which dominates build time. None of the
+    # exported plugin_host_* C symbols depend on it, so a build that only needs
+    # native cdylib plugins (or a resource-constrained CI runner) can drop it and
+    # still link. Default ON to preserve full functionality.
+    option(plugin-host-wasm
+        "Build the plugin host with WASM component support (pulls in wasmtime)." ON)
+    if(plugin-host-wasm)
+        set(_ph_cargo_features "")
+    else()
+        message(STATUS "mumble-plugin-host: WASM component support disabled (plugin-host-wasm=OFF)")
+        set(_ph_cargo_features "--no-default-features")
+    endif()
+
     # cdylib output name and the file the C++ actually links against. On MSVC
     # that is the import lib, and the DLL has to sit next to the binary at
     # runtime; ELF/Mach-O link the shared object directly.
@@ -208,7 +222,7 @@ else()
     message(STATUS "mumble-plugin-host: building via cargo (${_ph_build_output})")
     add_custom_command(
         OUTPUT "${_ph_build_output}"
-        COMMAND ${_ph_cargo_launcher} ${CARGO_EXECUTABLE} build ${_ph_cargo_profile} -p mumble-plugin-host
+        COMMAND ${_ph_cargo_launcher} ${CARGO_EXECUTABLE} build ${_ph_cargo_profile} ${_ph_cargo_features} -p mumble-plugin-host
         WORKING_DIRECTORY "${MUMBLE_PLUGIN_HOST_DIR}"
         COMMENT "Building mumble-plugin-host Rust cdylib"
         VERBATIM
