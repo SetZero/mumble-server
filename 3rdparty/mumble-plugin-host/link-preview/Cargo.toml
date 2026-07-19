@@ -2,6 +2,8 @@
 name = "mumble-link-preview"
 version = "0.1.0"
 edition = "2021"
+# Internal to the plugin-host workspace; never published to crates.io.
+publish = false
 description = "Link/media preview plugin for Mumble - fetches metadata (oEmbed/OpenGraph/direct media), SSRF-gated, and server-side downscales preview images"
 license = "MIT"
 

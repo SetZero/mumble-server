@@ -14,7 +14,7 @@ mod modal;
 
 /// Marks a method as a slash-command handler.  Consumed by
 /// [`macro@fancy_plugin`] on the surrounding `impl` block, which uses
-/// the function signature to build a [`CommandDescriptor`] and to
+/// the function signature to build a `CommandDescriptor` and to
 /// generate the dispatch shim that extracts typed args from the
 /// inbound interaction payload.
 ///
@@ -32,12 +32,11 @@ mod modal;
 ///   a warning is emitted if neither is present.
 ///
 /// Parameter types must implement
-/// [`mumble_plugin_api::FromOption`].  `Option<T>` parameters become
+/// `mumble_plugin_api::FromOption`.  `Option<T>` parameters become
 /// `required: false` in the manifest; everything else is required.
 /// Each parameter's doc-comment (if any) becomes that option's
 /// description.
 ///
-/// [`CommandDescriptor`]: mumble_plugin_api::CommandDescriptor
 #[proc_macro_attribute]
 pub fn command(args: TokenStream, item: TokenStream) -> TokenStream {
     command::expand(args.into(), item.into())
@@ -69,9 +68,9 @@ pub fn command(args: TokenStream, item: TokenStream) -> TokenStream {
 /// * `(&self, values: Vec<String>)` - bound to all selected option
 ///   values (typical for multi-select menus).
 ///
-/// The matching builder side uses [`mumble_plugin_api::handler_id!`]
-/// to pull the auto-generated id into a [`mumble_plugin_api::Button`]
-/// or [`mumble_plugin_api::SelectMenu`] without manual stringly-typed
+/// The matching builder side uses `mumble_plugin_api::handler_id!`
+/// to pull the auto-generated id into a `mumble_plugin_api::Button`
+/// or `mumble_plugin_api::SelectMenu` without manual stringly-typed
 /// wiring.
 #[proc_macro_attribute]
 pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
@@ -85,7 +84,7 @@ pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
 /// derives a wire `custom_id` (`"<TypeName>::<method>"` unless
 /// overridden), a per-field id table, and a dispatch arm that
 /// extracts typed field values via
-/// [`mumble_plugin_api::FromField`].
+/// `mumble_plugin_api::FromField`.
 ///
 /// ```ignore
 /// #[modal]
@@ -100,10 +99,10 @@ pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Every modal parameter (other than `&self`) must be tagged
 /// `#[field]` and have a type implementing
-/// [`mumble_plugin_api::FromField`] (`String`, `Option<String>`).
+/// `mumble_plugin_api::FromField` (`String`, `Option<String>`).
 /// Field names on the wire come from the parameter idents.
 ///
-/// The matching builder side uses [`mumble_plugin_api::modal!`] to
+/// The matching builder side uses `mumble_plugin_api::modal!` to
 /// pull the auto-generated `custom_id` and field ids into a
 /// `ShowModal` response.
 #[proc_macro_attribute]
@@ -146,9 +145,9 @@ pub fn field(args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Arguments:
 /// * `name = "fancy-greeter"` or `name = MY_NAME_CONST` (required):
-///   the value returned from [`MumblePlugin::name`].
+///   the value returned from `MumblePlugin::name`.
 /// * `version = "1.2.3"` or `version = MY_VERSION_CONST` (optional):
-///   the value returned from [`MumblePlugin::version`].  Defaults to
+///   the value returned from `MumblePlugin::version`.  Defaults to
 ///   `env!("CARGO_PKG_VERSION")` of the calling crate.
 ///
 /// The macro requires that the impl block contains at most one
@@ -156,7 +155,6 @@ pub fn field(args: TokenStream, item: TokenStream) -> TokenStream {
 /// used to synthesise `info_json`).  If you already define `fn name`,
 /// `fn version`, or `fn info_json` by hand the macro errors out.
 ///
-/// [`MumblePlugin::name`]: mumble_plugin_api::MumblePlugin::name
 #[proc_macro_attribute]
 pub fn fancy_plugin(args: TokenStream, item: TokenStream) -> TokenStream {
     fancy_plugin::expand(args.into(), item.into())

@@ -2,6 +2,8 @@
 name = "mumble-plugin-api"
 version = "0.2.0"
 edition = "2021"
+# Internal to the plugin-host workspace; never published to crates.io.
+publish = false
 description = "Public, ABI-stable trait definitions for dynamically loadable Mumble server plugins"
 license = "MIT"
 

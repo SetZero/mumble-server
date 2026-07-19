@@ -2,6 +2,8 @@
 name = "mumble-live-doc"
 version = "0.1.0"
 edition = "2021"
+# Internal to the plugin-host workspace; never published to crates.io.
+publish = false
 description = "Collaborative Live Document plugin for Mumble - real-time co-editing via Yjs CRDT over WebSocket"
 license = "MIT"
 

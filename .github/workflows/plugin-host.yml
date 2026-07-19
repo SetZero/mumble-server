@@ -1,59 +1,109 @@
 name: plugin-host CI
 
+# Deliberately not restricted to main/master. The gates previously ran only on
+# those two branches, so all work on the 1.6.x line went ungated and clippy /
+# rustfmt breakage accumulated unnoticed for weeks. The path filter keeps this
+# cheap: it only fires when the Rust workspace (or this file) actually changes.
 on:
   push:
-    branches: [main, master]
     paths:
       - 3rdparty/mumble-plugin-host/**
+      - .github/workflows/plugin-host.yml
   pull_request:
     paths:
       - 3rdparty/mumble-plugin-host/**
+      - .github/workflows/plugin-host.yml
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# A newer push to the same ref makes the in-flight run obsolete.
+concurrency:
+  group: plugin-host-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: 3rdparty/mumble-plugin-host
+
 jobs:
-  ci:
-    name: Build & Test
+  # ---------------------------------------------------------------------------
+  # Formatting + lints. Fast, so it runs first and fails the PR early.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Format & Clippy
     runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: 3rdparty/mumble-plugin-host
-
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          # Read the pinned version from rust-toolchain.toml in this subdirectory.
-          toolchain: "1.95.0"
-          components: rustfmt, clippy
+      # No explicit toolchain here on purpose: rust-toolchain.toml pins the
+      # channel *and* the rustfmt/clippy components, so rustup installs exactly
+      # that. Naming a version in this file as well would let the two drift.
+      - name: Show toolchain
+        run: rustup show active-toolchain
 
-      - name: Cache cargo registry & build artefacts
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: 3rdparty/mumble-plugin-host
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # `host` enables wasm-plugins/wasm-wasi by default, so the
+      # `cfg(not(feature = ...))` fallbacks are never built by the run above and
+      # can rot silently. file-server's `fuzzing` feature is only reachable here.
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Clippy (no default features)
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+
+      - name: Rustdoc
+        # The workspace declares `broken_intra_doc_links = "deny"`, but that
+        # lint only fires when docs are actually built - which CI never did, so
+        # the links had been rotting silently. The obviously-mechanical breakage
+        # (links to crates that aren't dependencies, e.g. mumble_plugin_api from
+        # the proc-macro crate, which cannot be depended on without a cycle) is
+        # fixed. 13 findings remain across api/file-server/live-doc that need
+        # case-by-case calls - notably four "public docs link to a private item",
+        # where the right fix may be to make the item public rather than to drop
+        # the link. Advisory until those are triaged; then delete this line.
+        continue-on-error: true
+        run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # ---------------------------------------------------------------------------
+  # Build + test.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show toolchain
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 3rdparty/mumble-plugin-host
 
       - name: Build (debug)
-        run: cargo build --all-targets
+        run: cargo build --workspace --all-targets
 
       - name: Test
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features
 
       - name: Build release
         run: cargo build --release
 
       - name: Upload plugin cdylibs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mumble-plugin-host-release
           path: |
@@ -68,3 +118,113 @@ jobs:
             3rdparty/mumble-plugin-host/target/release/libmumble_live_doc.dylib
             3rdparty/mumble-plugin-host/host/include/mumble_plugin_host.h
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Dependency policy: RUSTSEC advisories, licences, banned/duplicate crates.
+  # The server pulls wasmtime, reqwest, rustls, zip and tar, so advisories here
+  # matter more than anywhere else in the tree.
+  # ---------------------------------------------------------------------------
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Policy gates: these pass today, so they block.
+      #   bans:     wildcard/banned crates (duplicates only warn)
+      #   licenses: allow-list compliance
+      #   sources:  crates.io only
+      - name: Policy (bans, licenses, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: 3rdparty/mumble-plugin-host/Cargo.toml
+          command: check bans licenses sources
+
+      # RUSTSEC advisories are reported separately and do NOT block yet.
+      #
+      # The workspace pins wasmtime/wasmtime-wasi 27.0.0, which currently has 18
+      # open advisories - including two sandbox escapes (RUSTSEC aarch64
+      # Cranelift miscompilation and the Winch backend memory access) plus
+      # several host panics reachable from guest code. Fixing them means moving
+      # to wasmtime >= 45, a major upgrade with API breakage, so it cannot be a
+      # drive-by change. This step is deliberately visible-but-advisory so the
+      # rest of the pipeline stays usable while that upgrade is scheduled.
+      #
+      # Once wasmtime is upgraded, delete continue-on-error so regressions block.
+      - name: Advisories (RUSTSEC)
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: 3rdparty/mumble-plugin-host/Cargo.toml
+          command: check advisories
+
+  # ---------------------------------------------------------------------------
+  # Miri: real UB detection for the unsafe FFI surface.
+  #
+  # Scope is deliberately narrow. Miri interprets MIR and cannot execute FFI,
+  # dlopen or wasmtime, so it runs only on crates whose tests are pure Rust.
+  # Non-blocking for now: this is a new gate, and a Miri finding needs triage
+  # rather than an immediate red build. Drop continue-on-error once it has been
+  # green for a while.
+  # ---------------------------------------------------------------------------
+  miri:
+    name: Miri (unsafe UB check)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 3rdparty/mumble-plugin-host
+
+      - name: Miri setup
+        run: cargo +nightly miri setup
+
+      - name: Miri (pure-Rust crates)
+        # -Zmiri-disable-isolation lets tests read the clock; without it
+        # anything touching time aborts under Miri.
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: |
+          cargo +nightly miri test -p mumble-plugin-api
+          cargo +nightly miri test -p mumble-calendar
+          cargo +nightly miri test -p mumble-friends
+
+  # ---------------------------------------------------------------------------
+  # Fuzz targets. Seven targets exist under fuzz/, but the crate is excluded
+  # from the workspace and had no CI, so they were never even compiled and
+  # silently rotted. Build them every time and run a short smoke pass - enough
+  # to catch a target that panics immediately or no longer matches the API it
+  # exercises, without turning CI into a fuzzing rig.
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: Fuzz targets (build + smoke)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 3rdparty/mumble-plugin-host
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Build all fuzz targets
+        run: cargo +nightly fuzz build
+
+      - name: Smoke-run each target
+        run: |
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::fuzz $target"
+            cargo +nightly fuzz run "$target" -- -max_total_time=30
+            echo "::endgroup::"
+          done

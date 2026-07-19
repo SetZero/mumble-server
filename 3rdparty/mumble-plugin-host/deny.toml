@@ -1,0 +1,81 @@
+# cargo-deny policy for the plugin-host workspace.
+#
+# This server loads third-party plugins and pulls in wasmtime, reqwest, rustls,
+# zip and tar, so dependency hygiene matters more here than anywhere else in the
+# tree. Run locally with:
+#
+#     cargo deny check advisories bans licenses sources
+
+[graph]
+all-features = true
+
+# ---------------------------------------------------------------------------
+# Security advisories (RUSTSEC)
+# ---------------------------------------------------------------------------
+[advisories]
+yanked = "deny"
+# Intentionally empty. See the note on the advisories step in
+# .github/workflows/plugin-host.yml: the workspace currently has open
+# advisories in wasmtime/wasmtime-wasi 27.0.0 (including two sandbox escapes)
+# that need a real version bump rather than a suppression. Add entries here only
+# with a justification and a tracking issue.
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licences
+# ---------------------------------------------------------------------------
+[licenses]
+# Everything currently in the graph is permissive except the exceptions below.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+# MPL-2.0 is file-level copyleft and both users are build-time/internal only:
+# cbindgen runs in build.rs and generational-arena is a wasmtime transitive.
+# LGPL only enters via r-efi, a UEFI target-support crate that is not linked
+# into the binaries we ship for Linux/Windows/macOS.
+exceptions = [
+    { name = "r-efi", allow = ["LGPL-2.1-or-later"] },
+]
+
+# ---------------------------------------------------------------------------
+# Banned / duplicate crates
+# ---------------------------------------------------------------------------
+[bans]
+# Duplicate versions are common in a graph this size (wasmtime and reqwest pull
+# different majors of the same crates), so warn rather than fail; the value here
+# is visibility of the drift, not a hard gate.
+multiple-versions = "warn"
+# Wildcard requirements from crates.io are a real hazard, but the workspace's
+# own crates depend on each other by path with a `*` version, which is the
+# normal pattern for an unpublished workspace. Keep the gate, exempt path deps.
+wildcards = "deny"
+allow-wildcard-paths = true
+# Prefer a single TLS stack: pulling in native-tls alongside rustls would mean
+# two independent certificate verifiers with different trust behaviour.
+deny = [
+    { name = "openssl-sys", reason = "the tree standardises on rustls; adding OpenSSL would mean two TLS stacks" },
+    { name = "native-tls", reason = "the tree standardises on rustls" },
+]
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+[sources]
+# Anything not from crates.io has to be added deliberately.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
