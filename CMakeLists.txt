@@ -62,7 +62,12 @@ option(symbols "Build binaries in a way that allows easier debugging." OFF)
 option(warnings-as-errors "All warnings are treated as errors." ON)
 option(use-timestamps "Allow using compile-time timestamps" ON)
 
-option(client "Build the client (Mumble)" ON)
+# Fancy Mumble ships the server plus its own Tauri client, not the upstream C++
+# desktop client, and has not implemented the client side of its protocol
+# extensions (the ~55 Fancy/Pchat message handlers). The C++ client is therefore
+# OFF by default; pass -Dclient=ON to build it (and expect unresolved
+# MainWindow::msg* handlers until those are implemented).
+option(client "Build the client (Mumble)" OFF)
 option(server "Build the server (Murmur)" ON)
 option(packaging "Build package." OFF)
 option(tests "Build tests." ${packaging})

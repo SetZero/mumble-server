@@ -12,23 +12,6 @@ use mumble_plugin_api::{
     ChannelId, PluginContext, PluginError, PluginMessageOut, PluginResult, ServerId, SessionId,
 };
 
-/// Signature of [`PluginHostCallbacks::create_channel`].
-type CreateChannelFn = unsafe extern "C" fn(
-    user_data: *mut c_void,
-    server_id: u32,
-    parent: u32,
-    name: *const c_char,
-    hidden: bool,
-    registered_can_manage: bool,
-    detached: bool,
-    pchat_protocol: u32,
-    expiry_mode: u32,
-    expiry_duration_secs: u32,
-    invitee_uids: *const u32,
-    invitee_len: usize,
-    out_channel: *mut u32,
-) -> bool;
-
 /// C-callable callback table the server fills in and passes to
 /// [`crate::ffi::plugin_host_create`].
 ///
@@ -207,7 +190,31 @@ pub struct PluginHostCallbacks {
     /// Create a sub-channel under `parent` (or return an existing same-named
     /// child) with standard, content-agnostic channel properties, writing the
     /// channel id through `out_channel`.  Returns `true` on success.
-    pub create_channel: Option<CreateChannelFn>,
+    // The inline function-pointer type must stay inline: cbindgen only emits a
+    // valid C nullable function pointer when it can see the signature here. A
+    // `type` alias makes it generate an incomplete `Option_<Alias>` struct that
+    // breaks the C header. So keep the signature inline and silence the lint.
+    #[allow(
+        clippy::type_complexity,
+        reason = "FFI ABI function-pointer field; cbindgen needs the inline signature to emit a valid C header"
+    )]
+    pub create_channel: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            server_id: u32,
+            parent: u32,
+            name: *const c_char,
+            hidden: bool,
+            registered_can_manage: bool,
+            detached: bool,
+            pchat_protocol: u32,
+            expiry_mode: u32,
+            expiry_duration_secs: u32,
+            invitee_uids: *const u32,
+            invitee_len: usize,
+            out_channel: *mut u32,
+        ) -> bool,
+    >,
 
     /// Grant registered `user_id` access to private `channel`.  Returns `true`
     /// on success.

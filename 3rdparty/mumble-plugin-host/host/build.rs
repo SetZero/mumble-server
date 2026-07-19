@@ -20,6 +20,10 @@ fn main() {
             let _ = bindings.write_to_file(&out_path);
             println!("cargo:rerun-if-changed=src/lib.rs");
             println!("cargo:rerun-if-changed=src/ffi.rs");
+            // context.rs defines PluginHostCallbacks (the C callback table), so
+            // it must retrigger header regeneration too; otherwise an edit there
+            // leaves a stale header and breaks the C++ build.
+            println!("cargo:rerun-if-changed=src/context.rs");
             println!("cargo:rerun-if-changed=cbindgen.toml");
             // Also publish the header alongside the cdylib for the C++ build.
             let publish = PathBuf::from(&crate_dir)
