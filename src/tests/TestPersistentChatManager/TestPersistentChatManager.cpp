@@ -22,7 +22,9 @@
 
 #include "Mumble.pb.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -224,7 +226,20 @@ class MockRateLimiter : public pchat::IRateLimiter {
 public:
 	bool allowAll = true;
 
-	bool allow(const std::string & /*key*/, const std::string & /*operation*/) override { return allowAll; }
+	/// Operations denied even while `allowAll` is true. Lets a test exhaust a
+	/// single bucket (e.g. "reaction") and assert the others are unaffected.
+	std::set< std::string > deniedOperations;
+
+	/// Every operation the manager consulted, in call order.
+	std::vector< std::string > seenOperations;
+
+	bool allow(const std::string & /*key*/, const std::string &operation) override {
+		seenOperations.push_back(operation);
+		if (deniedOperations.find(operation) != deniedOperations.end()) {
+			return false;
+		}
+		return allowAll;
+	}
 	void reset(const std::string & /*key*/) override {}
 };
 
@@ -295,6 +310,29 @@ private:
 		msg.set_envelope("encrypted-payload");
 		msg.set_timestamp(static_cast< uint64_t >(m_bridge->currentTimeMs));
 		return msg;
+	}
+
+	/// Helper: build a valid PchatReaction (unicode thumbs-up) for the default session.
+	MumbleProto::PchatReaction makeReaction(const std::string &grapheme = "\xF0\x9F\x91\x8D",
+										   const std::string &msgId    = "msg-001") {
+		MumbleProto::PchatReaction r;
+		r.set_channel_id(42);
+		r.set_message_id(msgId);
+		r.set_action(MumbleProto::REACTION_ADD);
+		r.set_sender_hash("abc123");
+		r.mutable_unicode_emoji()->set_grapheme(grapheme);
+		r.set_timestamp(static_cast< uint64_t >(m_bridge->currentTimeMs));
+		return r;
+	}
+
+	/// Helper: build a valid PchatPin for the default session.
+	MumbleProto::PchatPin makePin(const std::string &msgId = "msg-001") {
+		MumbleProto::PchatPin p;
+		p.set_channel_id(42);
+		p.set_message_id(msgId);
+		p.set_sender_hash("abc123");
+		p.set_timestamp(static_cast< uint64_t >(m_bridge->currentTimeMs));
+		return p;
 	}
 
 	/// Helper: make session 10 pass the key-possession challenge for channel 42.
@@ -402,6 +440,27 @@ private slots:
 
 	void senderKeyDistribution_deliveredToLateJoiner();
 	void senderKeyDistribution_notEchoedToOwnSender();
+
+	// ---- Reaction gating ----
+
+	void reaction_rejectedWhenDisabled();
+	void reaction_rejectedWithoutEnterPermission();
+	void reaction_rejectedWhenUnverifiedOnPersistentChannel();
+	void reaction_rejectedWhenRateLimited();
+	void reaction_rejectedWhenEmojiTooLarge();
+	void reaction_broadcastWhenAllGatesPass();
+
+	// ---- Pin gating ----
+
+	void pin_rejectedWhenDisabled();
+	void pin_rejectedWithoutEnterPermission();
+	void pin_rejectedWhenUnverifiedOnPersistentChannel();
+	void pin_rejectedWhenRateLimited();
+	void pin_broadcastWhenAllGatesPass();
+
+	// ---- Rate-limit buckets ----
+
+	void reactionAndPin_useDedicatedRateLimitBuckets();
 };
 
 // ---- handlePchatMessage tests ----
@@ -416,6 +475,9 @@ void TestPersistentChatManager::handlePchatMessage_rejectsWhenDisabled() {
 	QVERIFY(m_bridge->sentAcks.empty()); // silently ignored
 }
 
+// A dropped message must still be acked: the sender renders it optimistically,
+// so without a REJECTED ack it looks delivered to them while nobody else ever
+// receives it.
 void TestPersistentChatManager::handlePchatMessage_rejectsUnregisteredWhenRequired() {
 	pchat::PersistentChatManager::Config cfg;
 	cfg.requireRegistration = true;
@@ -424,7 +486,16 @@ void TestPersistentChatManager::handlePchatMessage_rejectsUnregisteredWhenRequir
 	m_bridge->registeredUsers[10] = false;
 
 	m_mgr->handlePchatMessage(10, makeValidMessage());
-	QVERIFY(m_bridge->sentAcks.empty()); // silently ignored
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].first, static_cast< unsigned int >(10));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_REJECTED);
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("registration_required"));
+	// The rejection must name the message so the client can mark that specific
+	// pending message failed.
+	QCOMPARE(m_bridge->sentAcks[0].second.message_ids_size(), 1);
+	QCOMPARE(m_bridge->sentAcks[0].second.message_ids(0), std::string("msg-001"));
+	// Nothing may be relayed to the channel.
+	QVERIFY(m_bridge->sentDelivers.empty());
 }
 
 void TestPersistentChatManager::handlePchatMessage_rejectsSenderHashMismatch() {
@@ -851,7 +922,15 @@ void TestPersistentChatManager::handlePchatMessage_rateLimited() {
 	m_limiter->allowAll = false;
 
 	m_mgr->handlePchatMessage(10, makeValidMessage());
-	QVERIFY(m_bridge->sentAcks.empty()); // silently dropped
+	// Rate-limited sends are rejected, not silently dropped, so the sender can
+	// back off and retry instead of showing a message that never arrived.
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].first, static_cast< unsigned int >(10));
+	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_REJECTED);
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("rate_limited"));
+	QCOMPARE(m_bridge->sentAcks[0].second.message_ids_size(), 1);
+	QCOMPARE(m_bridge->sentAcks[0].second.message_ids(0), std::string("msg-001"));
+	QVERIFY(m_bridge->sentDelivers.empty());
 }
 
 // ---- Channel removal cleanup ----
@@ -1258,6 +1337,178 @@ void TestPersistentChatManager::senderKeyDistribution_notEchoedToOwnSender() {
 		QVERIFY2(!(pair.first == 10 && pair.second.sender_hash() == "abc123"),
 				 "a session must not receive its own sender key");
 	}
+}
+
+// ---- Reaction gating ----
+//
+// Reactions used to be completely ungated: any connected session could react in
+// any persistent channel, including ones it cannot enter, with unthrottled DB
+// writes and channel-wide broadcast amplification. Each test below pins one of
+// the gates that now stands in the way.
+
+void TestPersistentChatManager::reaction_rejectedWhenDisabled() {
+	pchat::PersistentChatManager::Config cfg;
+	cfg.enabled = false;
+	setupManager(cfg);
+	setupDefaultSession();
+
+	m_mgr->handlePchatReaction(10, makeReaction());
+	QVERIFY(m_bridge->broadcastedReactionDelivers.empty());
+}
+
+void TestPersistentChatManager::reaction_rejectedWithoutEnterPermission() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+	// Verified for the channel, but no longer allowed to enter it.
+	m_bridge->enterPerms[10] = false;
+
+	m_mgr->handlePchatReaction(10, makeReaction());
+	QVERIFY(m_bridge->broadcastedReactionDelivers.empty());
+}
+
+void TestPersistentChatManager::reaction_rejectedWhenUnverifiedOnPersistentChannel() {
+	setupManager();
+	setupDefaultSession();
+	// Channel 42 is persistent and session 10 never passed the key challenge.
+	QVERIFY(!m_mgr->isSessionVerified(42, 10));
+
+	m_mgr->handlePchatReaction(10, makeReaction());
+	QVERIFY(m_bridge->broadcastedReactionDelivers.empty());
+}
+
+void TestPersistentChatManager::reaction_rejectedWhenRateLimited() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+	m_limiter->deniedOperations.insert("reaction");
+
+	m_mgr->handlePchatReaction(10, makeReaction());
+	QVERIFY(m_bridge->broadcastedReactionDelivers.empty());
+}
+
+void TestPersistentChatManager::reaction_rejectedWhenEmojiTooLarge() {
+	setupManager();
+	setupDefaultSession();
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	passChallenge(10, 42);
+
+	// 65 bytes: one past the cap. A real grapheme cluster or shortcode is tens
+	// of bytes at most, so anything larger is garbage that would be stored and
+	// rebroadcast verbatim.
+	m_mgr->handlePchatReaction(10, makeReaction(std::string(65, 'A')));
+	QVERIFY(m_bridge->broadcastedReactionDelivers.empty());
+
+	// The 64-byte boundary itself is still accepted.
+	m_mgr->handlePchatReaction(10, makeReaction(std::string(64, 'A')));
+	QCOMPARE(m_bridge->broadcastedReactionDelivers.size(), static_cast< size_t >(1));
+}
+
+void TestPersistentChatManager::reaction_broadcastWhenAllGatesPass() {
+	setupManager();
+	setupDefaultSession();
+	// Store a real target message first, then verify, so this exercises the
+	// realistic path rather than reacting to a message that never existed.
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	passChallenge(10, 42);
+
+	m_mgr->handlePchatReaction(10, makeReaction());
+
+	QCOMPARE(m_bridge->broadcastedReactionDelivers.size(), static_cast< size_t >(1));
+	const auto &broadcast = m_bridge->broadcastedReactionDelivers[0];
+	QCOMPARE(broadcast.first, static_cast< unsigned int >(42));
+	QCOMPARE(broadcast.second.message_id(), std::string("msg-001"));
+	QCOMPARE(broadcast.second.sender_hash(), std::string("abc123"));
+	QCOMPARE(broadcast.second.action(), MumbleProto::REACTION_ADD);
+	QCOMPARE(broadcast.second.unicode_emoji().grapheme(), std::string("\xF0\x9F\x91\x8D"));
+}
+
+// ---- Pin gating ----
+//
+// Pins carry the same risk profile as reactions: they are stored and broadcast
+// channel-wide, so they sit behind the same enter/verify/rate-limit gates.
+
+void TestPersistentChatManager::pin_rejectedWhenDisabled() {
+	pchat::PersistentChatManager::Config cfg;
+	cfg.enabled = false;
+	setupManager(cfg);
+	setupDefaultSession();
+
+	m_mgr->handlePchatPin(10, makePin());
+	QVERIFY(m_bridge->broadcastedPinDelivers.empty());
+}
+
+void TestPersistentChatManager::pin_rejectedWithoutEnterPermission() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+	m_bridge->enterPerms[10] = false;
+
+	m_mgr->handlePchatPin(10, makePin());
+	QVERIFY(m_bridge->broadcastedPinDelivers.empty());
+}
+
+void TestPersistentChatManager::pin_rejectedWhenUnverifiedOnPersistentChannel() {
+	setupManager();
+	setupDefaultSession();
+	QVERIFY(!m_mgr->isSessionVerified(42, 10));
+
+	m_mgr->handlePchatPin(10, makePin());
+	QVERIFY(m_bridge->broadcastedPinDelivers.empty());
+}
+
+void TestPersistentChatManager::pin_rejectedWhenRateLimited() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+	m_limiter->deniedOperations.insert("pin");
+
+	m_mgr->handlePchatPin(10, makePin());
+	QVERIFY(m_bridge->broadcastedPinDelivers.empty());
+}
+
+void TestPersistentChatManager::pin_broadcastWhenAllGatesPass() {
+	setupManager();
+	setupDefaultSession();
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	passChallenge(10, 42);
+
+	m_mgr->handlePchatPin(10, makePin());
+
+	QCOMPARE(m_bridge->broadcastedPinDelivers.size(), static_cast< size_t >(1));
+	const auto &broadcast = m_bridge->broadcastedPinDelivers[0];
+	QCOMPARE(broadcast.first, static_cast< unsigned int >(42));
+	QCOMPARE(broadcast.second.message_id(), std::string("msg-001"));
+	QCOMPARE(broadcast.second.pinner_hash(), std::string("abc123"));
+	QVERIFY(!broadcast.second.unpin());
+}
+
+// ---- Rate-limit buckets ----
+
+// Reactions and pins draw on their own token buckets, so exhausting one must
+// not throttle the other (and neither may fall back to the "msg" bucket).
+void TestPersistentChatManager::reactionAndPin_useDedicatedRateLimitBuckets() {
+	setupManager();
+	setupDefaultSession();
+	m_mgr->handlePchatMessage(10, makeValidMessage());
+	passChallenge(10, 42);
+	m_limiter->seenOperations.clear();
+
+	// Exhaust only the reaction bucket.
+	m_limiter->deniedOperations.insert("reaction");
+
+	m_mgr->handlePchatReaction(10, makeReaction());
+	m_mgr->handlePchatPin(10, makePin());
+
+	// The reaction was throttled; the pin went through on its own budget.
+	QVERIFY(m_bridge->broadcastedReactionDelivers.empty());
+	QCOMPARE(m_bridge->broadcastedPinDelivers.size(), static_cast< size_t >(1));
+
+	// Each handler consulted its own named bucket.
+	const auto &seen = m_limiter->seenOperations;
+	QVERIFY(std::find(seen.begin(), seen.end(), std::string("reaction")) != seen.end());
+	QVERIFY(std::find(seen.begin(), seen.end(), std::string("pin")) != seen.end());
+	QVERIFY(std::find(seen.begin(), seen.end(), std::string("msg")) == seen.end());
 }
 
 QTEST_MAIN(TestPersistentChatManager)
