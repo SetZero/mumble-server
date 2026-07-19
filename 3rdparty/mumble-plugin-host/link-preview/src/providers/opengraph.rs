@@ -1,4 +1,4 @@
-//! OpenGraph / HTML metadata provider.
+//! `OpenGraph` / HTML metadata provider.
 //!
 //! Parsing is delegated to the [`webpage`] crate (HTML5 parser); we only fetch
 //! the page ourselves through the SSRF-gated client and map `webpage`'s parsed
@@ -228,7 +228,7 @@ fn meta_get<'a>(meta: &'a HashMap<String, String>, keys: &[&str]) -> Option<&'a 
         .find(|v| !v.is_empty())
 }
 
-/// Look up an OpenGraph/meta value, checking both `webpage`'s OpenGraph
+/// Look up an OpenGraph/meta value, checking both `webpage`'s `OpenGraph`
 /// properties (which store keys with the `og:` prefix stripped) and the raw
 /// meta map (full key), for each candidate in order.
 fn og<'a>(html: &'a HTML, keys: &[&str]) -> Option<&'a str> {
@@ -250,7 +250,7 @@ fn og<'a>(html: &'a HTML, keys: &[&str]) -> Option<&'a str> {
     None
 }
 
-/// Resolve a media dimension from the OpenGraph object's own properties first,
+/// Resolve a media dimension from the `OpenGraph` object's own properties first,
 /// then a raw meta fallback.
 fn og_dim(props: &HashMap<String, String>, meta: &HashMap<String, String>, meta_key: &str) -> Option<i32> {
     props
@@ -340,6 +340,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
     use super::*;
 
     fn parse(html: &str, url: &str) -> Embed {

@@ -94,7 +94,7 @@ pub struct Embed {
 
 impl Embed {
     /// True when the embed lacks both a description and a summary and would
-    /// benefit from a secondary OpenGraph enrichment fetch (mirrors the C++
+    /// benefit from a secondary `OpenGraph` enrichment fetch (mirrors the C++
     /// `LinkPreviewManager::needsOgEnrichment`).
     #[must_use]
     pub fn needs_og_enrichment(&self) -> bool {
@@ -165,13 +165,12 @@ pub struct Field {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
     use super::*;
 
     #[test]
     fn embed_omits_absent_optionals() {
-        let mut e = Embed::default();
-        e.url = Some("https://example.com".into());
-        e.title = Some("Example".into());
+        let e = Embed { url: Some("https://example.com".into()), title: Some("Example".into()), ..Embed::default() };
         let json = serde_json::to_value(&e).expect("serialize");
         let obj = json.as_object().expect("object");
         // Only the set keys appear; the packer probes with contains().
@@ -184,8 +183,7 @@ mod tests {
 
     #[test]
     fn type_serializes_as_type_key() {
-        let mut e = Embed::default();
-        e.kind = Some("article".into());
+        let e = Embed { kind: Some("article".into()), ..Embed::default() };
         let json = serde_json::to_value(&e).expect("serialize");
         assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("article"));
     }

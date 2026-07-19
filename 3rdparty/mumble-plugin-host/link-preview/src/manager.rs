@@ -1,6 +1,6 @@
 //! Orchestration: validate + rate-limit a request, run each URL through the
-//! provider chain (direct-media -> oEmbed -> OpenGraph), enrich with an
-//! OpenGraph description fallback and server-side downscaled media previews,
+//! provider chain (direct-media -> oEmbed -> `OpenGraph`), enrich with an
+//! `OpenGraph` description fallback and server-side downscaled media previews,
 //! cache raw provider results, and assemble the response. Port of
 //! `LinkPreviewManager.cpp`.
 
@@ -186,7 +186,7 @@ impl Manager {
 }
 
 /// Provider chain in priority order: direct-media (5) -> oEmbed (10) ->
-/// OpenGraph (1000). First success wins.
+/// `OpenGraph` (1000). First success wins.
 async fn fetch_via_chain(client: &reqwest::Client, url: &Url) -> Option<Embed> {
     if direct_media::can_handle(url) {
         if let Some(e) = direct_media::fetch_preview(client, url).await {
@@ -201,7 +201,7 @@ async fn fetch_via_chain(client: &reqwest::Client, url: &Url) -> Option<Embed> {
     opengraph::fetch_preview(client, url).await
 }
 
-/// Fill empty fields of `target` from an OpenGraph `og` embed (mirrors
+/// Fill empty fields of `target` from an `OpenGraph` `og` embed (mirrors
 /// `LinkPreviewManager::mergeOgIntoTarget`).
 fn merge_og(target: &mut Embed, og: Embed) {
     fn fill(t: &mut Option<String>, s: Option<String>) {

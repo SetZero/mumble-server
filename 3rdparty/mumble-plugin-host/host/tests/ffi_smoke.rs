@@ -14,6 +14,7 @@
 use abi_stable as _;
 use flate2 as _;
 use mumble_plugin_api as _;
+use rand as _;
 use serde as _;
 use serde_json as _;
 use sha2 as _;

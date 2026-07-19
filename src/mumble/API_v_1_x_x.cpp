@@ -9,6 +9,7 @@
 #include "Channel.h"
 #include "ClientUser.h"
 #include "Database.h"
+#include "MumbleDeprecation.h"
 #include "Log.h"
 #include "MainWindow.h"
 #include "MumbleConstants.h"
@@ -1550,6 +1551,9 @@ void MumbleAPI::sendData_v_1_0_x(mumble_plugin_id_t callerID, mumble_connection_
 		EXIT_WITH(MUMBLE_EC_DATA_ID_TOO_LONG);
 	}
 
+	// PluginDataTransmission is proto-deprecated (superseded by PluginMessage) but
+	// the plugin API still emits it for backward compatibility with older servers.
+	MUMBLE_DEPRECATED_PUSH
 	MumbleProto::PluginDataTransmission mpdt;
 	mpdt.set_sendersession(Global::get().uiSession);
 
@@ -1565,6 +1569,7 @@ void MumbleAPI::sendData_v_1_0_x(mumble_plugin_id_t callerID, mumble_connection_
 
 	mpdt.set_data(data, dataLength);
 	mpdt.set_dataid(dataID);
+	MUMBLE_DEPRECATED_POP
 
 	if (Global::get().sh) {
 		if (Global::get().sh->m_version < Version::fromComponents(1, 4, 0)) {

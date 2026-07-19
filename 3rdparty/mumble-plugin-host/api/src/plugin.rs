@@ -2,10 +2,16 @@
 // `#[sabi_trait]` generates a trait-object forwarder for `PluginContext` that
 // calls the now-deprecated `send_plugin_data`, producing an unavoidable
 // in-crate deprecation warning. Allow it here so the deprecation remains a
-// signal for external callers without dirtying our own build.
+// signal for external callers without dirtying our own build. The same
+// forwarder also aggregates every trait method into one dispatch function,
+// which trips `too_many_arguments`; that's macro output, not our API shape.
 #![allow(
     deprecated,
     reason = "sabi_trait's generated PluginContext forwarder calls the deprecated send_plugin_data; deprecation targets external callers"
+)]
+#![allow(
+    clippy::too_many_arguments,
+    reason = "sabi_trait's generated PluginContext forwarder aggregates every trait method's parameters into one function"
 )]
 
 use abi_stable::{

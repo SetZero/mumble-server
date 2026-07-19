@@ -141,6 +141,7 @@ pub fn build_http_client(timeout: Duration) -> reqwest::Client {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
     use super::*;
 
     fn ip(s: &str) -> IpAddr {

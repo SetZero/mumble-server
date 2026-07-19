@@ -1,4 +1,4 @@
-//! oEmbed provider (priority between direct-media and OpenGraph). A static table
+//! oEmbed provider (priority between direct-media and `OpenGraph`). A static table
 //! of known providers maps a URL regex to an oEmbed endpoint; the JSON response
 //! is normalised to the embed contract. Port of `OEmbedPlugin.cpp` +
 //! `LinkPreviewManager::initDefaultPlugins`.
@@ -19,7 +19,7 @@ pub struct Provider {
     pub name: &'static str,
     pattern: Regex,
     endpoint: &'static str,
-    /// Optional URL rewrite for the OpenGraph enrichment fallback (e.g. Reddit
+    /// Optional URL rewrite for the `OpenGraph` enrichment fallback (e.g. Reddit
     /// www -> old, which serves SSR HTML with og: tags).
     og_url_transform: Option<fn(&Url) -> Url>,
 }
@@ -31,6 +31,10 @@ impl std::fmt::Debug for Provider {
 }
 
 impl Provider {
+    #[allow(
+        clippy::expect_used,
+        reason = "only called with hardcoded regex literals in the static PROVIDERS table below"
+    )]
     fn new(name: &'static str, pattern: &str, endpoint: &'static str) -> Self {
         Self {
             name,
@@ -161,6 +165,7 @@ fn oembed_to_embed(o: &serde_json::Map<String, serde_json::Value>, original: &Ur
     Some(embed)
 }
 
+#[allow(clippy::expect_used, reason = "hardcoded regex literal, cannot fail to compile")]
 static IFRAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)<iframe[^>]+src\s*=\s*"([^"]+)""#).expect("iframe regex"));
 
@@ -173,6 +178,7 @@ fn extract_iframe_src(html: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests panic on failure")]
     use super::*;
 
     #[test]

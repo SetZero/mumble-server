@@ -12,6 +12,23 @@ use mumble_plugin_api::{
     ChannelId, PluginContext, PluginError, PluginMessageOut, PluginResult, ServerId, SessionId,
 };
 
+/// Signature of [`PluginHostCallbacks::create_channel`].
+type CreateChannelFn = unsafe extern "C" fn(
+    user_data: *mut c_void,
+    server_id: u32,
+    parent: u32,
+    name: *const c_char,
+    hidden: bool,
+    registered_can_manage: bool,
+    detached: bool,
+    pchat_protocol: u32,
+    expiry_mode: u32,
+    expiry_duration_secs: u32,
+    invitee_uids: *const u32,
+    invitee_len: usize,
+    out_channel: *mut u32,
+) -> bool;
+
 /// C-callable callback table the server fills in and passes to
 /// [`crate::ffi::plugin_host_create`].
 ///
@@ -190,23 +207,7 @@ pub struct PluginHostCallbacks {
     /// Create a sub-channel under `parent` (or return an existing same-named
     /// child) with standard, content-agnostic channel properties, writing the
     /// channel id through `out_channel`.  Returns `true` on success.
-    pub create_channel: Option<
-        unsafe extern "C" fn(
-            user_data: *mut c_void,
-            server_id: u32,
-            parent: u32,
-            name: *const c_char,
-            hidden: bool,
-            registered_can_manage: bool,
-            detached: bool,
-            pchat_protocol: u32,
-            expiry_mode: u32,
-            expiry_duration_secs: u32,
-            invitee_uids: *const u32,
-            invitee_len: usize,
-            out_channel: *mut u32,
-        ) -> bool,
-    >,
+    pub create_channel: Option<CreateChannelFn>,
 
     /// Grant registered `user_id` access to private `channel`.  Returns `true`
     /// on success.

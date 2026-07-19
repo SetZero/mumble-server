@@ -16,6 +16,7 @@
 #include "Server.h"
 #include "PluginHostManager.h"
 #include "LinkPreviewBridge.h"
+#include "MumbleDeprecation.h"
 #include "ServerUser.h"
 #include "Totp.h"
 #include "User.h"
@@ -252,9 +253,12 @@ static void serializeChannelTreeState(MumbleProto::ChannelState &mpcs, Channel *
 			mpcs.add_pchat_key_custodians(u8(kc));
 	}
 
-	// Enter restrictions (legacy booleans + the Fancy attribute set).
+	// Enter restrictions (legacy booleans + the Fancy attribute set). The
+	// booleans are proto-deprecated but still sent for legacy clients.
+	MUMBLE_DEPRECATED_PUSH
 	mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
 	mpcs.set_can_enter(recipient->hasPermission(c, ChanACL::Enter));
+	MUMBLE_DEPRECATED_POP
 	serializeChannelAttributes(mpcs, c, recipient);
 }
 
@@ -327,7 +331,10 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 				continue;
 			}
 			mpcs.set_channel_id(static_cast< unsigned int >(chan->iId));
+			// Proto-deprecated legacy boolean, still sent for legacy clients.
+			MUMBLE_DEPRECATED_PUSH
 			mpcs.set_can_enter(uSource->hasPermission(chan, ChanACL::Enter));
+			MUMBLE_DEPRECATED_POP
 			serializeChannelAttributes(mpcs, chan, uSource);
 			// As no ACLs have changed, we don't need to update the is_access_restricted message field
 
@@ -1649,7 +1656,11 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			return;
 		}
 
+		// msg.temporary() is proto-deprecated (superseded by the attribute set)
+		// but legacy clients still send it on channel creation.
+		MUMBLE_DEPRECATED_PUSH
 		ChanACL::Perm perm = msg.temporary() ? ChanACL::MakeTempChannel : ChanACL::MakeChannel;
+		MUMBLE_DEPRECATED_POP
 		if (!uSource->hasPermission(p, perm)) {
 			PERM_DENIED(uSource, p, perm);
 			return;
@@ -1665,7 +1676,9 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			return;
 		}
 
+		MUMBLE_DEPRECATED_PUSH
 		c = createNewChannel(p, qsName, msg.temporary(), msg.position(), msg.max_users());
+		MUMBLE_DEPRECATED_POP
 		hashAssign(c->qsDesc, c->qbaDescHash, qsDesc);
 
 		if (msg.has_pchat_protocol()) {
@@ -2319,7 +2332,12 @@ void Server::dispatchPushNotifications(ServerUser *sender, const std::set< uint3
 		}
 	}
 
-	for (const auto &[certHash, reg] : std::as_const(m_pushRegistrations).asKeyValueRange()) {
+	// Classic const_iterator loop rather than asKeyValueRange(): the const-qualified
+	// overload of the latter only exists on Qt >= 6.4, and the CI's ubuntu-22.04
+	// (shared) leg ships an older Qt.
+	for (auto it = m_pushRegistrations.constBegin(); it != m_pushRegistrations.constEnd(); ++it) {
+		const QString &certHash             = it.key();
+		const PushRegistration &reg         = it.value();
 		if (certHash == sender->qsHash) {
 			log(sender, QString("push: skip %1 (sender)").arg(certHash.left(8) + "..."));
 			continue;
@@ -2679,8 +2697,11 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 			if (c->iId != 0 && !user->canSee(c)) {
 				continue;
 			}
+			// Proto-deprecated legacy booleans, still sent for legacy clients.
+			MUMBLE_DEPRECATED_PUSH
 			mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
 			mpcs.set_can_enter(user->hasPermission(c, ChanACL::Enter));
+			MUMBLE_DEPRECATED_POP
 			serializeChannelAttributes(mpcs, c, user);
 
 			sendMessage(user, mpcs);
@@ -3207,8 +3228,7 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 	// PluginDataTransmission is deprecated in favour of PluginMessage, but the server must keep
 	// relaying it for backward compatibility with older clients/plugins. Suppress the deprecation
 	// warnings for this legacy bridge only - new code must use PluginMessage instead.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	MUMBLE_DEPRECATED_PUSH
 
 	if (sender->m_pluginMessageBucket.ratelimit(1)) {
 		qWarning("Dropping plugin message sent from \"%s\" (%d)", qUtf8Printable(sender->qsName), sender->uiSession);
@@ -3274,7 +3294,7 @@ void Server::msgPluginDataTransmission(ServerUser *sender, MumbleProto::PluginDa
 	in.data          = QByteArray(msg.data().data(), static_cast< int >(msg.data().size()));
 	m_events.pluginMessage(in);
 
-#pragma GCC diagnostic pop
+	MUMBLE_DEPRECATED_POP
 }
 
 // ---------------------------------------------------------------------------

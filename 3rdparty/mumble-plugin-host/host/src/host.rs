@@ -1001,6 +1001,7 @@ fn is_truthy_enabled_value(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
     use super::{
         generate_admin_token, is_truthy_enabled_value, provision_live_doc_bridge,
         DEFAULT_FILE_SERVER_PORT,

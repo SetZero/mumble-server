@@ -20,6 +20,7 @@
 #include "Log.h"
 #include "MainWindow.h"
 #include "MumbleConstants.h"
+#include "MumbleDeprecation.h"
 #include "GlobalShortcut.h"
 #ifdef USE_OVERLAY
 #	include "Overlay.h"
@@ -888,7 +889,10 @@ void MainWindow::msgChannelState(const MumbleProto::ChannelState &msg) {
 		// Addresses channel does not exist so create it
 		if (p && msg.has_name()) {
 			c             = pmModel->addChannel(msg.channel_id(), p, u8(msg.name()));
+			// msg.temporary() is proto-deprecated but legacy servers still send it.
+			MUMBLE_DEPRECATED_PUSH
 			c->setAttribute(ChannelAttribute::Temporary, msg.temporary());
+			MUMBLE_DEPRECATED_POP
 			p             = nullptr; // No need to move it later
 
 			ServerHandlerPtr sh = Global::get().sh;
@@ -966,6 +970,9 @@ void MainWindow::msgChannelState(const MumbleProto::ChannelState &msg) {
 
 	bool forceUpdateTree = false;
 
+	// The enter-restriction / can-enter booleans are proto-deprecated (Fancy
+	// clients use the attribute set) but legacy servers still send them.
+	MUMBLE_DEPRECATED_PUSH
 	if (msg.has_is_enter_restricted()) {
 		c->hasEnterRestrictions.store(msg.is_enter_restricted());
 		forceUpdateTree = true;
@@ -975,6 +982,7 @@ void MainWindow::msgChannelState(const MumbleProto::ChannelState &msg) {
 		c->localUserCanEnter.store(msg.can_enter());
 		forceUpdateTree = true;
 	}
+	MUMBLE_DEPRECATED_POP
 
 	emit channelStateChanged(c, forceUpdateTree);
 }
@@ -1279,8 +1287,11 @@ void MainWindow::msgSuggestConfig(const MumbleProto::SuggestConfig &msg) {
 
 void MainWindow::msgPluginDataTransmission(const MumbleProto::PluginDataTransmission &msg) {
 	// Another client's plugin has sent us some data. Verify the necessary parts are there and delegate it to the
-	// PluginManager
-
+	// PluginManager.
+	//
+	// PluginDataTransmission is proto-deprecated (superseded by PluginMessage) but
+	// still handled for backward compatibility with older clients/plugins.
+	MUMBLE_DEPRECATED_PUSH
 	if (!msg.has_sendersession() || !msg.has_data() || !msg.has_dataid()) {
 		// if the message contains no sender session, no data or no ID for the data, it is of no use to us and we
 		// discard it
@@ -1296,6 +1307,7 @@ void MainWindow::msgPluginDataTransmission(const MumbleProto::PluginDataTransmis
 		Global::get().pluginManager->on_receiveData(sender, reinterpret_cast< const uint8_t * >(msgData.c_str()),
 													msgData.size(), msg.dataid().c_str());
 	}
+	MUMBLE_DEPRECATED_POP
 }
 
 #undef ACTOR_INIT

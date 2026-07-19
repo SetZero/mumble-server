@@ -181,6 +181,7 @@ fn human_file_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
     use super::*;
 
     fn u(s: &str) -> Url {

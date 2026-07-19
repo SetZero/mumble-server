@@ -104,7 +104,10 @@ void LimitTest::testLimits(QCoreApplication &a) {
 	qFatal("Managed to spawn %d threads", count);
 }
 
-[[maybe_unused]] extern QFile *qfLog;
+// qfLog is defined in Globals.cpp; it is used below (log rotation on SIGHUP),
+// so it needs no [[maybe_unused]] - and attaching one here trips clang's
+// -Wignored-attributes ("attribute declaration must precede definition").
+extern QFile *qfLog;
 
 int UnixMurmur::iHupFd[2];
 int UnixMurmur::iTermFd[2];

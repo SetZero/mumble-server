@@ -2,7 +2,7 @@
 //! bounded box, and re-encode as JPEG so the client renders a preview without
 //! contacting the origin host. Ports `MediaPreviewBuilder`; the `QImage`
 //! decode/scale/encode is replaced by the pure-Rust `image` crate (this is what
-//! removes the server's Qt6Gui dependency).
+//! removes the server's `Qt6Gui` dependency).
 
 use std::io::Cursor;
 
@@ -146,6 +146,7 @@ fn mime_for(format: Option<ImageFormat>) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
     use super::*;
     use image::{ImageFormat, RgbImage};
 

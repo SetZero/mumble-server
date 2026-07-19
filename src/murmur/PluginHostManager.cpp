@@ -6,6 +6,7 @@
 #include "PluginHostManager.h"
 
 #include "Meta.h"
+#include "MumbleDeprecation.h"
 #include "Server.h"
 #include "ServerUser.h"
 #include "Channel.h"
@@ -201,8 +202,7 @@ int PluginHostManager::sendPluginDataTrampoline(void *userData, uint32_t /*serve
 	// PluginDataTransmission is deprecated in favour of PluginMessage, but this legacy host
 	// callback still emits it for backward compatibility with older clients. Suppress the
 	// deprecation warnings for this bridge only - new code must use PluginMessage instead.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	MUMBLE_DEPRECATED_PUSH
 	MumbleProto::PluginDataTransmission msg;
 	msg.set_sendersession(0); // server-originated
 	msg.add_receiversessions(targetSession);
@@ -210,7 +210,7 @@ int PluginHostManager::sendPluginDataTrampoline(void *userData, uint32_t /*serve
 	if (data && dataLen > 0) {
 		msg.set_data(data, dataLen);
 	}
-#pragma GCC diagnostic pop
+	MUMBLE_DEPRECATED_POP
 	self->m_server->sendMessage(target, msg);
 	return 0;
 }

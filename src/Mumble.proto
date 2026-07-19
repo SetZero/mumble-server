@@ -182,6 +182,8 @@ message ChannelState {
 	repeated uint32 links_remove = 7;
 	// True if the channel is temporary.
 	// Deprecated for Fancy clients: use CHANNEL_ATTRIBUTE_TEMPORARY in `attributes`.
+	// Still written for legacy clients; those write sites guard the resulting
+	// self-deprecation warning with MUMBLE_DEPRECATED_* (see MumbleDeprecation.h).
 	optional bool temporary = 8 [default = false, deprecated = true];
 	// Position weight to tweak the channel position in the channel list.
 	optional int32 position = 9 [default = 0];
@@ -764,7 +766,12 @@ message SuggestConfig {
 	optional bool push_to_talk = 3;
 }
 
-// Used to send plugin messages between clients
+// Used to send plugin messages between clients.
+// Deprecated in Fancy Mumble: superseded by PluginMessage (this legacy path is
+// intentionally bricked for Fancy clients). The upstream desktop client's plugin
+// API (API_v_1_x_x) and the server relay still populate these fields for legacy
+// compatibility; those sites guard the self-deprecation warning with
+// MUMBLE_DEPRECATED_* (see MumbleDeprecation.h).
 message PluginDataTransmission {
 	// The session ID of the client this message was sent from
 	optional uint32 senderSession = 1 [deprecated = true];
