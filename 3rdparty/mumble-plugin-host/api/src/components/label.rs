@@ -1,4 +1,4 @@
-//! [`Label`] — modal-only wrapper that associates a label and
+//! [`Label`] - modal-only wrapper that associates a label and
 //! description with a single child component.  Discord component type
 //! `18`.
 //!

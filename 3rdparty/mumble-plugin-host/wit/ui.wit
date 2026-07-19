@@ -2,16 +2,16 @@
 // plugin-message channel (see `world.wit`).
 //
 // The native Rust plugin API (`mumble-plugin-api`) exposes the Tier-1 client
-// extension protocol — slash commands, components, modals, toasts — as JSON
+// extension protocol - slash commands, components, modals, toasts - as JSON
 // carried on two reserved `payload_type` strings ("Interaction" /
 // "InteractionResponse") of the generic `PluginMessage` envelope.  A WASM guest
 // *could* hand-build and parse that JSON itself, but every guest language would
 // then re-implement (and risk drifting from) the wire format.
 //
 // Instead this file encodes the same protocol as **typed WIT records and
-// variants**.  Because the contract lives in WIT, every guest toolchain —
+// variants**.  Because the contract lives in WIT, every guest toolchain -
 // wit-bindgen (Rust / C / C++ / TinyGo), jco (JavaScript), componentize-py
-// (Python) — generates native, type-checked bindings for it, so a guest never
+// (Python) - generates native, type-checked bindings for it, so a guest never
 // touches raw JSON.  The host (`mumble-plugin-host`) owns the single canonical
 // translation between these typed values and the client JSON wire format, so
 // the bytes on the wire stay byte-compatible with native plugins.

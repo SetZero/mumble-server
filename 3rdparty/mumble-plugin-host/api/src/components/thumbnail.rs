@@ -1,4 +1,4 @@
-//! [`Thumbnail`] — small inline image, typically used as the
+//! [`Thumbnail`] - small inline image, typically used as the
 //! `accessory` of a [`Section`].  Discord component type `11`.
 //!
 //! [`Section`]: crate::components::Section

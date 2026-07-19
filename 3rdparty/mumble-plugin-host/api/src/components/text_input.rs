@@ -1,4 +1,4 @@
-//! [`TextInput`] — free-form text field.  Discord component type `4`.
+//! [`TextInput`] - free-form text field.  Discord component type `4`.
 //! Modal-only.
 
 use serde::{Deserialize, Serialize};

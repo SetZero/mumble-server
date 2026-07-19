@@ -6724,7 +6724,7 @@ Du kan markere ytterligere kanaler fra filtrering fra kanalens bindeleddsmeny.</
     </message>
     <message>
         <source>Mumble - Minimal View</source>
-        <translation>Mumble — minimal visning</translation>
+        <translation>Mumble - minimal visning</translation>
     </message>
     <message>
         <source>Invalid settings file encountered.</source>
@@ -9937,7 +9937,7 @@ Et tilgangssymbol er en tekststring, som kan brukes som et passord for veldig en
     </message>
     <message>
         <source>.opus - Lossy compressed</source>
-        <translation>.opus — tapsbasert kompresjon</translation>
+        <translation>.opus - tapsbasert kompresjon</translation>
     </message>
     <message>
         <source>.mp3 - Lossy compressed</source>
@@ -10053,7 +10053,7 @@ Please contact your server administrator for further information.</source>
     </message>
     <message>
         <source>Unable to start recording - the audio output is miconfigured (0Hz sample rate)</source>
-        <translation type="unfinished">Kunne ikke starte opptak — lydutgangen er satt opp feil (0 Hz samplingstakt)</translation>
+        <translation type="unfinished">Kunne ikke starte opptak - lydutgangen er satt opp feil (0 Hz samplingstakt)</translation>
     </message>
     <message>
         <source>Multichannel + Transport (JACK)</source>

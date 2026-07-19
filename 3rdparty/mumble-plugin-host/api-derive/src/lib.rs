@@ -193,7 +193,7 @@ pub fn handler_id(input: TokenStream) -> TokenStream {
 ///
 /// Expands references to `<Path>::__FANCY_ID__<method>` and
 /// `<Path>::__FANCY_FIELD__<method>__<field>` associated consts on
-/// the plugin's inherent impl — both emitted by [`macro@fancy_plugin`].
+/// the plugin's inherent impl - both emitted by [`macro@fancy_plugin`].
 /// A typo'd field ident produces a "no associated item" error
 /// pointing at the offending line.
 #[proc_macro]

@@ -1,4 +1,4 @@
-//! [`RadioGroup`] — single-choice option set.  Discord component
+//! [`RadioGroup`] - single-choice option set.  Discord component
 //! type `21`.  Available in modal forms and in chat-bubble /
 //! overlay component trees: the client renders it as a vertical
 //! stack of native radio inputs in both contexts.

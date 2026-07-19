@@ -295,7 +295,7 @@ pub fn send_interaction_response(
 ///
 /// Use this when a plugin needs to deliver the same response (typically
 /// a [`ResponseKind::ChatMessage`] or [`ResponseKind::UpdateMessage`])
-/// to more than just the originator — for example to every voter in a
+/// to more than just the originator - for example to every voter in a
 /// channel-scoped poll.
 ///
 /// The `plugin_name` should match the plugin's own

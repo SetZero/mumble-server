@@ -6,7 +6,7 @@ three languages in the tree.
 This directory holds only the **harness source** that lives with the code it
 fuzzes. The **Docker image and the runner** live in the sibling `mumble-docker`
 repo and are driven by `python -m tools.dev_fuzz`, alongside `dev-build` /
-`dev-debug` — so fuzzing matches the same Docker dev loop you already use.
+`dev-debug` - so fuzzing matches the same Docker dev loop you already use.
 
 ```
 fuzzing/                              # (this dir, in mumble-server)
@@ -65,7 +65,7 @@ allocations; ASan additionally covers the C code inside `zip`/`flate2`/`sqlite`.
 | Target | Exercises |
 | --- | --- |
 | `fuzz_ssrf` | the link-preview URL classifier (`isSafeUrl` / `isBlockedIp` / `decodeHtmlEntities`); asserts no accepted literal-IP URL is an internal address |
-| `fuzz_opengraph` | the `QRegularExpression`-heavy Open Graph / HTML meta parser — **the main ReDoS surface** |
+| `fuzz_opengraph` | the `QRegularExpression`-heavy Open Graph / HTML meta parser - **the main ReDoS surface** |
 | `fuzz_htmlfilter` | `HTMLFilter::filter()`, run over untrusted chat messages when HTML is stripped |
 | `fuzz_protocol` | `ParseFromArray` round-trip across the TCP control messages, weighted to the custom `Fancy*`/`Pchat*` types |
 
@@ -94,7 +94,7 @@ the MSVC linker requires every DLL symbol to be resolved at link time, but the
 libFuzzer/ASan coverage runtime is only linked into the final fuzz binary
 (`LNK1104: clang_rt.asan_*` with ASan, `LNK2001: __sanitizer_cov_*` without).
 On Linux this is a non-issue (shared objects resolve those symbols at load),
-so the container — or WSL2 — is the way to run. `cargo +nightly fuzz list`
+so the container - or WSL2 - is the way to run. `cargo +nightly fuzz list`
 and corpus management still work natively on Windows.
 
 ## Notes / caveats
@@ -105,12 +105,12 @@ and corpus management still work natively on Windows.
   `cargo +nightly fuzz` (the `+nightly` overrides the pinned stable toolchain).
 * The fuzz-only surface is gated behind a `fuzzing` Cargo feature
   (`mumble-file-server`, `mumble-plugin-host`) and the `OpenGraphPlugin::fuzzParse`
-  hook — none of it compiles into production builds.
+  hook - none of it compiles into production builds.
 * The C++ harnesses link AddressSanitizer against the system Qt (which is not
   ASan-instrumented). That is fine for finding bugs in *our* code; if you see
   noise originating inside Qt, build against an ASan-instrumented Qt or add a
   suppression.
 * These harnesses had to be authored without a local Qt/protobuf build, so on
   the very first `cmake` you may need to nudge a package path (the CMake skips,
-  rather than fails, any target whose deps it can't find — check the configure
+  rather than fails, any target whose deps it can't find - check the configure
   output).

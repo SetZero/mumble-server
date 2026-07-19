@@ -1,4 +1,4 @@
-//! [`Checkbox`] — modal-only single yes/no checkbox.  Discord
+//! [`Checkbox`] - modal-only single yes/no checkbox.  Discord
 //! component type `23`.
 
 use serde::{Deserialize, Serialize};

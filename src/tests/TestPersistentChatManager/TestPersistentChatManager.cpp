@@ -653,7 +653,7 @@ void TestPersistentChatManager::handlePchatMessage_skipsUnverifiedRecipients() {
 	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
 	QCOMPARE(m_bridge->sentAcks[0].second.status(), MumbleProto::PCHAT_ACK_STORED);
 
-	// No deliveries — the sender is excluded and session 20 is not verified
+	// No deliveries - the sender is excluded and session 20 is not verified
 	QCOMPARE(m_bridge->sentDelivers.size(), static_cast< size_t >(0));
 }
 
@@ -1120,7 +1120,7 @@ void TestPersistentChatManager::takeover_fullWipeDeletesMessagesAndHolders() {
 	QCOMPARE(m_bridge->sentHoldersLists[0].second.holders(0).cert_hash(), std::string("owner999"));
 
 	// Messages should have been deleted (FULL_WIPE).
-	// Verify by fetching — first get session 30 verified.
+	// Verify by fetching - first get session 30 verified.
 	m_bridge->reset();
 	std::string nonce = m_bridge->sentChallenges.empty() ? "" : "";
 

@@ -43,11 +43,11 @@
 //!
 //! # Grammar conventions
 //!
-//! * `capabilities: [Ident, ...]` inside `manifest` — bare identifiers
+//! * `capabilities: [Ident, ...]` inside `manifest` - bare identifiers
 //!   are prefixed with `Capability::`.  Use the inline DSL for the
 //!   common case; reach for `client_manifest: <expr>` if you need
 //!   computed variants.
-//! * `type: Ident` inside a slash-command option — bare identifier
+//! * `type: Ident` inside a slash-command option - bare identifier
 //!   prefixed with `OptionType::`.
 //! * `rows: ["label" => "value", ...]` and `debug_info: { "k" => v, ... }`
 //!   use the same arrow-pair sugar; in `debug_info` the value side is

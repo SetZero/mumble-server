@@ -36,7 +36,7 @@ const CONFIG_KEY_ENABLED: &str = "enabled";
 
 /// `PluginMessage.payload_type` values the host broadcasts when a plugin's
 /// loaded state changes at runtime, so connected clients can drop (or restore)
-/// that plugin's UI gracefully.  Kept as plain strings on the wire — the
+/// that plugin's UI gracefully.  Kept as plain strings on the wire - the
 /// generic `payload_type` field is intentionally plugin/agnostic (see
 /// `Mumble.proto`); the client mirrors these in its `PluginPayloadType` enum.
 const PAYLOAD_TYPE_PLUGIN_ACTIVATED: &str = "PluginActivated";
@@ -50,7 +50,7 @@ const CONFIG_KEY_MARKETPLACE_ID: &str = "marketplace_id";
 /// marketplace flow last installed/upgraded the plugin.
 const CONFIG_KEY_INSTALLED_AT: &str = "installed_at";
 
-/// Backend a plugin is loaded through.  Purely informational — it is
+/// Backend a plugin is loaded through.  Purely informational - it is
 /// surfaced to the admin UI but never influences dispatch, which goes
 /// through the uniform [`MumblePlugin`](mumble_plugin_api::MumblePlugin)
 /// trait object regardless of backend.

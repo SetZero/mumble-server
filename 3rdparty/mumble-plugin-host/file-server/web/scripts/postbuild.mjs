@@ -29,7 +29,7 @@ const ENTRY_TAG = /<script\b[^>]*\btype="module"[^>]*>/;
 const match = ENTRY_TAG.exec(html);
 if (!match) {
   throw new Error(
-    "postbuild: no inlined `<script type=\"module\">` found — the bundle did " +
+    "postbuild: no inlined `<script type=\"module\">` found - the bundle did " +
       "not inline as expected, so the CSP nonce cannot be stamped.",
   );
 }
@@ -62,7 +62,7 @@ const realScripts = html.split("</script>").length - 1;
 if (realScripts !== 1) {
   console.warn(
     `postbuild: expected exactly one inlined <script>, found ${realScripts}. ` +
-      `Only the first was given a CSP nonce — additional scripts would be blocked.`,
+      `Only the first was given a CSP nonce - additional scripts would be blocked.`,
   );
 }
 

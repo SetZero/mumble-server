@@ -290,7 +290,7 @@ fn elf_pre_validate(path: &Path) -> Result<(), AbiProbeError> {
     } else if cfg!(target_arch = "aarch64") {
         goblin::elf::header::EM_AARCH64
     } else {
-        0 // Unknown host arch — skip the machine-type check.
+        0 // Unknown host arch - skip the machine-type check.
     };
     if host_machine != 0 && elf.header.e_machine != host_machine {
         return Err(AbiProbeError::LibraryError(format!(
@@ -326,7 +326,7 @@ fn elf_pre_validate(_path: &Path) -> Result<(), AbiProbeError> {
 fn read_plugin_abi_version(path: &Path) -> Result<u32, AbiProbeError> {
     // Validate the ELF binary without `dlopen` first.  A corrupt or
     // wrong-arch cdylib can SIGSEGV the server process inside `dlopen`
-    // when its `.init_array` runs — that happens *before* `dlopen`
+    // when its `.init_array` runs - that happens *before* `dlopen`
     // returns any error.  Parsing the ELF headers statically lets us
     // reject such binaries before any code inside them ever executes.
     elf_pre_validate(path)?;

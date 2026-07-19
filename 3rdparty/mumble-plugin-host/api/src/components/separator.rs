@@ -1,4 +1,4 @@
-//! [`Separator`] — vertical spacer / divider.  Discord component
+//! [`Separator`] - vertical spacer / divider.  Discord component
 //! type `14`.
 
 use serde::{Deserialize, Serialize};

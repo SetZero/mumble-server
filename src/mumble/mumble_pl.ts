@@ -5141,7 +5141,7 @@ Ustawienie dotyczy tylko nowych wiadomości, te już pokazane zachowają poprzed
     </message>
     <message>
         <source>Background color that, if set, overrides the theme background color.</source>
-        <translation>Kolor tła, który — jeśli jest ustawiony — zastępuje kolor tła motywu.</translation>
+        <translation>Kolor tła, który - jeśli jest ustawiony - zastępuje kolor tła motywu.</translation>
     </message>
     <message>
         <source>Background Color</source>

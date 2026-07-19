@@ -1,4 +1,4 @@
-//! [`MentionableSelect`] — pick a mix of users and ACL roles.  Discord
+//! [`MentionableSelect`] - pick a mix of users and ACL roles.  Discord
 //! component type `7`.  Returned values are tagged with their kind so
 //! the receiving plugin can route them correctly.
 

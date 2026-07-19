@@ -1,4 +1,4 @@
-//! [`RoleSelect`] — pick one or more roles.  Discord component type
+//! [`RoleSelect`] - pick one or more roles.  Discord component type
 //! `6`.  Mumble has no native role concept; the closest analogue is
 //! ACL group membership, so a `RoleSelect` returns ACL group names.
 

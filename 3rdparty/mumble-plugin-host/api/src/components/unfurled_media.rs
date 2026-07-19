@@ -1,12 +1,12 @@
-//! [`UnfurledMediaItem`] — media reference embeddable in [`Thumbnail`],
+//! [`UnfurledMediaItem`] - media reference embeddable in [`Thumbnail`],
 //! [`MediaGallery`], or [`FileComponent`].
 //!
 //! Only the `url` field is settable by plugins.  URLs may be:
 //!
 //! * arbitrary `https://` URLs (rendered as embedded images / videos);
-//! * `fancy-file://<file-id>` — references the Fancy Mumble file
+//! * `fancy-file://<file-id>` - references the Fancy Mumble file
 //!   store;
-//! * `attachment://<filename>` — references a file uploaded in the
+//! * `attachment://<filename>` - references a file uploaded in the
 //!   same plugin message envelope (matches the Discord convention).
 //!
 //! [`Thumbnail`]: crate::components::Thumbnail

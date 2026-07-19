@@ -5,7 +5,7 @@
 //! [`../../wit/world.wit`](../../wit/world.wit)) be loaded and driven through
 //! the *exact same* [`MumblePlugin_TO`] trait object the native cdylib loader
 //! produces. The rest of the host ([`crate::host`], [`crate::ffi`]) therefore
-//! treats WASM and native plugins identically — the polymorphism lives in the
+//! treats WASM and native plugins identically - the polymorphism lives in the
 //! `abi_stable` trait object, not in the host.
 //!
 //! ## Sandbox
@@ -15,7 +15,7 @@
 //! With the `wasm-wasi` feature (on by default) a **locked-down** WASI is also
 //! linked so guests whose toolchain embeds a WASI-dependent runtime (notably
 //! JavaScript plugins built with `ComponentizeJS`) can instantiate. That WASI
-//! context grants no filesystem, network, environment or argument access — only
+//! context grants no filesystem, network, environment or argument access - only
 //! the deterministic capabilities the embedded engine needs (clock, entropy);
 //! `stderr` is inherited so guest diagnostics surface in the server log. Pure
 //! components (e.g. Rust guests built with `wit-bindgen`) simply do not import

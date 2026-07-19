@@ -1,4 +1,4 @@
-//! [`StringSelect`] — dropdown of developer-defined string options.
+//! [`StringSelect`] - dropdown of developer-defined string options.
 //! Discord component type `3`.
 //!
 //! Previously named `SelectMenu` in this crate; the rename brings the
