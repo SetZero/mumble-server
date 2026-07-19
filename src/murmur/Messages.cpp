@@ -5032,3 +5032,13 @@ void Server::msgFancyPollVote(ServerUser *uSource, MumbleProto::FancyPollVote &m
 #undef PERM_DENIED_TYPE
 #undef PERM_DENIED_FALLBACK
 #undef PERM_DENIED_HASH
+
+// Audit log (docs/audit-log.md): the wire contract is pinned (IDs 166-171)
+// but the query/config handling is phase-3 and not implemented yet. The
+// dispatch macro references these symbols, so provide accept-and-drop stubs
+// until the plugin-backed implementation lands.
+void Server::msgFancyAuditQuery(ServerUser *, MumbleProto::FancyAuditQuery &) {}
+void Server::msgFancyAuditResponse(ServerUser *, MumbleProto::FancyAuditResponse &) {}
+void Server::msgFancyAuditEvent(ServerUser *, MumbleProto::FancyAuditEvent &) {}
+void Server::msgFancyAuditConfig(ServerUser *, MumbleProto::FancyAuditConfig &) {}
+void Server::msgFancyAuditConfigUpdate(ServerUser *, MumbleProto::FancyAuditConfigUpdate &) {}
