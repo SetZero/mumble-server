@@ -50,14 +50,19 @@ different trust and privacy properties.
   watcher is the first thing the log shows.
 - **Permissions ride on ACL today, behind an `AuditAuthz` seam** (§9.1) so the
   model can be replaced later without touching call sites.
-- **Retention is configurable, default 30 days** (§7.9) — the one thing that
-  deletes on a schedule.
+- **Retention is configurable per part** with a 30-day default and a shipped
+  reference policy (§7.9) — and it is constrained, because it is the one
+  legitimate deletion path: a hard 30-day floor on `audit.*`, lowering is never
+  retroactive (expiry is stamped at write time), and every retention change is
+  itself audited. An admin cannot shorten their way out of the record.
 - **Full-text search goes through a per-backend strategy** (§4): FTS5 / tsvector
   / `FULLTEXT`, with a `LIKE` fallback, chosen from live capabilities.
 - **Advanced SQL mode gets the full surface** — joins, unions, CTEs, aggregates
   — made safe by moving the boundary into the database: read-only,
   view-scoped, engine-enforced (grants on PG/MySQL, an authorizer on SQLite),
-  with resource guards and every query audited (§10.4).
+  with resource guards and every query audited. **On by default**, but it
+  self-tests the sandbox at startup and refuses to enable if the boundary
+  isn't provably in place (§10.4).
 
 ---
 
@@ -417,23 +422,52 @@ this to a plugin. For dashboards/metrics specifically (Grafana, Prometheus,
 Loki, OTLP, Kibana, InfluxDB), see §8.
 
 ### 7.9 Retention & privacy policy surface
-**Configurable per part (§9.2), default 30 days.** One number to reason about
-out of the box, overridable wherever a community needs longer or shorter.
-Retention is the *only* thing that deletes on a schedule — toggles never do
-(§9.2) — and expiry is applied as a documented, audited sweep.
 
-Right-to-erasure tooling for a specific user sits alongside it, as an explicit
+Retention is the **only** thing that deletes on a schedule — toggles never do
+(§9.2) — and expiry runs as a documented, audited sweep. It is configurable per
+part, with a 30-day global default for anything unlisted, and ships with this
+reference policy: privacy-sensitive data stays short, the accountability record
+lives long.
+
+| Part | Retention | Why |
+|---|---|---|
+| `audit.ban`, `audit.kick` | **indefinite** | the record most needed later — ban evasion, appeals |
+| `audit.acl`, `audit.config`, `audit.plugin_admin`, `audit.access` | **2 years** | who changed permissions or disabled logging; slow-burn abuse |
+| `audit.register` | **2 years** | account lifecycle |
+| `audit.mute_deafen_suppress`, `audit.move`, `audit.channel`, `audit.pchat_moderation`, `audit.plugin_action` | **180 days** | routine and high-volume; useful for patterns, not forever |
+| `signal.*` aggregates | **1 year** | pseudonymous counts, low risk |
+| `signal.*` raw edges (who→whom) | **30 days** | the most privacy-sensitive data in the system |
+| telemetry | n/a | lives in the OTLP backend; that retention is the operator's |
+
+Right-to-erasure tooling for a specific user sits alongside this, as an explicit
 operator action rather than an automatic behaviour.
 
-> **Worth a deliberate choice per deployment:** 30 days is a sensible privacy
-> default for *signal* data, but it is short for the moderation record itself —
-> "when was this user banned, and by whom, and why" is usually asked months
-> later, and a 30-day default silently answers "no idea". Communities that want
-> an actual moderation history should raise `audit.*` (bans especially) well
-> past the default; the per-part override exists precisely so the privacy-
-> sensitive parts and the accountability parts don't have to share a number.
-> Note also that expiring a chained entry (§7.1) leaves a verifiable gap rather
-> than a silent hole — the chain records that something was aged out.
+#### Retention is an attack surface, so it is constrained
+
+Retention is the one *legitimate* deletion path, which makes it the obvious way
+to launder tampering: an admin who cannot delete a chained entry (§7.1) could
+otherwise set `audit.*` to one day and let their own actions expire. Three rules
+close that:
+
+1. **Hard floor of 30 days on `audit.*`.** The accountability categories cannot
+   be configured below it — not by an admin, not by config file, not by API. A
+   request to go lower is refused *and* recorded. (Signal parts have no floor;
+   shortening those is a privacy improvement, not a cover-up.)
+2. **Lowering retention is never retroactive.** Each row's `expires_at` is
+   stamped **at write time** from the policy then in force. Reducing a retention
+   setting therefore affects only records written afterwards — it cannot shorten
+   the life of anything that already exists. Raising retention may extend
+   existing rows, since that direction is safe. This is the same principle as
+   the toggle rule (§9.2): change the future, never rewrite the past.
+3. **Every retention change is an audit entry** (`category='config'`) recording
+   actor, part, old value and new value — and it lands in `audit.config`, which
+   is itself floored at 30 days and, under the reference policy, kept for two
+   years. So the act of shortening retention outlives the shortening.
+
+Together these mean the fastest possible cover-up is "wait 30 days, in a log
+that already recorded you trying" — and expiring a chained entry leaves a
+verifiable gap (§7.1) rather than a silent hole, so the chain still shows that
+*something* aged out.
 
 ### 7.10 Architecture: an audit plugin on an enriched event bridge (decided)
 
@@ -896,10 +930,23 @@ degrades that one request, not the server.
 **Every advanced query is audited** (§7.2) with its SQL text — the people with
 the most query power are the ones most worth logging.
 
-**Honest trade-off.** Advanced mode's safety depends on the deployment being
-configured correctly (the right grants, or the authorizer being installed).
-Simple mode has no such dependency because it never emits free-form SQL. That is
-why simple mode stays the default and advanced mode is an explicit opt-in.
+**On by default — but it proves the sandbox first.** Advanced mode is available
+to `ViewAudit` holders out of the box. Its safety depends on the deployment
+actually having the boundary in place (the right grants, or the authorizer
+installed), and an operator can't be expected to verify that by hand — so the
+plugin verifies it itself, at startup:
+
+- open the read-only/authorized connection and attempt a handful of things that
+  **must** fail — `SELECT` from a table outside the view set, a write, an
+  `ATTACH`, a `PRAGMA`;
+- if every one is refused, advanced mode enables;
+- if *any* of them succeeds, advanced mode **stays off**, the server logs why,
+  and it is recorded as an audit entry.
+
+So the failure mode is "advanced search is unavailable and says so", never
+"advanced search quietly runs with a boundary that isn't there". Simple mode is
+unaffected either way, since it never emits free-form SQL. The self-check also
+doubles as the regression test for the grants and the authorizer.
 
 ### 10.5 Making it approachable
 
@@ -962,14 +1009,6 @@ Since it's a plugin, the first real work is the **bridge event stream** (§7.10)
 
 ## 12. Open questions
 
-- **Per-part retention overrides beyond the 30-day default (§7.9).** The default
-  is decided; what a *reference* deployment should raise for `audit.ban` and
-  friends (so the moderation record outlives the privacy-sensitive data) is
-  still a policy call.
-- **Advanced-SQL rollout (§10.4).** Ship it on by default for `ViewAudit`
-  holders, or keep it behind a separate opt-in until the per-backend grants and
-  the SQLite authorizer have soak time? (Leaning: opt-in first — simple mode
-  covers the common path and has no deployment-config dependency.)
 - **Log retention floor for the event stream (§7.10).** Decided that it is a
   bounded Kafka-like log; still open is *how* bounded (size vs age), and whether
   the audit consumer should get a stricter floor than reactive consumers so it
