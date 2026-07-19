@@ -209,12 +209,16 @@ namespace server {
 				}
 
 				// Count replies per returned thread (excludes the root itself).
+				// NB: SOCI binds use() values positionally, so the repeated
+				// thread id needs its own placeholder + use() - reusing :tid
+				// twice leaves the second occurrence unbound (NULL), which
+				// made the count come out 0 for every thread.
 				for (auto &root : roots) {
 					int count = 0;
 					m_sql << "SELECT COUNT(*) FROM \"" << NAME << "\" WHERE \"" << column::server_id
 						  << "\" = :sid AND \"" << column::thread_id << "\" = :tid AND \"" << column::post_id
-						  << "\" <> :tid AND \"" << column::deleted << "\" = 0",
-						soci::into(count), soci::use(serverID), soci::use(root.threadId);
+						  << "\" <> :pid AND \"" << column::deleted << "\" = 0",
+						soci::into(count), soci::use(serverID), soci::use(root.threadId), soci::use(root.threadId);
 					root.replyCount = static_cast< unsigned int >(count);
 				}
 

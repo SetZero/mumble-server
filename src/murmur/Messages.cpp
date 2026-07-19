@@ -5219,16 +5219,37 @@ void Server::msgFancyForumFetch(ServerUser *uSource, MumbleProto::FancyForumFetc
 	MumbleProto::FancyForumFetchResponse reply;
 	reply.set_channel_id(msg.channel_id());
 
+	// The DB stores the author's cert hash, not their (transient) session.
+	// Stamp the current session for authors who are online so clients can
+	// offer their own edit/delete actions after a fetch, matching what the
+	// live broadcast carries.
+	QHash< QString, unsigned int > sessionByHash;
+	for (ServerUser *u : qhUsers) {
+		if (u->sState == ServerUser::Authenticated && !u->qsHash.isEmpty()) {
+			sessionByHash.insert(u->qsHash, u->uiSession);
+		}
+	}
+	const auto stampAuthorSession = [&sessionByHash](const ::mumble::server::db::ForumStoredPost &p,
+													 MumbleProto::FancyForumPost *pp) {
+		const auto it = sessionByHash.constFind(u8(p.authorHash));
+		if (it != sessionByHash.constEnd()) {
+			pp->set_author_session(it.value());
+		}
+	};
+
 	if (msg.has_thread_id() && !msg.thread_id().empty()) {
 		reply.set_thread_id(msg.thread_id());
 		for (const auto &p : forumTable.listThreadPosts(iServerNum, msg.thread_id(), limit)) {
-			forumPostToProto(p, *reply.add_posts());
+			MumbleProto::FancyForumPost *pp = reply.add_posts();
+			forumPostToProto(p, *pp);
+			stampAuthorSession(p, pp);
 		}
 	} else {
 		for (const auto &p : forumTable.listThreadRoots(iServerNum, msg.channel_id(), limit)) {
 			MumbleProto::FancyForumPost *pp = reply.add_posts();
 			forumPostToProto(p, *pp);
 			pp->set_reply_count(p.replyCount);
+			stampAuthorSession(p, pp);
 		}
 	}
 	sendMessage(uSource, reply);
