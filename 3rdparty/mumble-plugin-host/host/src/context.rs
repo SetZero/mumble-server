@@ -226,6 +226,20 @@ pub struct PluginHostCallbacks {
             user_id: u32,
         ) -> bool,
     >,
+
+    /// Revoke registered `user_id`'s access to private `channel` (the inverse
+    /// of `grant_channel_access`): the host drops the user's per-user allow
+    /// ACLs, moves their sessions out of the channel and, once they can no
+    /// longer see it, tells their clients the channel is gone.  Returns `true`
+    /// on success (including the no-op case of nothing to revoke).
+    pub revoke_channel_access: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            server_id: u32,
+            channel: u32,
+            user_id: u32,
+        ) -> bool,
+    >,
 }
 
 // SAFETY: callbacks are documented as thread-safe; user_data is owned
@@ -743,6 +757,14 @@ impl PluginContext for ScopedContext {
 
     fn grant_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
         let Some(func) = self.inner.callbacks.grant_channel_access else {
+            return false;
+        };
+        // SAFETY: callback non-null; primitive args passed by value.
+        unsafe { func(self.inner.callbacks.user_data, server_id, channel, user_id) }
+    }
+
+    fn revoke_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
+        let Some(func) = self.inner.callbacks.revoke_channel_access else {
             return false;
         };
         // SAFETY: callback non-null; primitive args passed by value.

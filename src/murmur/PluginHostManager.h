@@ -152,6 +152,8 @@ private:
                                             size_t inviteeLen, uint32_t *outChannel);
         static bool grantChannelAccessTrampoline(void *userData, uint32_t serverId, uint32_t channel,
                                                  uint32_t userId);
+        static bool revokeChannelAccessTrampoline(void *userData, uint32_t serverId, uint32_t channel,
+                                                  uint32_t userId);
 
         Server *m_server;
         PluginHostHandle *m_handle;

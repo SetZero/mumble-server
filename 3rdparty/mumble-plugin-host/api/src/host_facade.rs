@@ -220,6 +220,17 @@ impl<'a> Host<'a> {
         self.ctx.grant_channel_access(server_id, channel, user_id)
     }
 
+    /// Revoke a registered `user_id`'s access to an existing private
+    /// `channel` (the inverse of [`Self::grant_channel_access`]).
+    pub fn revoke_channel_access(
+        &self,
+        server_id: ServerId,
+        channel: ChannelId,
+        user_id: u32,
+    ) -> bool {
+        self.ctx.revoke_channel_access(server_id, channel, user_id)
+    }
+
     /// Returns `true` if the session is currently connected.
     #[must_use]
     pub fn is_session_active(&self, server_id: ServerId, session: SessionId) -> bool {

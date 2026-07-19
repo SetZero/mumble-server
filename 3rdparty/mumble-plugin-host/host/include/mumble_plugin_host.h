@@ -195,6 +195,17 @@ typedef struct PluginHostCallbacks {
                                uint32_t server_id,
                                uint32_t channel,
                                uint32_t user_id);
+  /**
+   * Revoke registered `user_id`'s access to private `channel` (the inverse
+   * of `grant_channel_access`): the host drops the user's per-user allow
+   * ACLs, moves their sessions out of the channel and, once they can no
+   * longer see it, tells their clients the channel is gone.  Returns `true`
+   * on success (including the no-op case of nothing to revoke).
+   */
+  bool (*revoke_channel_access)(void *user_data,
+                                uint32_t server_id,
+                                uint32_t channel,
+                                uint32_t user_id);
 } PluginHostCallbacks;
 
 #ifdef __cplusplus

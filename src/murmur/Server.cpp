@@ -3665,6 +3665,74 @@ bool Server::grantChannelAccess(unsigned int channelId, unsigned int userId) {
 	return true;
 }
 
+bool Server::revokeChannelAccess(unsigned int channelId, unsigned int userId) {
+	Channel *c = qhChannels.value(channelId);
+	if (!c) {
+		return false;
+	}
+	// Drop the per-user allow ACL(s) grantUserSeeEnter added for this user;
+	// the @all deny and the other invitees' entries stay untouched. Idempotent:
+	// nothing to drop means nothing changes.
+	bool removed = false;
+	for (int i = static_cast< int >(c->qlACL.count()) - 1; i >= 0; --i) {
+		ChanACL *acl = c->qlACL.at(i);
+		if (acl->iUserId == static_cast< int >(userId) && acl->pAllow != ChanACL::None) {
+			c->qlACL.removeAt(i);
+			delete acl;
+			removed = true;
+		}
+	}
+	if (!removed) {
+		return true;
+	}
+	clearACLCache();
+	m_dbWrapper.updateChannelData(iServerNum, *c);
+
+	Channel *root = qhChannels.value(0);
+	MumbleProto::ChannelRemove mpcr;
+	mpcr.set_channel_id(c->iId);
+	for (ServerUser *u : qhUsers) {
+		if (u->sState != ServerUser::Authenticated || u->iId != static_cast< int >(userId)) {
+			continue;
+		}
+		// A session still inside the room is moved out first (mirroring
+		// removeChannel): nearest enterable channel walking up from the root
+		// fallback, so the client never observes itself inside a channel it
+		// is about to be told does not exist.
+		if (u->cChannel == c && root) {
+			{
+				QWriteLocker wl(&qrwlVoiceThread);
+				c->removeUser(u);
+			}
+			Channel *target = root;
+			while (target && target->cParent
+				   && (!u->hasPermission(target, ChanACL::Enter) || isChannelFull(target, u)))
+				target = target->cParent;
+			MumbleProto::UserState mpus;
+			mpus.set_session(u->uiSession);
+			mpus.set_channel_id(target->iId);
+			userEnterChannel(u, target, mpus);
+			sendAll(mpus);
+			m_events.userStateChanged(u);
+		}
+		// Stop a lingering listener on the room, as removeChannel does.
+		if (m_channelListenerManager.isListening(u->uiSession, c->iId)) {
+			deleteChannelListener(*u, *c);
+			MumbleProto::UserState mpus;
+			mpus.set_session(u->uiSession);
+			mpus.add_listening_channel_remove(c->iId);
+			sendAll(mpus);
+		}
+		// After the ACL edit the room is invisible to them (unless some other
+		// rule still grants SeeChannel, e.g. an admin): to that client the
+		// channel now simply does not exist.
+		if (!u->canSee(c)) {
+			sendMessage(u, mpcr);
+		}
+	}
+	return true;
+}
+
 void Server::linkChannels(Channel &first, Channel &second) {
 	{
 		QWriteLocker wl(&qrwlVoiceThread);

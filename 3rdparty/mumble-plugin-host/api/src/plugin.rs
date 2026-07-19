@@ -250,6 +250,18 @@ pub trait PluginContext: Send + Sync + 'static {
         let _ = (server_id, channel, user_id);
         false
     }
+
+    /// Revoke a registered `user_id`'s access to private `channel` (the
+    /// inverse of [`Self::grant_channel_access`]).  The host removes the
+    /// user's per-user allow ACLs, moves their sessions out of the channel and
+    /// tells their clients the channel no longer exists once they cannot see
+    /// it.  Idempotent; returns `true` on success.
+    ///
+    /// The default returns `false`; the real host overrides it.
+    fn revoke_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
+        let _ = (server_id, channel, user_id);
+        false
+    }
 }
 
 /// FFI-safe shape of every loadable plugin.

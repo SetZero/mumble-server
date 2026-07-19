@@ -52,6 +52,7 @@ PluginHostManager::PluginHostManager(Server *server, QObject *parent)
         cb.send_request_response  = &PluginHostManager::sendRequestResponseTrampoline;
         cb.create_channel         = &PluginHostManager::createChannelTrampoline;
         cb.grant_channel_access   = &PluginHostManager::grantChannelAccessTrampoline;
+        cb.revoke_channel_access  = &PluginHostManager::revokeChannelAccessTrampoline;
 	m_handle = plugin_host_create(&cb);
 }
 
@@ -718,6 +719,27 @@ bool PluginHostManager::grantChannelAccessTrampoline(void *userData, uint32_t /*
                 return ok;
         } catch (const std::exception &e) {
                 qWarning("plugin host grantChannelAccess failed: %s", e.what());
+                return false;
+        } catch (...) {
+                return false;
+        }
+}
+
+bool PluginHostManager::revokeChannelAccessTrampoline(void *userData, uint32_t /*serverId*/,
+                                                      uint32_t channel, uint32_t userId) {
+        auto *self = static_cast< PluginHostManager * >(userData);
+        if (!self || !self->m_server) {
+                return false;
+        }
+        Server *server = self->m_server;
+        try {
+                bool ok = false;
+                QMetaObject::invokeMethod(
+                        server, [server, channel, userId]() { return server->revokeChannelAccess(channel, userId); },
+                        serverThreadConnection(server), &ok);
+                return ok;
+        } catch (const std::exception &e) {
+                qWarning("plugin host revokeChannelAccess failed: %s", e.what());
                 return false;
         } catch (...) {
                 return false;

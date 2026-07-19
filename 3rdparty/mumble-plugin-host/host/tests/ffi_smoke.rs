@@ -122,6 +122,7 @@ fn create_dispatch_destroy_roundtrip() {
         send_request_response: None,
         create_channel: None,
         grant_channel_access: None,
+        revoke_channel_access: None,
     };
 
     let handle = unsafe { plugin_host_create(&cb) };

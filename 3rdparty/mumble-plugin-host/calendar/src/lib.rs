@@ -19,7 +19,9 @@
 //! asks to join (`calendar.join`).
 //! Rooms inherit an absolute expiry so they self-destruct ~1 week after the meeting.
 //! Organisers can mint a Teams-style invite link (`calendar.inviteLink`) carrying an
-//! HMAC token that admits any *registered* user.
+//! HMAC token that admits any *registered* user. A participant can drop a room
+//! from their own channel list with `calendar.leave` (access revoked, event
+//! participation kept - `calendar.join` re-admits them).
 //!
 //! Personal fields (RSVP, show-as, reminder, colour overrides) never leave the
 //! owning client; only the shared meeting body is relayed.
@@ -55,6 +57,10 @@ const MSG_PUBLISH: &str = "calendar.publish";
 const MSG_AVAILABILITY: &str = "calendar.availability";
 /// A client asks to join a meeting's room (create-on-demand + access grant).
 const MSG_JOIN: &str = "calendar.join";
+/// A client asks to leave a meeting's room: their access is revoked and the
+/// room disappears from their channel list (event participation is kept, so
+/// they can rejoin from the calendar).
+const MSG_LEAVE: &str = "calendar.leave";
 /// Server -> client: the room channel id for a meeting.
 const MSG_ROOM: &str = "calendar.room";
 /// Organiser asks for / receives a shareable invite link.
@@ -339,12 +345,18 @@ fn ensure_room(
     // channel. No container node is needed - the host/server ascribe no meaning to
     // "meetings"; the detached flag plus the invitee ACLs do all the work. The
     // parent argument is ignored for detached channels.
+    //
+    // HIDDEN, not merely detached: the server's visibility policy short-circuits
+    // for non-hidden channels, so a non-hidden room's ChannelState would reach
+    // every out-of-tree-capable client - everyone would list everyone's meetings.
+    // Hidden makes visibility follow the invitee ACLs (SeeChannel), which is also
+    // what lets `calendar.leave` remove the room from just the leaver's client.
     let cid = ctx
         .create_channel(
             server_id,
             ROOT_CHANNEL_ID,
             RStr::from_str(&name),
-            false, // hidden (detached is already tree-invisible; invitee ACLs gate access)
+            true,  // hidden (visible only with SeeChannel, i.e. to invitees)
             false, // registered_can_manage
             true,  // detached
             PCHAT_SIGNAL_V1,
@@ -483,9 +495,12 @@ impl CalendarPlugin {
         let Some(cid) = ensure_room(&self.shared, ctx, server_id, &event_id) else {
             return;
         };
-        // Token joiners may not be in the original ACL; grant them explicitly.
+        // Grant unconditionally (idempotent host-side): token joiners were
+        // never in the creation ACL, and a participant who LEFT the room
+        // (`calendar.leave` revoked their entry) must be re-admitted when they
+        // rejoin from the calendar.
+        let _ = ctx.grant_channel_access(server_id, cid, uid as u32);
         if !is_participant {
-            let _ = ctx.grant_channel_access(server_id, cid, uid as u32);
             let mut st = lock(&self.shared.state);
             if let Some(ev) = st.events.get_mut(&event_id) {
                 if !ev.participant_uids.contains(&uid) {
@@ -501,6 +516,50 @@ impl CalendarPlugin {
             MSG_ROOM,
             &serde_json::to_vec(&payload).unwrap_or_default(),
         );
+    }
+
+    /// Handle `calendar.leave`: revoke the sender's access to a meeting room
+    /// they no longer want listed. Only channels this plugin provisioned are
+    /// ever touched (the id must map to a known meeting), so a client cannot
+    /// use this to strip its ACLs from arbitrary channels. Event participation
+    /// is unchanged - the meeting stays on their calendar and `calendar.join`
+    /// re-admits them.
+    fn handle_leave(&self, ctx: &PluginContext_TO<RArc<()>>, msg: &PluginMessageIn) {
+        let server_id = msg.server_id;
+        let sender = msg.sender_session;
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(msg.payload.as_slice()) else {
+            return;
+        };
+        let Some(channel_id) = v
+            .get("channelId")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|c| u32::try_from(c).ok())
+        else {
+            return;
+        };
+        let uid = {
+            let st = lock(&self.shared.state);
+            let uid = st.sessions.get(&(server_id, sender)).copied().unwrap_or(-1);
+            let owned = st
+                .events
+                .values()
+                .any(|ev| ev.server_id == server_id && ev.channel_id == Some(channel_id));
+            if !owned {
+                return;
+            }
+            uid
+        };
+        // Guests (-1) never held access; nothing to revoke.
+        if uid < 0 {
+            return;
+        }
+        if !ctx.revoke_channel_access(server_id, channel_id, uid as u32) {
+            tracing::warn!(
+                channel_id,
+                uid,
+                "calendar: leave failed to revoke room access"
+            );
+        }
     }
 
     /// Handle `calendar.inviteLink`: the organiser requests a shareable link.
@@ -781,6 +840,7 @@ impl MumblePlugin for CalendarPlugin {
             MSG_PUBLISH => self.handle_publish(ctx, server_id, sender, bytes),
             MSG_AVAILABILITY => self.handle_availability(ctx, server_id, sender, bytes),
             MSG_JOIN => self.handle_join(ctx, &msg),
+            MSG_LEAVE => self.handle_leave(ctx, &msg),
             MSG_INVITE_LINK => self.handle_invite_link(ctx, &msg),
             _ => {}
         }
