@@ -108,6 +108,15 @@
     PROCESS_MUMBLE_TCP_MESSAGE(FancyAuditEvent, 168) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyAuditConfig, 170) \
     PROCESS_MUMBLE_TCP_MESSAGE(FancyAuditConfigUpdate, 171) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyForumPost, 157) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyForumFetch, 158) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyForumFetchResponse, 159) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyForumDelete, 160) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyScheduledMessage, 161) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyScheduledMessageList, 162) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyScheduledMessageListResponse, 163) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyScheduledMessageCancel, 164) \
+    PROCESS_MUMBLE_TCP_MESSAGE(FancyScheduledMessageAck, 165) \
     PROCESS_MUMBLE_TCP_MESSAGE(PluginMessage, 200) \
     PROCESS_MUMBLE_TCP_MESSAGE(PluginRegistry, 201)
 
