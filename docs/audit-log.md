@@ -48,6 +48,16 @@ different trust and privacy properties.
   off halts new entries but deletes nothing, deletion is a separate audited
   action, and the toggle change is itself an audit entry — so disabling the
   watcher is the first thing the log shows.
+- **Permissions ride on ACL today, behind an `AuditAuthz` seam** (§9.1) so the
+  model can be replaced later without touching call sites.
+- **Retention is configurable, default 30 days** (§7.9) — the one thing that
+  deletes on a schedule.
+- **Full-text search goes through a per-backend strategy** (§4): FTS5 / tsvector
+  / `FULLTEXT`, with a `LIKE` fallback, chosen from live capabilities.
+- **Advanced SQL mode gets the full surface** — joins, unions, CTEs, aggregates
+  — made safe by moving the boundary into the database: read-only,
+  view-scoped, engine-enforced (grants on PG/MySQL, an authorizer on SQLite),
+  with resource guards and every query audited (§10.4).
 
 ---
 
@@ -176,9 +186,21 @@ Notes:
   categories richly and unknown ones as key/value.
 - **Indexes**: `(server_id, ts)`, `(server_id, target_user_id, ts)`,
   `(server_id, actor_user_id, ts)`, `(server_id, category, ts)`. Text search on
-  `reason` / `detail_json` is a `LIKE`/FTS depending on backend (SQLite FTS5
-  where available; `LIKE` fallback for MySQL/PG parity, matching how the pchat
-  tables already keep to a portable subset).
+  `reason` / `detail_json` goes through a **search-strategy seam** rather than a
+  lowest-common-denominator `LIKE`: a `TextSearch` trait with one implementation
+  per backend, each using the best that backend offers —
+
+  | Backend | Strategy |
+  |---|---|
+  | SQLite | FTS5 virtual table (real ranked full-text) |
+  | PostgreSQL | `tsvector` + GIN index, `to_tsquery` |
+  | MySQL/MariaDB | `FULLTEXT` index, `MATCH ... AGAINST` |
+  | fallback | `LIKE`, for any backend/build without the above |
+
+  The strategy is selected once at startup from the live connection's
+  capabilities (not assumed from the configured backend name, so a SQLite build
+  without FTS5 degrades cleanly). Callers get one API; only ranking quality
+  differs. The fallback keeps a new backend working before its strategy exists.
 - **Migrations** follow the `Table::migrate(fromSchemaVersion, toSchemaVersion)`
   override that `LogTable` uses.
 
@@ -395,9 +417,23 @@ this to a plugin. For dashboards/metrics specifically (Grafana, Prometheus,
 Loki, OTLP, Kibana, InfluxDB), see §8.
 
 ### 7.9 Retention & privacy policy surface
-Per-category retention (e.g. keep bans forever, raw mute-edges 30 days,
-aggregates 1 year). Right-to-erasure tooling for a specific user. A documented
-default so communities inherit sane behaviour.
+**Configurable per part (§9.2), default 30 days.** One number to reason about
+out of the box, overridable wherever a community needs longer or shorter.
+Retention is the *only* thing that deletes on a schedule — toggles never do
+(§9.2) — and expiry is applied as a documented, audited sweep.
+
+Right-to-erasure tooling for a specific user sits alongside it, as an explicit
+operator action rather than an automatic behaviour.
+
+> **Worth a deliberate choice per deployment:** 30 days is a sensible privacy
+> default for *signal* data, but it is short for the moderation record itself —
+> "when was this user banned, and by whom, and why" is usually asked months
+> later, and a 30-day default silently answers "no idea". Communities that want
+> an actual moderation history should raise `audit.*` (bans especially) well
+> past the default; the per-part override exists precisely so the privacy-
+> sensitive parts and the accountability parts don't have to share a number.
+> Note also that expiring a chained entry (§7.1) leaves a verifiable gap rather
+> than a silent hole — the chain records that something was aged out.
 
 ### 7.10 Architecture: an audit plugin on an enriched event bridge (decided)
 
@@ -621,6 +657,25 @@ most privacy-sensitive data — requires `ViewAudit` **plus** the raw-signal par
 being enabled (§9.2); it is not implied by a plain audit view. **Targets** never
 get access to signals about themselves (§6.3).
 
+**Backed by ACL for now, behind a seam.** Both permissions are implemented as
+Mumble ACL bits — that is what exists, what admins already understand, and what
+the client permission editor can already display. But ACL is channel-scoped and
+coarse, and a future model (roles, per-scope grants, time-boxed audit access)
+may fit an audit system better. So the audit plugin does **not** call the ACL
+API directly; it resolves permissions through a narrow interface:
+
+```rust
+trait AuditAuthz {
+    fn can_view(&self, server: ServerId, session: SessionId) -> bool;
+    fn can_configure(&self, server: ServerId, session: SessionId) -> bool;
+    fn can_view_raw_signals(&self, server: ServerId, session: SessionId) -> bool;
+}
+```
+
+with an ACL-backed implementation today. Swapping in a different model later is
+then one implementation, not a hunt through call sites — and the DB grants in
+§10.4 key off the same three answers.
+
 ### 9.2 Fine-grained, per-part toggles
 
 There is no single on/off. Every collectable/exportable part is an independent
@@ -754,13 +809,28 @@ from one to the other:
 - **Saved & shareable searches** (named, URL-encoded), so a community can pin
   "recent bans without a reason" or "new-account reports this week".
 
-**It is not raw SQL against the database.** The DSL is a restricted, safe grammar
-that **compiles to a parameterized query** server-side (no injection, no
-arbitrary table access), scoped to the audit table and **filtered by the
-caller's permissions** — a `ViewAudit` holder without the raw-signal part
-enabled simply can't express or receive who→whom edges. Both the filter builder
-and the DSL lower to the exact same `FancyAuditQuery` (§5) plus a text
-predicate, so there is one gated query path, not two.
+#### Two execution modes
+
+Power users asked for the *full* SQL surface — joins, unions, CTEs, aggregates —
+not a toy subset. That is worth having, but it changes where the security
+boundary can live, so the viewer has two modes:
+
+| Mode | Reached by | Expressiveness | Boundary |
+|---|---|---|---|
+| **Simple** | filter builder, and the plain `field = value` DSL | flat filters over audit entries | lowers to `FancyAuditQuery` (§5); parameterised, permission-gated in one place |
+| **Advanced SQL** | the query editor, opt-in | full `SELECT`: joins, unions, CTEs, aggregates, window functions | read-only execution against permission-scoped **views**, enforced by the database engine (§10.4) |
+
+Simple mode stays the default and covers the point-and-click path. Advanced mode
+is what a technical user drops into when they want "every user banned within 24h
+of their first message, joined to their report count".
+
+**Why the boundary has to move.** In the restricted design, the parser *was* the
+security boundary: a whitelist that could only express what `FancyAuditQuery`
+allows. That does not survive joins and unions — `UNION SELECT` and arbitrary
+joins are precisely the primitives that reach other tables, and a whitelist that
+permits them is no longer a boundary. So for advanced mode the enforcement moves
+down into the database, where it is a real, engine-level control rather than
+string inspection (§10.4).
 
 #### Parser: what to build on (researched)
 
@@ -779,35 +849,75 @@ Two viable options instead:
 
 | Option | Crate | Licence | Health (Jul 2026) | Trade-off |
 |---|---|---|---|---|
-| **A. Parse a SQL expression subset** | [`sqlparser`](https://crates.io/crates/sqlparser) (sqlparser-rs, used by Apache DataFusion) | Apache-2.0 | v0.62, ~10.4M recent downloads | Real, battle-tested SQL grammar for free; `Parser::new(&dialect).try_with_sql(s)?.parse_expr()` parses a standalone `WHERE`-style expression. We then **walk the AST and whitelist** allowed fields/operators, rejecting everything else. Users get genuinely familiar SQL syntax. Risk: the grammar is far larger than we want, so the whitelist must be deny-by-default and well tested. |
-| **B. Hand-roll a tiny grammar** | [`winnow`](https://crates.io/crates/winnow) or [`chumsky`](https://crates.io/crates/chumsky) | MIT | winnow ~204M recent; chumsky ~8.6M recent, excellent error messages | Safest *by construction*: the DSL literally cannot express more than the gated query allows, so there is no whitelist to get wrong. Cost: we own the grammar, the errors and the autocomplete metadata. |
+| **A. Real SQL grammar** | [`sqlparser`](https://crates.io/crates/sqlparser) (sqlparser-rs, used by Apache DataFusion) | Apache-2.0 | v0.62, ~10.4M recent downloads | Battle-tested SQL grammar for free, and the only option that can serve *both* modes: `parse_expr()` for a standalone `WHERE`-style expression in simple mode, full statement parsing for validation/shaping in advanced mode (§10.4). Users get genuinely familiar syntax. |
+| **B. Hand-roll a tiny grammar** | [`winnow`](https://crates.io/crates/winnow) or [`chumsky`](https://crates.io/crates/chumsky) | MIT | winnow ~204M recent; chumsky ~8.6M recent, excellent error messages | Safe by construction, but caps expressiveness at whatever we implement — it cannot deliver the requested joins/unions without becoming a SQL engine of our own. Would also mean owning the grammar, errors and autocomplete metadata. |
 
-**Decided: A — `sqlparser` with a deny-by-default AST whitelist.** The ask is
-explicitly a *SQL-like* language, and `sqlparser` gives that syntax (and all its
-edge cases) for free under a compatible licence. Time helpers like `now-7d` are
-handled by pre-processing before the parse, or expressed as
-`ts > now() - interval '7 days'`.
+**Decided: A — `sqlparser`.** The ask is explicitly a SQL language, and
+`sqlparser` gives the real grammar (and all its edge cases) for free under a
+compatible licence. In **simple mode** it parses an expression and lowers to
+`FancyAuditQuery`; in **advanced mode** it parses the full statement for
+validation and shaping (§10.4). Time helpers like `now-7d` are pre-processed
+before the parse, or written as `ts > now() - interval '7 days'`.
 
-Implementation notes for A:
+### 10.4 Advanced SQL: read-only, view-scoped, engine-enforced
 
-- **Deny by default.** Walk the parsed `Expr` tree and accept only an explicit
-  allow-list of node kinds (binary comparison, `AND`/`OR`/`NOT`, `LIKE`, `IN`,
-  literals, and identifiers that resolve to known audit fields). *Anything*
-  else — function calls, subqueries, casts, wildcards, unknown identifiers —
-  is a hard parse error with a helpful message, never a silent pass-through.
-- **Identifiers are mapped, not interpolated.** `category`, `actor.name`,
-  `target.name`, `channel_id`, `ts`, `severity`, `source` map to known columns;
-  everything else is rejected. No user string ever reaches SQL as text.
-- **Lower to `FancyAuditQuery` (§5), not to SQL.** The whitelist output is the
-  same filter struct the point-and-click builder produces, so permission gating
-  and parameterisation happen in exactly one place.
-- **Test the rejections, not just the accepts.** The whitelist is the security
-  boundary, so the test suite is mostly negative cases (subquery, function call,
-  `OR 1=1`, unknown column, nested select) — each must fail closed.
+Full SQL is safe here only because the caller never touches base tables and
+never holds write capability. Four layers, in order of importance:
 
-If the whitelist ever proves awkward to keep tight, B is a clean fallback: the
-lowering target is identical either way, so **the parser is swappable** without
-touching the query path or the UI.
+1. **Views, not tables.** Advanced mode can reference only a small set of
+   curated read-only views — `audit_entries`, `audit_flags`,
+   `audit_signals_agg`, and `audit_signal_edges`. The views project exactly the
+   columns an auditor may see (identity snapshots, no internal chain plumbing)
+   and are the *only* objects in scope.
+2. **The database enforces it, not the parser.** This is the actual boundary:
+   - **PostgreSQL / MySQL** — a dedicated role with `GRANT SELECT` on those
+     views and nothing else. A `UNION SELECT` against any other table fails in
+     the engine, not in our code.
+   - **SQLite** (no roles) — a separate connection opened `SQLITE_OPEN_READONLY`
+     with an **authorizer callback** (`sqlite3_set_authorizer`, exposed by
+     rusqlite as `set_authorizer`) that denies every action except `SELECT` on
+     the whitelisted views, and refuses `ATTACH`, `PRAGMA`, DDL and DML
+     outright. An authorizer is an engine-level hook, so it holds regardless of
+     how the SQL is written.
+3. **Permission scoping lives in the grant.** `audit_signal_edges` (the raw
+   who→whom data) is only reachable when the caller has that part enabled
+   (§9.2); otherwise the object is simply not authorised. A `ViewAudit` holder
+   without it cannot reach the data no matter what SQL they write — there is no
+   query to get clever with.
+4. **Parse-time checks as defence in depth**, not as the boundary: reject
+   anything that isn't a single `SELECT`/CTE, enforce a `LIMIT`, and extract the
+   referenced objects for a fast pre-check and for autocomplete.
+
+**Resource guards.** Full SQL means a user can write a cartesian join, so
+advanced mode runs with a statement timeout, a hard row cap, and (SQLite) a
+progress handler that can interrupt a long-running statement. A slow query
+degrades that one request, not the server.
+
+**Every advanced query is audited** (§7.2) with its SQL text — the people with
+the most query power are the ones most worth logging.
+
+**Honest trade-off.** Advanced mode's safety depends on the deployment being
+configured correctly (the right grants, or the authorizer being installed).
+Simple mode has no such dependency because it never emits free-form SQL. That is
+why simple mode stays the default and advanced mode is an explicit opt-in.
+
+### 10.5 Making it approachable
+
+Full SQL must not become the only way to get answers:
+
+- **Filter builder first** (§10.3) — the default surface; no syntax at all.
+- **Builder → SQL escape hatch.** The pills can *generate* the equivalent SQL
+  and drop it into the editor, which is how a non-technical user gradually
+  learns the language instead of facing a blank editor.
+- **Syntax autocomplete** in the editor: view and column names, enum values
+  (`category`, `severity`, `source`), and facet values pulled live from the
+  data, plus signature help for functions. The server exposes the view schema +
+  enum domains for this, so the client never hardcodes them.
+- **Query templates** — a starter library ("bans without a reason this month",
+  "most-actioned users", "moderator activity by day") that are ordinary saved
+  queries, so they double as worked examples.
+- **Explain / dry-run** — show the row estimate and let the user cancel before
+  running something expensive.
 
 [`tantivy`](https://crates.io/crates/tantivy) (MIT, healthy) is worth noting but
 is a different thing: a full search *engine* with its own index, not a SQL
@@ -852,19 +962,14 @@ Since it's a plugin, the first real work is the **bridge event stream** (§7.10)
 
 ## 12. Open questions
 
-- **`ViewAudit` / `ConfigureAudit` wiring.** Both are decided (§9.1); the open
-  part is the mechanics — a Fancy ACL bit vs. a plugin-managed grant, and the
-  client permission-editor UI to assign them.
-- **FTS availability.** SQLite FTS5 gives real search; MySQL/PG parity may mean a
-  `LIKE` fallback or backend-specific paths. Match whatever the pchat tables do.
-- **Search DSL grammar scope (§10.3).** The *parser* question is settled —
-  `sqlparser` with a deny-by-default AST whitelist (the one crate that claimed
-  "Lucene → SQL" is AGPL and unmaintained; see §10.3). What's still open is how
-  much grammar to expose in v1: equality + time range + free text is enough to
-  ship, with `LIKE`/wildcards, `IN` and nested `OR` following once the whitelist
-  has tests behind it.
-- **Retention defaults** per part (§9.2) — what does the reference deployment
-  want (e.g. bans forever, raw mute-edges 30 days, aggregates 1 year)?
+- **Per-part retention overrides beyond the 30-day default (§7.9).** The default
+  is decided; what a *reference* deployment should raise for `audit.ban` and
+  friends (so the moderation record outlives the privacy-sensitive data) is
+  still a policy call.
+- **Advanced-SQL rollout (§10.4).** Ship it on by default for `ViewAudit`
+  holders, or keep it behind a separate opt-in until the per-backend grants and
+  the SQLite authorizer have soak time? (Leaning: opt-in first — simple mode
+  covers the common path and has no deployment-config dependency.)
 - **Log retention floor for the event stream (§7.10).** Decided that it is a
   bounded Kafka-like log; still open is *how* bounded (size vs age), and whether
   the audit consumer should get a stricter floor than reactive consumers so it
