@@ -5065,15 +5065,6 @@ void Server::msgFancyPollVote(ServerUser *uSource, MumbleProto::FancyPollVote &m
 }
 
 
-#undef RATELIMIT
-#undef MSG_SETUP
-#undef MSG_SETUP_NO_UNIDLE
-#undef VICTIM_SETUP
-#undef PERM_DENIED
-#undef PERM_DENIED_TYPE
-#undef PERM_DENIED_FALLBACK
-#undef PERM_DENIED_HASH
-
 // Audit log (docs/audit-log.md section 5): the AuditLogBridge translates the
 // wire messages to/from the fancy-audit plugin over the generic plugin-host
 // request/response seam.
@@ -5113,3 +5104,12 @@ void Server::msgFancyAuditConfigUpdate(ServerUser *uSource, MumbleProto::FancyAu
 void Server::msgFancyAuditResponse(ServerUser *, MumbleProto::FancyAuditResponse &) {}
 void Server::msgFancyAuditEvent(ServerUser *, MumbleProto::FancyAuditEvent &) {}
 void Server::msgFancyAuditConfig(ServerUser *, MumbleProto::FancyAuditConfig &) {}
+
+#undef RATELIMIT
+#undef MSG_SETUP
+#undef MSG_SETUP_NO_UNIDLE
+#undef VICTIM_SETUP
+#undef PERM_DENIED
+#undef PERM_DENIED_TYPE
+#undef PERM_DENIED_FALLBACK
+#undef PERM_DENIED_HASH

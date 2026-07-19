@@ -23,20 +23,23 @@
 #include <QtCore/QReadLocker>
 
 // Identifiers shared with the `mumble-audit` Rust plugin (audit/src/lib.rs).
+// NB: prefixed kAudit* (not the generic kPluginName other bridges use) so
+// the unity build does not collide anonymous-namespace symbols across
+// translation units.
 namespace {
-const QString kPluginName       = QStringLiteral("fancy-audit");
-const QString kQueryType        = QStringLiteral("audit.query");
-const QString kVerifyType       = QStringLiteral("audit.verify");
-const QString kIngestType       = QStringLiteral("audit.ingest");
-const QString kConfigGetType    = QStringLiteral("audit.config.get");
-const QString kConfigSetType    = QStringLiteral("audit.config.set");
-const QString kResultType       = QStringLiteral("audit.result");
-const QString kVerifyResultType = QStringLiteral("audit.verify.result");
-const QString kConfigType       = QStringLiteral("audit.config");
+const QString kAuditPluginName       = QStringLiteral("fancy-audit");
+const QString kAuditQueryType        = QStringLiteral("audit.query");
+const QString kAuditVerifyType       = QStringLiteral("audit.verify");
+const QString kAuditIngestType       = QStringLiteral("audit.ingest");
+const QString kAuditConfigGetType    = QStringLiteral("audit.config.get");
+const QString kAuditConfigSetType    = QStringLiteral("audit.config.set");
+const QString kAuditResultType       = QStringLiteral("audit.result");
+const QString kAuditVerifyResultType = QStringLiteral("audit.verify.result");
+const QString kAuditConfigType       = QStringLiteral("audit.config");
 
 /// The server-side page-size cap (docs/audit-log.md section 5).
-constexpr uint32_t kMaxLimit     = 200;
-constexpr uint32_t kDefaultLimit = 50;
+constexpr uint32_t kAuditMaxLimit     = 200;
+constexpr uint32_t kAuditDefaultLimit = 50;
 
 QJsonObject identityJson(const ServerUser *u) {
 	QJsonObject obj;
@@ -101,16 +104,16 @@ void entryFromJson(const QJsonObject &obj, MumbleProto::AuditEntry *out) {
 AuditLogBridge::AuditLogBridge(Server *server, PluginHostManager *pluginHost)
 	: m_server(server), m_pluginHost(pluginHost) {
 	m_pluginHost->registerResponseHandler(
-		kResultType, [this](uint32_t targetSession, const QString &requestId, const QByteArray &payload) {
+		kAuditResultType, [this](uint32_t targetSession, const QString &requestId, const QByteArray &payload) {
 			deliverResult(targetSession, requestId, payload);
 		});
 	m_pluginHost->registerResponseHandler(
-		kVerifyResultType,
+		kAuditVerifyResultType,
 		[this](uint32_t targetSession, const QString &requestId, const QByteArray &payload) {
 			deliverVerifyResult(targetSession, requestId, payload);
 		});
 	m_pluginHost->registerResponseHandler(
-		kConfigType, [this](uint32_t targetSession, const QString &requestId, const QByteArray &payload) {
+		kAuditConfigType, [this](uint32_t targetSession, const QString &requestId, const QByteArray &payload) {
 			deliverConfig(targetSession, requestId, payload);
 		});
 }
@@ -131,14 +134,14 @@ void AuditLogBridge::handleQuery(ServerUser *u, const MumbleProto::FancyAuditQue
 	if (msg.has_verify_chain() && msg.verify_chain()) {
 		QJsonObject req;
 		req.insert(QStringLiteral("request_id"), requestId);
-		m_pluginHost->sendPluginRequest(kPluginName, kVerifyType, u->uiSession,
+		m_pluginHost->sendPluginRequest(kAuditPluginName, kAuditVerifyType, u->uiSession,
 										QJsonDocument(req).toJson(QJsonDocument::Compact));
 		return;
 	}
 
-	uint32_t limit = msg.has_limit() && msg.limit() > 0 ? msg.limit() : kDefaultLimit;
-	if (limit > kMaxLimit) {
-		limit = kMaxLimit;
+	uint32_t limit = msg.has_limit() && msg.limit() > 0 ? msg.limit() : kAuditDefaultLimit;
+	if (limit > kAuditMaxLimit) {
+		limit = kAuditMaxLimit;
 	}
 
 	QJsonObject req;
@@ -180,7 +183,7 @@ void AuditLogBridge::handleQuery(ServerUser *u, const MumbleProto::FancyAuditQue
 		QMutexLocker lock(&m_pendingMutex);
 		m_pendingLimits.insert(requestId, limit);
 	}
-	m_pluginHost->sendPluginRequest(kPluginName, kQueryType, u->uiSession,
+	m_pluginHost->sendPluginRequest(kAuditPluginName, kAuditQueryType, u->uiSession,
 									QJsonDocument(req).toJson(QJsonDocument::Compact));
 }
 
@@ -196,7 +199,7 @@ void AuditLogBridge::handleConfigUpdate(ServerUser *u, const MumbleProto::FancyA
 	QJsonObject req;
 	req.insert(QStringLiteral("request_id"), QString());
 	req.insert(QStringLiteral("settings"), settings);
-	m_pluginHost->sendPluginRequest(kPluginName, kConfigSetType, u->uiSession,
+	m_pluginHost->sendPluginRequest(kAuditPluginName, kAuditConfigSetType, u->uiSession,
 									QJsonDocument(req).toJson(QJsonDocument::Compact));
 }
 
@@ -216,7 +219,7 @@ void AuditLogBridge::pushConfig(ServerUser *u) {
 	}
 	QJsonObject req;
 	req.insert(QStringLiteral("request_id"), QString());
-	m_pluginHost->sendPluginRequest(kPluginName, kConfigGetType, u->uiSession,
+	m_pluginHost->sendPluginRequest(kAuditPluginName, kAuditConfigGetType, u->uiSession,
 									QJsonDocument(req).toJson(QJsonDocument::Compact));
 }
 
@@ -234,7 +237,7 @@ void AuditLogBridge::emitEvent(const QString &kind, const ServerUser *actor, con
 		event.insert(QStringLiteral("target"), identityJson(target));
 	}
 	if (channelId >= 0) {
-		event.insert(QStringLiteral("channel_id"), channelId);
+		event.insert(QStringLiteral("channel_id"), static_cast< qint64 >(channelId));
 	}
 	if (!detail.isEmpty()) {
 		event.insert(QStringLiteral("detail_json"),
@@ -253,7 +256,7 @@ void AuditLogBridge::emitEvent(const QString &kind, const ServerUser *actor, con
 
 	// sender_session 0 marks the message as core-originated; the plugin drops
 	// `audit.ingest` from any real session (anti-forgery).
-	m_pluginHost->sendPluginRequest(kPluginName, kIngestType, 0,
+	m_pluginHost->sendPluginRequest(kAuditPluginName, kAuditIngestType, 0,
 									QJsonDocument(envelope).toJson(QJsonDocument::Compact));
 }
 
