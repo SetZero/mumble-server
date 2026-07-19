@@ -40,14 +40,14 @@ pub mod plugin;
 
 pub use crate::client_manifest::{
     ActionRow, Button, ButtonStyle, Capability, ChannelSelect, Checkbox, CheckboxGroup,
-    CheckboxOption, ClientManifest, Component, ConfigSetting, Container, FileComponent, FileUpload, Interaction,
-    InteractionKind, InteractionResponse, Label, MediaGallery, MediaGalleryItem, MentionableSelect,
-    ModalFieldValue, OptionChoice, OptionType, OptionValue, PanelRow, RadioGroup, RadioOption,
-    ResponseKind, RoleSelect, Section, SectionAccessory, SelectMenu, SelectOption, Separator,
-    SeparatorSpacing, SettingType, SettingsPanel, SlashCommand, SlashCommandOption, StringSelect, TextDisplay,
-    TextInput, TextInputBuilder, TextInputStyle, Thumbnail, ToastLevel, UnfurledMediaItem,
-    UserSelect, CLIENT_MANIFEST_SCHEMA_VERSION, INTERACTION_PAYLOAD_TYPE,
-    INTERACTION_RESPONSE_PAYLOAD_TYPE,
+    CheckboxOption, ClientManifest, Component, ConfigSetting, Container, FileComponent, FileUpload,
+    Interaction, InteractionKind, InteractionResponse, Label, MediaGallery, MediaGalleryItem,
+    MentionableSelect, ModalFieldValue, OptionChoice, OptionType, OptionValue, PanelRow,
+    RadioGroup, RadioOption, ResponseKind, RoleSelect, Section, SectionAccessory, SelectMenu,
+    SelectOption, Separator, SeparatorSpacing, SettingType, SettingsPanel, SlashCommand,
+    SlashCommandOption, StringSelect, TextDisplay, TextInput, TextInputBuilder, TextInputStyle,
+    Thumbnail, ToastLevel, UnfurledMediaItem, UserSelect, CLIENT_MANIFEST_SCHEMA_VERSION,
+    INTERACTION_PAYLOAD_TYPE, INTERACTION_RESPONSE_PAYLOAD_TYPE,
 };
 pub use crate::commands::{
     extract_field, extract_option, parse_interaction, send_interaction_response,

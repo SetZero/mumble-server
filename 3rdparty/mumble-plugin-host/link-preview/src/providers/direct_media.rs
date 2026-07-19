@@ -71,7 +71,10 @@ async fn fetch_image(client: &reqwest::Client, url: &Url, kind: Kind) -> Option<
     let mut fields = vec![
         Field {
             name: Some("Resolution".to_owned()),
-            value: Some(format!("{} \u{00d7} {}", res.original_width, res.original_height)),
+            value: Some(format!(
+                "{} \u{00d7} {}",
+                res.original_width, res.original_height
+            )),
             inline: Some(true),
         },
         Field {

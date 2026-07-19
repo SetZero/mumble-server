@@ -1,0 +1,5 @@
+# rustfmt.toml pins `newline_style = "Unix"`, so the working tree must be LF on
+# every platform. Without this, git's autocrlf hands Windows checkouts CRLF
+# sources and `cargo fmt --check` fails locally while passing in Linux CI.
+*.rs text eol=lf
+*.toml text eol=lf

@@ -618,12 +618,14 @@ impl Host {
                 tracing::warn!(plugin = %entry.name, error = %e, "re-announce on_client_connected failed");
             }
             if let Some(envelope) = &entry.info_envelope {
-                if let abi_stable::std_types::RResult::RErr(e) = self.base_context.send_plugin_data_raw(
-                    info.server_id,
-                    info.session_id,
-                    PLUGIN_INFO_DATA_ID,
-                    envelope,
-                ) {
+                if let abi_stable::std_types::RResult::RErr(e) =
+                    self.base_context.send_plugin_data_raw(
+                        info.server_id,
+                        info.session_id,
+                        PLUGIN_INFO_DATA_ID,
+                        envelope,
+                    )
+                {
                     tracing::warn!(plugin = %entry.name, error = %e, "re-announce info delivery failed");
                 }
             }
@@ -1058,7 +1060,8 @@ mod tests {
             .expect("admin token generated");
         assert_eq!(token.len(), 64);
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_url").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_url")
+                .map(String::as_str),
             Some(format!("http://127.0.0.1:{DEFAULT_FILE_SERVER_PORT}").as_str())
         );
         // live-doc must receive the same token the file-server uses.
@@ -1076,15 +1079,18 @@ mod tests {
         ]);
         // Existing token reused, not regenerated.
         assert_eq!(
-            cfg.get("plugin.fancy-file-server.admin_token").map(String::as_str),
+            cfg.get("plugin.fancy-file-server.admin_token")
+                .map(String::as_str),
             Some("operator-token")
         );
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_url").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_url")
+                .map(String::as_str),
             Some("http://127.0.0.1:9000")
         );
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_admin_token").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_admin_token")
+                .map(String::as_str),
             Some("operator-token")
         );
     }
@@ -1093,15 +1099,20 @@ mod tests {
     fn bridge_never_overwrites_operator_overrides() {
         let cfg = run_bridge(&[
             ("plugin.fancy-file-server.admin_token", "tok"),
-            ("plugin.fancy-live-doc.file_server_url", "http://files.example:7000"),
+            (
+                "plugin.fancy-live-doc.file_server_url",
+                "http://files.example:7000",
+            ),
             ("plugin.fancy-live-doc.file_server_admin_token", "custom"),
         ]);
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_url").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_url")
+                .map(String::as_str),
             Some("http://files.example:7000")
         );
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_admin_token").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_admin_token")
+                .map(String::as_str),
             Some("custom")
         );
     }

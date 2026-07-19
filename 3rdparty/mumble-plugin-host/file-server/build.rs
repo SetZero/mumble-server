@@ -94,7 +94,10 @@ fn run_npm(web_dir: &Path, args: &[&str]) -> bool {
     match npm_command(web_dir).args(args).status() {
         Ok(status) if status.success() => true,
         Ok(status) => {
-            println!("cargo:warning=`npm {}` exited with {status}", args.join(" "));
+            println!(
+                "cargo:warning=`npm {}` exited with {status}",
+                args.join(" ")
+            );
             false
         }
         Err(e) => {
@@ -130,7 +133,10 @@ fn build_frontend(web_dir: &Path, dist_file: &Path) {
 /// without it because `download.rs` embeds it with `include_str!`).
 fn ensure_artifact(dist_file: &Path, reason: &str) {
     if dist_file.is_file() {
-        println!("cargo:warning=using committed {} ({reason})", dist_file.display());
+        println!(
+            "cargo:warning=using committed {} ({reason})",
+            dist_file.display()
+        );
     } else {
         panic!(
             "{reason} and the committed frontend artifact {} is missing. \

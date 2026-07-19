@@ -137,7 +137,6 @@ impl AppState {
             .cloned()
     }
 
-
     /// Configuration handle.
     pub fn cfg(&self) -> &LiveDocConfig {
         &self.inner.cfg
@@ -520,9 +519,15 @@ mod tests {
     async fn owner_and_member_reconnect_after_teardown_without_file_server() {
         let state = test_state();
         let server_id = 1u32;
-        state.set_identity(server_id, 2, ident("owner-cert", 2)).await;
-        state.set_identity(server_id, 3, ident("friend-cert", 3)).await;
-        state.set_identity(server_id, 4, ident("stranger-cert", 4)).await;
+        state
+            .set_identity(server_id, 2, ident("owner-cert", 2))
+            .await;
+        state
+            .set_identity(server_id, 3, ident("friend-cert", 3))
+            .await;
+        state
+            .set_identity(server_id, 4, ident("stranger-cert", 4))
+            .await;
 
         let key = DocKey {
             server_id,
@@ -542,8 +547,14 @@ mod tests {
         room.add_member("friend-cert".into()).await;
         drop(room);
 
-        assert!(state.session_can_connect(server_id, 2, &key).await, "owner before teardown");
-        assert!(state.session_can_connect(server_id, 3, &key).await, "friend before teardown");
+        assert!(
+            state.session_can_connect(server_id, 2, &key).await,
+            "owner before teardown"
+        );
+        assert!(
+            state.session_can_connect(server_id, 3, &key).await,
+            "friend before teardown"
+        );
 
         // The viewer leaves and the grace teardown fires (invoked directly
         // here instead of waiting out the grace timer).

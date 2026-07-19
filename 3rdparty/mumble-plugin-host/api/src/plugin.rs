@@ -180,7 +180,13 @@ pub trait PluginContext: Send + Sync + 'static {
         target_session: SessionId,
         payload: RSlice<'_, u8>,
     ) -> PluginResult<()> {
-        let _ = (server_id, response_type, request_id, target_session, payload);
+        let _ = (
+            server_id,
+            response_type,
+            request_id,
+            target_session,
+            payload,
+        );
         ROk(())
     }
 
@@ -203,7 +209,10 @@ pub trait PluginContext: Send + Sync + 'static {
     ///
     /// Returns the channel id, or `RNone` on failure.  The default returns
     /// `RNone`; the real host overrides it.
-    #[allow(clippy::too_many_arguments, reason = "mirrors the server's channel-property surface")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the server's channel-property surface"
+    )]
     fn create_channel(
         &self,
         server_id: ServerId,
@@ -217,7 +226,18 @@ pub trait PluginContext: Send + Sync + 'static {
         expiry_duration_secs: u32,
         invitee_uids: RSlice<'_, u32>,
     ) -> ROption<ChannelId> {
-        let _ = (server_id, parent, name, hidden, registered_can_manage, detached, pchat_protocol, expiry_mode, expiry_duration_secs, invitee_uids);
+        let _ = (
+            server_id,
+            parent,
+            name,
+            hidden,
+            registered_can_manage,
+            detached,
+            pchat_protocol,
+            expiry_mode,
+            expiry_duration_secs,
+            invitee_uids,
+        );
         abi_stable::std_types::RNone
     }
 

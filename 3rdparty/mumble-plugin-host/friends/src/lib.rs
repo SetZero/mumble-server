@@ -233,9 +233,10 @@ impl MumblePlugin for FriendsPlugin {
 
     fn info_json(&self) -> RString {
         PluginInfo {
-            description: "Backs friend direct messages (and a self-notepad) with detached, \
+            description:
+                "Backs friend direct messages (and a self-notepad) with detached, \
                           end-to-end-encrypted, persisted signal channels between registered users."
-                .to_owned(),
+                    .to_owned(),
             author: Some("Fancy Mumble Developers".to_owned()),
             homepage: None,
             tags: vec!["friends".to_owned(), "dm".to_owned(), "e2ee".to_owned()],

@@ -177,7 +177,10 @@ impl<'a> Host<'a> {
     /// child) with the given standard, content-agnostic channel properties.
     /// See [`PluginContext::create_channel`] for the parameter meaning.
     #[must_use]
-    #[allow(clippy::too_many_arguments, reason = "mirrors the server's channel-property surface")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the server's channel-property surface"
+    )]
     pub fn create_channel(
         &self,
         server_id: ServerId,

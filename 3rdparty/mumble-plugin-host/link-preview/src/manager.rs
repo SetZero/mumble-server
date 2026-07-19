@@ -105,7 +105,8 @@ impl Manager {
         }
 
         self.enrich_media(&mut embed.image, DEFAULT_MAX_DIM).await;
-        self.enrich_media(&mut embed.thumbnail, DEFAULT_MAX_DIM).await;
+        self.enrich_media(&mut embed.thumbnail, DEFAULT_MAX_DIM)
+            .await;
         self.enrich_media(&mut embed.favicon, FAVICON_MAX_DIM).await;
         Some(embed)
     }
@@ -275,12 +276,17 @@ mod tests {
         ];
         let valid = validate_urls(&urls);
         let strs: Vec<_> = valid.iter().map(Url::as_str).collect();
-        assert_eq!(strs, vec!["https://example.com/a#frag", "https://example.org/b"]);
+        assert_eq!(
+            strs,
+            vec!["https://example.com/a#frag", "https://example.org/b"]
+        );
     }
 
     #[test]
     fn validate_caps_at_five() {
-        let urls: Vec<String> = (0..10).map(|i| format!("https://example.com/{i}")).collect();
+        let urls: Vec<String> = (0..10)
+            .map(|i| format!("https://example.com/{i}"))
+            .collect();
         assert_eq!(validate_urls(&urls).len(), 5);
     }
 

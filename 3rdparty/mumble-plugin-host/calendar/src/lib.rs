@@ -216,7 +216,10 @@ fn all_sessions(state: &State, server_id: ServerId, except: SessionId) -> Vec<Se
 /// Pull `id` / `organizerId` / `participants[].userId` out of an event JSON.
 fn routing_of(v: &serde_json::Value) -> Option<(String, i64, Vec<i64>)> {
     let id = v.get("id")?.as_str()?.to_string();
-    let organizer = v.get("organizerId").and_then(serde_json::Value::as_i64).unwrap_or(-1);
+    let organizer = v
+        .get("organizerId")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(-1);
     let participants = v
         .get("participants")
         .and_then(serde_json::Value::as_array)
@@ -323,7 +326,11 @@ fn ensure_room(
         let remaining_ms = (ev.end_ms.max(now) - now).max(0);
         let expiry = remaining_ms / 1000 + MEETING_RETENTION_SECS;
         let expiry_secs = expiry.clamp(0, i64::from(u32::MAX)) as u32;
-        (room_name(&ev.title, event_id), invitee_uids(ev), expiry_secs)
+        (
+            room_name(&ev.title, event_id),
+            invitee_uids(ev),
+            expiry_secs,
+        )
     };
 
     // Create the meeting room as a DETACHED channel: parentless (like the root),
@@ -376,7 +383,13 @@ fn notify_room(
         sessions_for_uids(&st, server_id, &uids, SessionId::MAX)
     };
     let payload = serde_json::json!({ "eventId": event_id, "channelId": channel_id });
-    send_to(ctx, server_id, sessions, MSG_ROOM, &serde_json::to_vec(&payload).unwrap_or_default());
+    send_to(
+        ctx,
+        server_id,
+        sessions,
+        MSG_ROOM,
+        &serde_json::to_vec(&payload).unwrap_or_default(),
+    );
 }
 
 /// Background loop that provisions rooms as meeting start times arrive.
@@ -452,9 +465,10 @@ impl CalendarPlugin {
         let (uid, is_participant) = {
             let st = lock(&self.shared.state);
             let uid = st.sessions.get(&(server_id, sender)).copied().unwrap_or(-1);
-            let is_participant = st.events.get(&event_id).is_some_and(|ev| {
-                ev.organizer_uid == uid || ev.participant_uids.contains(&uid)
-            });
+            let is_participant = st
+                .events
+                .get(&event_id)
+                .is_some_and(|ev| ev.organizer_uid == uid || ev.participant_uids.contains(&uid));
             (uid, is_participant)
         };
         // Registered users only; guests (-1) are never admitted.
@@ -480,7 +494,13 @@ impl CalendarPlugin {
             }
         }
         let payload = serde_json::json!({ "eventId": event_id, "channelId": cid });
-        send_to(ctx, server_id, vec![sender], MSG_ROOM, &serde_json::to_vec(&payload).unwrap_or_default());
+        send_to(
+            ctx,
+            server_id,
+            vec![sender],
+            MSG_ROOM,
+            &serde_json::to_vec(&payload).unwrap_or_default(),
+        );
     }
 
     /// Handle `calendar.inviteLink`: the organiser requests a shareable link.
@@ -497,7 +517,9 @@ impl CalendarPlugin {
         let authorized = {
             let st = lock(&self.shared.state);
             let uid = st.sessions.get(&(server_id, sender)).copied().unwrap_or(-1);
-            st.events.get(&event_id).is_some_and(|ev| ev.organizer_uid == uid && uid >= 0)
+            st.events
+                .get(&event_id)
+                .is_some_and(|ev| ev.organizer_uid == uid && uid >= 0)
         };
         if !authorized {
             return;
@@ -505,10 +527,22 @@ impl CalendarPlugin {
         let token = make_token(&self.shared.token_secret, &event_id);
         let url = format!("fancy://meeting/{event_id}?t={token}");
         let payload = serde_json::json!({ "eventId": event_id, "url": url });
-        send_to(ctx, server_id, vec![sender], MSG_INVITE_LINK, &serde_json::to_vec(&payload).unwrap_or_default());
+        send_to(
+            ctx,
+            server_id,
+            vec![sender],
+            MSG_INVITE_LINK,
+            &serde_json::to_vec(&payload).unwrap_or_default(),
+        );
     }
 
-    fn handle_upsert(&self, ctx: &PluginContext_TO<RArc<()>>, server_id: ServerId, sender: SessionId, bytes: &[u8]) {
+    fn handle_upsert(
+        &self,
+        ctx: &PluginContext_TO<RArc<()>>,
+        server_id: ServerId,
+        sender: SessionId,
+        bytes: &[u8],
+    ) {
         let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
             return;
         };
@@ -540,7 +574,13 @@ impl CalendarPlugin {
         send_to(ctx, server_id, targets, MSG_UPSERT, bytes);
     }
 
-    fn handle_delete(&self, ctx: &PluginContext_TO<RArc<()>>, server_id: ServerId, sender: SessionId, bytes: &[u8]) {
+    fn handle_delete(
+        &self,
+        ctx: &PluginContext_TO<RArc<()>>,
+        server_id: ServerId,
+        sender: SessionId,
+        bytes: &[u8],
+    ) {
         let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
             return;
         };
@@ -562,7 +602,13 @@ impl CalendarPlugin {
         send_to(ctx, server_id, targets, MSG_DELETE, bytes);
     }
 
-    fn handle_publish(&self, ctx: &PluginContext_TO<RArc<()>>, server_id: ServerId, sender: SessionId, bytes: &[u8]) {
+    fn handle_publish(
+        &self,
+        ctx: &PluginContext_TO<RArc<()>>,
+        server_id: ServerId,
+        sender: SessionId,
+        bytes: &[u8],
+    ) {
         let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
             return;
         };
@@ -714,7 +760,9 @@ impl MumblePlugin for CalendarPlugin {
         server_id: ServerId,
         session: SessionId,
     ) -> PluginResult<()> {
-        let _ = lock(&self.shared.state).sessions.remove(&(server_id, session));
+        let _ = lock(&self.shared.state)
+            .sessions
+            .remove(&(server_id, session));
         ROk(())
     }
 
@@ -856,7 +904,10 @@ mod tests {
 
     #[test]
     fn room_name_is_titled_and_disambiguated() {
-        assert_eq!(room_name("Sprint Review", "abcdef123456"), "Sprint Review [abcdef12]");
+        assert_eq!(
+            room_name("Sprint Review", "abcdef123456"),
+            "Sprint Review [abcdef12]"
+        );
         assert_eq!(room_name("   ", "id123456"), "Meeting [id123456]");
     }
 

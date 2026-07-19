@@ -105,9 +105,7 @@ pub fn build_from_bytes(
 
     let mut jpeg = Vec::new();
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality);
-    encoder
-        .encode_image(&DynamicImage::ImageRgb8(rgb))
-        .ok()?;
+    encoder.encode_image(&DynamicImage::ImageRgb8(rgb)).ok()?;
     if jpeg.is_empty() {
         return None;
     }
@@ -151,7 +149,9 @@ mod tests {
     use image::{ImageFormat, RgbImage};
 
     fn png_bytes(w: u32, h: u32) -> Vec<u8> {
-        let img = RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
+        let img = RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
         let mut out = Vec::new();
         DynamicImage::ImageRgb8(img)
             .write_to(&mut Cursor::new(&mut out), ImageFormat::Png)

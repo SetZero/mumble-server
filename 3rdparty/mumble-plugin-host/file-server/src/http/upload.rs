@@ -105,8 +105,15 @@ pub async fn upload(
         filename = %parsed.filename,
         "upload: multipart parsed, inserting record"
     );
-    let result =
-        insert_record(&state, q.session, cert_hash, uploader_name, uploader_user_id, parsed).await;
+    let result = insert_record(
+        &state,
+        q.session,
+        cert_hash,
+        uploader_name,
+        uploader_user_id,
+        parsed,
+    )
+    .await;
     tracing::info!(session = q.session, ok = result.is_ok(), "upload: complete");
     result
 }

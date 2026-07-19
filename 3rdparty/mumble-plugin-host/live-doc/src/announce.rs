@@ -79,7 +79,10 @@ pub async fn handle_open_request_typed(
     mode: &str,
 ) {
     let Some(slug) = sanitize_slug(slug) else {
-        tracing::debug!(slug, "rejecting open request with empty slug after sanitization");
+        tracing::debug!(
+            slug,
+            "rejecting open request with empty slug after sanitization"
+        );
         return;
     };
     let Some(identity) = state.identity(server_id, sender).await else {
@@ -135,7 +138,15 @@ pub async fn handle_open_request_typed(
     // The invite carries the channel the requester is acting in (for the
     // client to place/keep its panel), which is distinct from the authz
     // `bound_channel` (None for a private doc).
-    send_invite(state, server_id, sender, Some(channel_id), &slug, &meta.title, &ws_url);
+    send_invite(
+        state,
+        server_id,
+        sender,
+        Some(channel_id),
+        &slug,
+        &meta.title,
+        &ws_url,
+    );
     send_shared_with(state, server_id, sender, &slug, &room).await;
 }
 
@@ -222,10 +233,7 @@ pub async fn handle_publish(
     let Some(identity) = state.identity(server_id, sender).await else {
         return;
     };
-    let key = DocKey {
-        server_id,
-        slug,
-    };
+    let key = DocKey { server_id, slug };
     let room = state.ensure_room(key).await;
     if !room.is_owner(&identity.cert_hash).await {
         tracing::debug!(sender, "rejecting publish: not the document owner");
@@ -281,12 +289,7 @@ pub async fn handle_rename(
 /// Flush a document to persistence on demand (owner-initiated manual
 /// save).  Only the owner may force a snapshot; the autosave loop still
 /// covers other members.
-pub async fn handle_persist(
-    state: &AppState,
-    server_id: ServerId,
-    sender: SessionId,
-    slug: &str,
-) {
+pub async fn handle_persist(state: &AppState, server_id: ServerId, sender: SessionId, slug: &str) {
     let Some(slug) = sanitize_slug(slug) else {
         return;
     };
@@ -337,9 +340,13 @@ fn send_invite(
     title: &str,
     ws_url: &str,
 ) {
-    let Ok(token) =
-        issue_handshake_jwt(state.jwt_secret(), server_id, sender, slug, HANDSHAKE_JWT_TTL_SECS)
-    else {
+    let Ok(token) = issue_handshake_jwt(
+        state.jwt_secret(),
+        server_id,
+        sender,
+        slug,
+        HANDSHAKE_JWT_TTL_SECS,
+    ) else {
         return;
     };
     let payload = json!({

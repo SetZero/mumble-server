@@ -170,7 +170,11 @@ mod tests {
 
     #[test]
     fn embed_omits_absent_optionals() {
-        let e = Embed { url: Some("https://example.com".into()), title: Some("Example".into()), ..Embed::default() };
+        let e = Embed {
+            url: Some("https://example.com".into()),
+            title: Some("Example".into()),
+            ..Embed::default()
+        };
         let json = serde_json::to_value(&e).expect("serialize");
         let obj = json.as_object().expect("object");
         // Only the set keys appear; the packer probes with contains().
@@ -183,7 +187,10 @@ mod tests {
 
     #[test]
     fn type_serializes_as_type_key() {
-        let e = Embed { kind: Some("article".into()), ..Embed::default() };
+        let e = Embed {
+            kind: Some("article".into()),
+            ..Embed::default()
+        };
         let json = serde_json::to_value(&e).expect("serialize");
         assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("article"));
     }

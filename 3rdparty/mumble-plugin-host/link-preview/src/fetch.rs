@@ -61,7 +61,13 @@ pub async fn fetch_capped(
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
+        .map(|s| {
+            s.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        })
         .filter(|s| !s.is_empty());
 
     if let Some(len) = resp.content_length() {

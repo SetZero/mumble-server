@@ -71,7 +71,14 @@ pub async fn try_seed_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: 
         );
         return;
     }
-    match fetch_file(client, url, cfg.file_server_admin_token.as_deref(), &filename).await {
+    match fetch_file(
+        client,
+        url,
+        cfg.file_server_admin_token.as_deref(),
+        &filename,
+    )
+    .await
+    {
         Ok(Some(contents)) => {
             let mut consistent = true;
             if let Some(snapshot) = extract_snapshot(&contents) {
@@ -178,7 +185,10 @@ pub async fn persist_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: &
         "live-doc persisting room to file-server"
     );
     if snapshot.is_empty() && meta.owner_cert_hash.is_empty() {
-        tracing::trace!(?filename, "live-doc persist skipped: empty snapshot, no owner");
+        tracing::trace!(
+            ?filename,
+            "live-doc persist skipped: empty snapshot, no owner"
+        );
         return;
     }
 
@@ -194,7 +204,11 @@ pub async fn persist_room(cfg: &LiveDocConfig, client: &reqwest::Client, room: &
     .await
     {
         Ok(()) => {
-            tracing::trace!(?filename, bytes = body_len, "live-doc persisted to file-server");
+            tracing::trace!(
+                ?filename,
+                bytes = body_len,
+                "live-doc persisted to file-server"
+            );
             room.mark_saved().await;
         }
         Err(err) => tracing::warn!(?err, ?filename, "live-doc persist failed"),
@@ -418,7 +432,11 @@ mod tests {
         }
     }
 
-    async fn mock_put(State(m): State<Arc<Mock>>, Path(_n): Path<String>, body: String) -> StatusCode {
+    async fn mock_put(
+        State(m): State<Arc<Mock>>,
+        Path(_n): Path<String>,
+        body: String,
+    ) -> StatusCode {
         let _ = m.put_count.fetch_add(1, Ordering::SeqCst);
         *m.last_put_body.lock().unwrap() = Some(body);
         StatusCode::OK
