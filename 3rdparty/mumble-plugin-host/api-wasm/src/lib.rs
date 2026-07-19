@@ -9,13 +9,13 @@
 //! This crate re-exports the generated bindings so plugin authors can write a
 //! component against safe Rust types:
 //!
-//! - [`Guest`] — the trait your plugin type implements (the lifecycle/event
+//! - [`Guest`] - the trait your plugin type implements (the lifecycle/event
 //!   hooks mirroring the native `MumblePlugin` trait). Exports take no `ctx`
 //!   argument; call the [`host`] functions directly instead.
-//! - [`host`] — free functions you call back into the server with (the mirror
+//! - [`host`] - free functions you call back into the server with (the mirror
 //!   of the native `PluginContext` trait). These are the *only* capabilities a
 //!   guest has: there is no WASI, filesystem, clock, or network.
-//! - [`export_plugin!`] — registers your `Guest` implementation as the
+//! - [`export_plugin!`] - registers your `Guest` implementation as the
 //!   component's exports.
 //!
 //! # Example

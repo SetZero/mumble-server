@@ -364,7 +364,12 @@ fn announce_to_client(
             .backfill_uploader_user_id(cert_hash, user_id)
         {
             Ok(n) if n > 0 => {
-                tracing::info!(session = session_id, user_id, files = n, "file-server: backfilled uploader_user_id");
+                tracing::info!(
+                    session = session_id,
+                    user_id,
+                    files = n,
+                    "file-server: backfilled uploader_user_id"
+                );
             }
             Ok(_) => {}
             Err(e) => {

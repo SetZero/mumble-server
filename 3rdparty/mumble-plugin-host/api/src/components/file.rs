@@ -1,4 +1,4 @@
-//! [`FileComponent`] — attachment-reference component.  Discord
+//! [`FileComponent`] - attachment-reference component.  Discord
 //! component type `13`.  Renamed from `File` to avoid collision with
 //! `std::fs::File`.
 //!

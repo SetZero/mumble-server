@@ -2,6 +2,8 @@
 name = "mumble-plugin-api-wasm"
 version = "0.1.0"
 edition = "2021"
+# Internal to the plugin-host workspace; never published to crates.io.
+publish = false
 description = "Guest-side authoring bindings for WebAssembly Mumble plugins."
 license = "MIT"
 

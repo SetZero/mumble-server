@@ -2,10 +2,16 @@
 // `#[sabi_trait]` generates a trait-object forwarder for `PluginContext` that
 // calls the now-deprecated `send_plugin_data`, producing an unavoidable
 // in-crate deprecation warning. Allow it here so the deprecation remains a
-// signal for external callers without dirtying our own build.
+// signal for external callers without dirtying our own build. The same
+// forwarder also aggregates every trait method into one dispatch function,
+// which trips `too_many_arguments`; that's macro output, not our API shape.
 #![allow(
     deprecated,
     reason = "sabi_trait's generated PluginContext forwarder calls the deprecated send_plugin_data; deprecation targets external callers"
+)]
+#![allow(
+    clippy::too_many_arguments,
+    reason = "sabi_trait's generated PluginContext forwarder aggregates every trait method's parameters into one function"
 )]
 
 use abi_stable::{
@@ -174,7 +180,13 @@ pub trait PluginContext: Send + Sync + 'static {
         target_session: SessionId,
         payload: RSlice<'_, u8>,
     ) -> PluginResult<()> {
-        let _ = (server_id, response_type, request_id, target_session, payload);
+        let _ = (
+            server_id,
+            response_type,
+            request_id,
+            target_session,
+            payload,
+        );
         ROk(())
     }
 
@@ -197,7 +209,10 @@ pub trait PluginContext: Send + Sync + 'static {
     ///
     /// Returns the channel id, or `RNone` on failure.  The default returns
     /// `RNone`; the real host overrides it.
-    #[allow(clippy::too_many_arguments, reason = "mirrors the server's channel-property surface")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the server's channel-property surface"
+    )]
     fn create_channel(
         &self,
         server_id: ServerId,
@@ -211,7 +226,18 @@ pub trait PluginContext: Send + Sync + 'static {
         expiry_duration_secs: u32,
         invitee_uids: RSlice<'_, u32>,
     ) -> ROption<ChannelId> {
-        let _ = (server_id, parent, name, hidden, registered_can_manage, detached, pchat_protocol, expiry_mode, expiry_duration_secs, invitee_uids);
+        let _ = (
+            server_id,
+            parent,
+            name,
+            hidden,
+            registered_can_manage,
+            detached,
+            pchat_protocol,
+            expiry_mode,
+            expiry_duration_secs,
+            invitee_uids,
+        );
         abi_stable::std_types::RNone
     }
 
@@ -221,6 +247,18 @@ pub trait PluginContext: Send + Sync + 'static {
     ///
     /// The default returns `false`; the real host overrides it.
     fn grant_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
+        let _ = (server_id, channel, user_id);
+        false
+    }
+
+    /// Revoke a registered `user_id`'s access to private `channel` (the
+    /// inverse of [`Self::grant_channel_access`]).  The host removes the
+    /// user's per-user allow ACLs, moves their sessions out of the channel and
+    /// tells their clients the channel no longer exists once they cannot see
+    /// it.  Idempotent; returns `true` on success.
+    ///
+    /// The default returns `false`; the real host overrides it.
+    fn revoke_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
         let _ = (server_id, channel, user_id);
         false
     }

@@ -1,4 +1,4 @@
-//! [`UserSelect`] — pick one or more connected users.  Discord
+//! [`UserSelect`] - pick one or more connected users.  Discord
 //! component type `5`.  Returned values are Mumble `SessionId`s
 //! (stringified on the wire).
 

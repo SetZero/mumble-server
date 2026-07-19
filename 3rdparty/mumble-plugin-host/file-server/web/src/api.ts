@@ -1,7 +1,7 @@
 // Pure frontend auth client. Mirrors the server contract exactly: read the file
 // id + signed params from the current URL, exchange the password for a
 // single-use ticket via POST /files/{id}/auth, then hand back the ticketed
-// download URL to redirect to. No app state, no framework — easy to unit test.
+// download URL to redirect to. No app state, no framework - easy to unit test.
 
 /** base64url WITHOUT padding (matches the server's `URL_SAFE_NO_PAD`). */
 export function base64UrlEncode(value: string): string {

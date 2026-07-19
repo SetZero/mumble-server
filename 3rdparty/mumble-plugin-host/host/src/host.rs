@@ -36,7 +36,7 @@ const CONFIG_KEY_ENABLED: &str = "enabled";
 
 /// `PluginMessage.payload_type` values the host broadcasts when a plugin's
 /// loaded state changes at runtime, so connected clients can drop (or restore)
-/// that plugin's UI gracefully.  Kept as plain strings on the wire — the
+/// that plugin's UI gracefully.  Kept as plain strings on the wire - the
 /// generic `payload_type` field is intentionally plugin/agnostic (see
 /// `Mumble.proto`); the client mirrors these in its `PluginPayloadType` enum.
 const PAYLOAD_TYPE_PLUGIN_ACTIVATED: &str = "PluginActivated";
@@ -50,7 +50,7 @@ const CONFIG_KEY_MARKETPLACE_ID: &str = "marketplace_id";
 /// marketplace flow last installed/upgraded the plugin.
 const CONFIG_KEY_INSTALLED_AT: &str = "installed_at";
 
-/// Backend a plugin is loaded through.  Purely informational — it is
+/// Backend a plugin is loaded through.  Purely informational - it is
 /// surfaced to the admin UI but never influences dispatch, which goes
 /// through the uniform [`MumblePlugin`](mumble_plugin_api::MumblePlugin)
 /// trait object regardless of backend.
@@ -618,12 +618,14 @@ impl Host {
                 tracing::warn!(plugin = %entry.name, error = %e, "re-announce on_client_connected failed");
             }
             if let Some(envelope) = &entry.info_envelope {
-                if let abi_stable::std_types::RResult::RErr(e) = self.base_context.send_plugin_data_raw(
-                    info.server_id,
-                    info.session_id,
-                    PLUGIN_INFO_DATA_ID,
-                    envelope,
-                ) {
+                if let abi_stable::std_types::RResult::RErr(e) =
+                    self.base_context.send_plugin_data_raw(
+                        info.server_id,
+                        info.session_id,
+                        PLUGIN_INFO_DATA_ID,
+                        envelope,
+                    )
+                {
                     tracing::warn!(plugin = %entry.name, error = %e, "re-announce info delivery failed");
                 }
             }
@@ -1001,6 +1003,7 @@ fn is_truthy_enabled_value(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
     use super::{
         generate_admin_token, is_truthy_enabled_value, provision_live_doc_bridge,
         DEFAULT_FILE_SERVER_PORT,
@@ -1057,7 +1060,8 @@ mod tests {
             .expect("admin token generated");
         assert_eq!(token.len(), 64);
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_url").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_url")
+                .map(String::as_str),
             Some(format!("http://127.0.0.1:{DEFAULT_FILE_SERVER_PORT}").as_str())
         );
         // live-doc must receive the same token the file-server uses.
@@ -1075,15 +1079,18 @@ mod tests {
         ]);
         // Existing token reused, not regenerated.
         assert_eq!(
-            cfg.get("plugin.fancy-file-server.admin_token").map(String::as_str),
+            cfg.get("plugin.fancy-file-server.admin_token")
+                .map(String::as_str),
             Some("operator-token")
         );
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_url").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_url")
+                .map(String::as_str),
             Some("http://127.0.0.1:9000")
         );
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_admin_token").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_admin_token")
+                .map(String::as_str),
             Some("operator-token")
         );
     }
@@ -1092,15 +1099,20 @@ mod tests {
     fn bridge_never_overwrites_operator_overrides() {
         let cfg = run_bridge(&[
             ("plugin.fancy-file-server.admin_token", "tok"),
-            ("plugin.fancy-live-doc.file_server_url", "http://files.example:7000"),
+            (
+                "plugin.fancy-live-doc.file_server_url",
+                "http://files.example:7000",
+            ),
             ("plugin.fancy-live-doc.file_server_admin_token", "custom"),
         ]);
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_url").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_url")
+                .map(String::as_str),
             Some("http://files.example:7000")
         );
         assert_eq!(
-            cfg.get("plugin.fancy-live-doc.file_server_admin_token").map(String::as_str),
+            cfg.get("plugin.fancy-live-doc.file_server_admin_token")
+                .map(String::as_str),
             Some("custom")
         );
     }

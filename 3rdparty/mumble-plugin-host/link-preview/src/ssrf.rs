@@ -141,6 +141,11 @@ pub fn build_http_client(timeout: Duration) -> reqwest::Client {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "tests panic on failure"
+    )]
     use super::*;
 
     fn ip(s: &str) -> IpAddr {
@@ -169,22 +174,41 @@ mod tests {
 
     #[test]
     fn allows_public_ipv4() {
-        for s in ["8.8.8.8", "1.1.1.1", "93.184.216.34", "100.63.255.255", "172.32.0.1"] {
+        for s in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "93.184.216.34",
+            "100.63.255.255",
+            "172.32.0.1",
+        ] {
             assert!(!is_blocked_ip(ip(s)), "{s} should be allowed");
         }
     }
 
     #[test]
     fn blocks_ipv6_special_and_mapped() {
-        for s in ["::1", "::", "fe80::1", "fc00::1", "fd12::1", "ff02::1", "::ffff:127.0.0.1"] {
+        for s in [
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "fd12::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+        ] {
             assert!(is_blocked_ip(ip(s)), "{s} should be blocked");
         }
-        assert!(!is_blocked_ip(ip("2606:4700:4700::1111")), "public v6 allowed");
+        assert!(
+            !is_blocked_ip(ip("2606:4700:4700::1111")),
+            "public v6 allowed"
+        );
     }
 
     #[test]
     fn url_safety() {
-        assert!(is_safe_url(&Url::parse("https://example.com/page").unwrap()));
+        assert!(is_safe_url(
+            &Url::parse("https://example.com/page").unwrap()
+        ));
         assert!(!is_safe_url(&Url::parse("http://localhost/x").unwrap()));
         assert!(!is_safe_url(&Url::parse("https://127.0.0.1/x").unwrap()));
         assert!(!is_safe_url(&Url::parse("ftp://example.com/x").unwrap()));
@@ -193,7 +217,9 @@ mod tests {
 
     #[test]
     fn entities() {
-        assert_eq!(decode_html_entities("a &amp; b &lt;c&gt; &quot;d&quot; &#39;e&apos;"),
-                   "a & b <c> \"d\" 'e'");
+        assert_eq!(
+            decode_html_entities("a &amp; b &lt;c&gt; &quot;d&quot; &#39;e&apos;"),
+            "a & b <c> \"d\" 'e'"
+        );
     }
 }

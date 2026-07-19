@@ -589,7 +589,7 @@ This value allows you to set the maximum number of users allowed in the channel.
     </message>
     <message>
         <source>This will configure the input channels for ASIO. Make sure you select at least one channel as microphone and speaker. &lt;i&gt;Microphone&lt;/i&gt; should be where your microphone is attached, and &lt;i&gt;Speaker&lt;/i&gt; should be a channel that samples &apos;&lt;i&gt;What you hear&lt;/i&gt;&apos;.&lt;br /&gt;For example, on the Audigy 2 ZS, a good selection for Microphone would be &apos;&lt;i&gt;Mic L&lt;/i&gt;&apos; while Speaker should be &apos;&lt;i&gt;Mix L&lt;/i&gt;&apos; and &apos;&lt;i&gt;Mix R&lt;/i&gt;&apos;.</source>
-        <translation>Це дозволить налаштувати вхідні канали для ASIO. Переконайтеся, що ви вибрали принаймні один канал як мікрофон і динамік. &lt;i&gt;Мікрофон&lt;/i&gt; має бути там, де підключено мікрофон, а &lt;i&gt;Динамік&lt;/i&gt; має бути каналом, який відтворює «&lt;i&gt;Те, що ви чуєте&lt;/i&gt;».&lt;br /&gt;Наприклад , на Audigy 2 ZS гарним вибором для мікрофона буде «&lt;i&gt;Mic L&lt;/i&gt;», а для динаміка — «&lt;i&gt;Mix L&lt;/i&gt;» і «&lt;i&gt;Mix R&lt;/i &gt;&apos;.</translation>
+        <translation>Це дозволить налаштувати вхідні канали для ASIO. Переконайтеся, що ви вибрали принаймні один канал як мікрофон і динамік. &lt;i&gt;Мікрофон&lt;/i&gt; має бути там, де підключено мікрофон, а &lt;i&gt;Динамік&lt;/i&gt; має бути каналом, який відтворює «&lt;i&gt;Те, що ви чуєте&lt;/i&gt;».&lt;br /&gt;Наприклад , на Audigy 2 ZS гарним вибором для мікрофона буде «&lt;i&gt;Mic L&lt;/i&gt;», а для динаміка - «&lt;i&gt;Mix L&lt;/i&gt;» і «&lt;i&gt;Mix R&lt;/i &gt;&apos;.</translation>
     </message>
     <message>
         <source>Configure input channels</source>
@@ -1229,7 +1229,7 @@ This value allows you to set the maximum number of users allowed in the channel.
     </message>
     <message>
         <source>The mute cue is an audio sample which plays when you are trying to speak while being muted</source>
-        <translation>Сигнал вимкнення звуку — це аудіосигнал, який відтворюється, коли ви намагаєтеся говорити, коли звук вимкнено</translation>
+        <translation>Сигнал вимкнення звуку - це аудіосигнал, який відтворюється, коли ви намагаєтеся говорити, коли звук вимкнено</translation>
     </message>
     <message>
         <source>Preview both audio cues</source>
@@ -1237,7 +1237,7 @@ This value allows you to set the maximum number of users allowed in the channel.
     </message>
     <message>
         <source>&lt;b&gt;This shows peak outgoing bandwidth used.&lt;/b&gt;&lt;br /&gt;This shows the peak amount of bandwidth sent out from your machine. Audio bitrate is the maximum bitrate for the audio data alone. Position is the bitrate used for positional information. Overhead is our framing and the IP packet headers (IP and UDP is 75% of this overhead).</source>
-        <translation>&lt;b&gt;Це показує максимальну вихідну пропускну здатність, що використовується.&lt;/b&gt;&lt;br /&gt;Це показує максимальну пропускну здатність, надіслану з вашого комп’ютера. Бітрейт аудіо – це максимальний бітрейт лише для аудіоданих. Позиція – це бітрейт, який використовується для позиційної інформації. Накладні витрати — це наше кадрування та заголовки IP-пакетів (IP і UDP становлять 75% цих накладних витрат).</translation>
+        <translation>&lt;b&gt;Це показує максимальну вихідну пропускну здатність, що використовується.&lt;/b&gt;&lt;br /&gt;Це показує максимальну пропускну здатність, надіслану з вашого комп’ютера. Бітрейт аудіо – це максимальний бітрейт лише для аудіоданих. Позиція – це бітрейт, який використовується для позиційної інформації. Накладні витрати - це наше кадрування та заголовки IP-пакетів (IP і UDP становлять 75% цих накладних витрат).</translation>
     </message>
 </context>
 <context>
@@ -1412,7 +1412,7 @@ This value allows you to set the maximum number of users allowed in the channel.
     </message>
     <message>
         <source>Checking this indicates that you don&apos;t have speakers connected, just headphones. This is important, as speakers are usually in front of you, while headphones are directly to your left/right.</source>
-        <translation>Позначка цього пункту означає, що у вас не під’єднано динаміки, лише навушники. Це важливо, оскільки динаміки зазвичай знаходяться перед вами, а навушники — прямо зліва/праворуч.</translation>
+        <translation>Позначка цього пункту означає, що у вас не під’єднано динаміки, лише навушники. Це важливо, оскільки динаміки зазвичай знаходяться перед вами, а навушники - прямо зліва/праворуч.</translation>
     </message>
     <message>
         <source>This sets the amount of data to pre-buffer in the output buffer. Experiment with different values and set it to the lowest which doesn&apos;t cause rapid jitter in the sound.</source>
@@ -1979,7 +1979,7 @@ You should hear a voice sample. Change the slider below to the lowest value whic
 &lt;/p&gt;
 </source>
         <translation>&lt;p&gt; 
-Щоб звести затримку до абсолютного мінімуму, важливо буферизувати якомога менше звуку на звуковій карті. Однак багато звукових карт повідомляють, що їм потрібен набагато менший буфер, ніж той, з яким вони насправді можуть працювати, тому єдиний спосіб встановити це значення — спробувати й зазнати невдачі. 
+Щоб звести затримку до абсолютного мінімуму, важливо буферизувати якомога менше звуку на звуковій карті. Однак багато звукових карт повідомляють, що їм потрібен набагато менший буфер, ніж той, з яким вони насправді можуть працювати, тому єдиний спосіб встановити це значення - спробувати й зазнати невдачі. 
 &lt;/p&gt; 
 &lt;p&gt; 
 Ви повинні почути зразок голосу. Змініть повзунок нижче на найнижче значення, при якому &lt;b&gt;без&lt;/b&gt; переривань або тремтіння звуку. Зверніть увагу, що під час цього тесту локальне відлуння вимкнено. 
@@ -9283,7 +9283,7 @@ An access token is a text string, which can be used as a password for very simpl
 </source>
         <translation>&lt;b&gt;Це редагований список маркерів доступу на підключеному сервері.&lt;/b&gt; 
 &lt;br /&gt; 
-Маркер доступу — це текстовий рядок, який можна використовувати як пароль для дуже простого керування доступом до каналів. Mumble запам’ятає маркери, які ви використали, і повторно надішле їх на сервер під час наступного підключення, тож вам не доведеться вводити їх щоразу.
+Маркер доступу - це текстовий рядок, який можна використовувати як пароль для дуже простого керування доступом до каналів. Mumble запам’ятає маркери, які ви використали, і повторно надішле їх на сервер під час наступного підключення, тож вам не доведеться вводити їх щоразу.
 </translation>
     </message>
     <message>

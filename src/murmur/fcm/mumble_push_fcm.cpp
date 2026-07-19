@@ -111,7 +111,7 @@ int64_t probeClockOffset() {
 		Poco::Net::HTTPSClientSession session(uri.getHost(), uri.getPort(), ctx);
 		session.setTimeout(Poco::Timespan(10, 0));
 
-		// Send an empty POST — will get 400 but with a Date header
+		// Send an empty POST - will get 400 but with a Date header
 		Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_POST, uri.getPathAndQuery());
 		request.setContentType("application/x-www-form-urlencoded");
 		request.setContentLength(0);
@@ -289,7 +289,7 @@ int sendNotification(FcmState &state, const MumblePushNotification &notif) {
 		std::string target(notif.device_token);
 		const std::string topicPrefix = "/topics/";
 		if (target.rfind(topicPrefix, 0) == 0) {
-			// Strip the "/topics/" prefix — FCM v1 API expects bare topic name.
+			// Strip the "/topics/" prefix - FCM v1 API expects bare topic name.
 			message->set("topic", target.substr(topicPrefix.size()));
 		} else {
 			message->set("token", target);

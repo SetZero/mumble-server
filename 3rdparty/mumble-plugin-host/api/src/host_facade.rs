@@ -177,7 +177,10 @@ impl<'a> Host<'a> {
     /// child) with the given standard, content-agnostic channel properties.
     /// See [`PluginContext::create_channel`] for the parameter meaning.
     #[must_use]
-    #[allow(clippy::too_many_arguments, reason = "mirrors the server's channel-property surface")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the server's channel-property surface"
+    )]
     pub fn create_channel(
         &self,
         server_id: ServerId,
@@ -215,6 +218,17 @@ impl<'a> Host<'a> {
         user_id: u32,
     ) -> bool {
         self.ctx.grant_channel_access(server_id, channel, user_id)
+    }
+
+    /// Revoke a registered `user_id`'s access to an existing private
+    /// `channel` (the inverse of [`Self::grant_channel_access`]).
+    pub fn revoke_channel_access(
+        &self,
+        server_id: ServerId,
+        channel: ChannelId,
+        user_id: u32,
+    ) -> bool {
+        self.ctx.revoke_channel_access(server_id, channel, user_id)
     }
 
     /// Returns `true` if the session is currently connected.

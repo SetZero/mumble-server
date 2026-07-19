@@ -1,4 +1,4 @@
-//! OpenGraph / HTML metadata provider.
+//! `OpenGraph` / HTML metadata provider.
 //!
 //! Parsing is delegated to the [`webpage`] crate (HTML5 parser); we only fetch
 //! the page ourselves through the SSRF-gated client and map `webpage`'s parsed
@@ -59,7 +59,12 @@ pub fn build_embed(html: &HTML, url: &Url) -> Embed {
         .description
         .as_deref()
         .filter(|d| !d.is_empty())
-        .or_else(|| og(html, &["og:description", "twitter:description", "description"]))
+        .or_else(|| {
+            og(
+                html,
+                &["og:description", "twitter:description", "description"],
+            )
+        })
         .map(|d| take_chars(d, 4096));
     embed.lang = html
         .language
@@ -140,8 +145,16 @@ fn populate_media(embed: &mut Embed, html: &HTML, page_url: &Url) {
         .first()
         .map(|o| (o.url.as_str(), &o.properties))
         .or_else(|| {
-            og(html, &["og:video", "og:video:url", "og:video:secure_url", "twitter:player"])
-                .map(|u| (u, &empty))
+            og(
+                html,
+                &[
+                    "og:video",
+                    "og:video:url",
+                    "og:video:secure_url",
+                    "twitter:player",
+                ],
+            )
+            .map(|u| (u, &empty))
         });
     if let Some((raw, props)) = video {
         if let Ok(resolved) = page_url.join(raw) {
@@ -189,12 +202,16 @@ fn populate_keywords(embed: &mut Embed, meta: &HashMap<String, String>) {
 }
 
 fn populate_nsfw(embed: &mut Embed, meta: &HashMap<String, String>) {
-    let rating = meta_get(meta, &["rating"]).unwrap_or("").to_ascii_lowercase();
+    let rating = meta_get(meta, &["rating"])
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let restrictions = meta_get(meta, &["og:restrictions:content"])
         .unwrap_or("")
         .to_ascii_lowercase();
-    if matches!(rating.as_str(), "adult" | "mature" | "rta-5042-1996-1400-1577-rta")
-        || restrictions.contains("adult")
+    if matches!(
+        rating.as_str(),
+        "adult" | "mature" | "rta-5042-1996-1400-1577-rta"
+    ) || restrictions.contains("adult")
     {
         embed.nsfw = Some(true);
     }
@@ -228,7 +245,7 @@ fn meta_get<'a>(meta: &'a HashMap<String, String>, keys: &[&str]) -> Option<&'a 
         .find(|v| !v.is_empty())
 }
 
-/// Look up an OpenGraph/meta value, checking both `webpage`'s OpenGraph
+/// Look up an OpenGraph/meta value, checking both `webpage`'s `OpenGraph`
 /// properties (which store keys with the `og:` prefix stripped) and the raw
 /// meta map (full key), for each candidate in order.
 fn og<'a>(html: &'a HTML, keys: &[&str]) -> Option<&'a str> {
@@ -243,16 +260,25 @@ fn og<'a>(html: &'a HTML, keys: &[&str]) -> Option<&'a str> {
         {
             return Some(v);
         }
-        if let Some(v) = html.meta.get(*k).map(String::as_str).filter(|s| !s.is_empty()) {
+        if let Some(v) = html
+            .meta
+            .get(*k)
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
+        {
             return Some(v);
         }
     }
     None
 }
 
-/// Resolve a media dimension from the OpenGraph object's own properties first,
+/// Resolve a media dimension from the `OpenGraph` object's own properties first,
 /// then a raw meta fallback.
-fn og_dim(props: &HashMap<String, String>, meta: &HashMap<String, String>, meta_key: &str) -> Option<i32> {
+fn og_dim(
+    props: &HashMap<String, String>,
+    meta: &HashMap<String, String>,
+    meta_key: &str,
+) -> Option<i32> {
     props
         .get("width")
         .or_else(|| props.get("height").filter(|_| meta_key.ends_with("height")))
@@ -340,6 +366,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
     use super::*;
 
     fn parse(html: &str, url: &str) -> Embed {

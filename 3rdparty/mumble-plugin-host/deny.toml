@@ -1,0 +1,90 @@
+# cargo-deny policy for the plugin-host workspace.
+#
+# This server loads third-party plugins and pulls in wasmtime, reqwest, rustls,
+# zip and tar, so dependency hygiene matters more here than anywhere else in the
+# tree. Run locally with:
+#
+#     cargo deny check advisories bans licenses sources
+
+[graph]
+all-features = true
+
+# ---------------------------------------------------------------------------
+# Security advisories (RUSTSEC)
+# ---------------------------------------------------------------------------
+[advisories]
+yanked = "deny"
+# Add entries here only with a justification, and only when there is genuinely
+# no upgrade path - never to silence a fixable vulnerability. (The wasmtime
+# 27.x advisories that used to sit here, including two sandbox escapes, were
+# fixed properly by moving to the 36.x LTS line, not suppressed.)
+ignore = [
+    # Both are transitive dependencies of `abi_stable`, which is the foundation
+    # of the whole plugin ABI - every plugin crate links it. Neither advisory is
+    # a vulnerability; both are "crate is unmaintained" notices with no patched
+    # version to move to, and abi_stable 0.11.3 is itself the latest release
+    # (2023-10-12), so there is nothing to upgrade into. Revisit if abi_stable
+    # publishes a release that drops them, or if either advisory is upgraded to
+    # an actual vulnerability.
+    { id = "RUSTSEC-2024-0014", reason = "generational-arena unmaintained; transitive via abi_stable, no fixed version exists" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive via abi_stable, no fixed version exists" },
+]
+
+# ---------------------------------------------------------------------------
+# Licences
+# ---------------------------------------------------------------------------
+[licenses]
+# Everything currently in the graph is permissive except the exceptions below.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+# MPL-2.0 is file-level copyleft and both users are build-time/internal only:
+# cbindgen runs in build.rs and generational-arena is a wasmtime transitive.
+# LGPL only enters via r-efi, a UEFI target-support crate that is not linked
+# into the binaries we ship for Linux/Windows/macOS.
+exceptions = [
+    { name = "r-efi", allow = ["LGPL-2.1-or-later"] },
+]
+
+# ---------------------------------------------------------------------------
+# Banned / duplicate crates
+# ---------------------------------------------------------------------------
+[bans]
+# Duplicate versions are common in a graph this size (wasmtime and reqwest pull
+# different majors of the same crates), so warn rather than fail; the value here
+# is visibility of the drift, not a hard gate.
+multiple-versions = "warn"
+# Wildcard requirements from crates.io are a real hazard, but the workspace's
+# own crates depend on each other by path with a `*` version, which is the
+# normal pattern for an unpublished workspace. Keep the gate, exempt path deps.
+wildcards = "deny"
+allow-wildcard-paths = true
+# Prefer a single TLS stack: pulling in native-tls alongside rustls would mean
+# two independent certificate verifiers with different trust behaviour.
+deny = [
+    { name = "openssl-sys", reason = "the tree standardises on rustls; adding OpenSSL would mean two TLS stacks" },
+    { name = "native-tls", reason = "the tree standardises on rustls" },
+]
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+[sources]
+# Anything not from crates.io has to be added deliberately.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

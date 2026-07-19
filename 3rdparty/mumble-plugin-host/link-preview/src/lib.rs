@@ -1,6 +1,6 @@
 //! `mumble-link-preview` - Mumble plugin that builds link/media previews.
 //!
-//! Ports the server's former in-process C++ subsystem (oEmbed / OpenGraph /
+//! Ports the server's former in-process C++ subsystem (oEmbed / `OpenGraph` /
 //! direct-media providers, SSRF gating, and server-side image downscaling) into
 //! a native plugin loaded by the plugin host. The server forwards each
 //! `FancyLinkPreviewRequest` as a generic plugin message (`preview.request`);
@@ -144,7 +144,7 @@ impl MumblePlugin for LinkPreviewPlugin {
         let server_id = msg.server_id;
         let session = msg.sender_session; // the requesting user; reply target
 
-        let _ = state.runtime.spawn(async move {
+        drop(state.runtime.spawn(async move {
             let response = manager.handle_request(session, &req.urls).await;
             let json = serde_json::to_vec(&response).unwrap_or_default();
             let result = ctx.send_request_response(
@@ -157,7 +157,7 @@ impl MumblePlugin for LinkPreviewPlugin {
             if let RErr(e) = result {
                 tracing::warn!(error = %e, "link-preview: failed to deliver response");
             }
-        });
+        }));
         ROk(())
     }
 }

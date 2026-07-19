@@ -91,7 +91,7 @@ fn split_path_tail(path: &Path) -> syn::Result<(TokenStream, Ident)> {
         .collect();
     let leading_colon = path.leading_colon;
     let prefix = if prefix_segments.is_empty() {
-        // Bare method name — no prefix.  The mangled ident resolves
+        // Bare method name - no prefix.  The mangled ident resolves
         // against the surrounding scope just like the user-written
         // ident would have.
         quote! {}

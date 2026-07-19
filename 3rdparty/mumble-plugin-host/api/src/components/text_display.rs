@@ -1,4 +1,4 @@
-//! [`TextDisplay`] — Markdown text block.  Discord component type `10`.
+//! [`TextDisplay`] - Markdown text block.  Discord component type `10`.
 //! Available in messages and modals.
 
 use serde::{Deserialize, Serialize};

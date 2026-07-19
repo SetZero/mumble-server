@@ -1,4 +1,4 @@
-//! [`Section`] — text-plus-accessory layout block.  Discord component
+//! [`Section`] - text-plus-accessory layout block.  Discord component
 //! type `9`.  Holds 1-3 child components contextually associated with
 //! an `accessory` ([`Button`] or [`Thumbnail`]).
 //!

@@ -2,7 +2,7 @@
 //! bounded box, and re-encode as JPEG so the client renders a preview without
 //! contacting the origin host. Ports `MediaPreviewBuilder`; the `QImage`
 //! decode/scale/encode is replaced by the pure-Rust `image` crate (this is what
-//! removes the server's Qt6Gui dependency).
+//! removes the server's `Qt6Gui` dependency).
 
 use std::io::Cursor;
 
@@ -105,9 +105,7 @@ pub fn build_from_bytes(
 
     let mut jpeg = Vec::new();
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality);
-    encoder
-        .encode_image(&DynamicImage::ImageRgb8(rgb))
-        .ok()?;
+    encoder.encode_image(&DynamicImage::ImageRgb8(rgb)).ok()?;
     if jpeg.is_empty() {
         return None;
     }
@@ -146,11 +144,14 @@ fn mime_for(format: Option<ImageFormat>) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
     use super::*;
     use image::{ImageFormat, RgbImage};
 
     fn png_bytes(w: u32, h: u32) -> Vec<u8> {
-        let img = RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
+        let img = RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
         let mut out = Vec::new();
         DynamicImage::ImageRgb8(img)
             .write_to(&mut Cursor::new(&mut out), ImageFormat::Png)

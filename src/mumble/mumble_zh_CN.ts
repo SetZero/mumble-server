@@ -4503,7 +4503,7 @@ The setting only applies for new messages, the already shown ones will retain th
     </message>
     <message>
         <source>Click here to toggle message limiting for all events - If using this option be sure to change the user limit below.</source>
-        <translation>点击此处开关所有事件的消息限制——使用此选项时，请确保修改下方的用户限制。</translation>
+        <translation>点击此处开关所有事件的消息限制--使用此选项时，请确保修改下方的用户限制。</translation>
     </message>
     <message>
         <source>Toggle message limiting behavior for %1 events </source>

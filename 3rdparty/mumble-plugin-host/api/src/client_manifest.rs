@@ -119,7 +119,11 @@ pub struct ConfigSetting {
 impl ConfigSetting {
     /// Build a config setting with the given key, label and type.
     #[must_use]
-    pub fn new(key: impl Into<String>, label: impl Into<String>, setting_type: SettingType) -> Self {
+    pub fn new(
+        key: impl Into<String>,
+        label: impl Into<String>,
+        setting_type: SettingType,
+    ) -> Self {
         Self {
             key: key.into(),
             label: label.into(),

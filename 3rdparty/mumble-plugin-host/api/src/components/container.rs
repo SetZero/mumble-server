@@ -1,4 +1,4 @@
-//! [`Container`] — layout wrapper with optional accent colour.
+//! [`Container`] - layout wrapper with optional accent colour.
 //! Discord component type `17`.
 
 use serde::{Deserialize, Serialize};

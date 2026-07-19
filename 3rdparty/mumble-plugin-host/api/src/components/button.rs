@@ -1,11 +1,11 @@
-//! [`Button`] — click target.  Discord component type `2`.
+//! [`Button`] - click target.  Discord component type `2`.
 //!
 //! Five styles are supported.  `Primary` / `Secondary` / `Success` /
 //! `Danger` deliver a [`Component`](crate::InteractionKind::Component)
 //! interaction when clicked; `Link` opens a URL client-side and emits
 //! no interaction.
 //!
-//! Discord's `Premium` / SKU style is intentionally omitted — Mumble
+//! Discord's `Premium` / SKU style is intentionally omitted - Mumble
 //! has no monetisation surface.
 
 use serde::{Deserialize, Serialize};

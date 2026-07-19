@@ -7,7 +7,7 @@
 //! modal form - can be written without repeating `InteractionResponse::`
 //! and `Vec::new()` everywhere.
 //!
-//! Each macro returns an `InteractionResponse` (or, for [`row!`], an
+//! Each macro returns an `InteractionResponse` (or, for `row!`, an
 //! `ActionRow`), so they compose with the regular builders via method
 //! chaining:
 //!
@@ -53,7 +53,7 @@ macro_rules! row {
     };
 }
 
-/// Build a floating-overlay [`crate::InteractionResponse`] (a\n/// title-less [`crate::ResponseKind::ShowModal`]) from a body and\n/// zero or more [`crate::ActionRow`]s.\n///\n/// The first argument is the Markdown body (`impl Into<String>`); the\n/// remaining arguments are rows, typically produced by the [`row!`]\n/// macro.  Returns an `InteractionResponse` so callers can chain\n/// `.ephemeral()`, `.with_correlation_id(...)`, etc.\n///\n/// This macro is sugar over [`crate::InteractionResponse::message`],\n/// which lowers to a `ShowModal` with an empty `title`.  Use\n/// [`show_modal!`] when you need a titled modal form, or\n/// [`chat_message!`] when the payload should be persisted in the\n/// chat history instead of rendered as a transient overlay.\n///\n/// ```ignore\n/// use mumble_plugin_api::{message, row, Button};\n/// let resp = message!(\n///     \"Hello, world\",\n///     row![ Button::new(\"again\", \"Again\") ],\n/// )\n/// .ephemeral();\n/// ```
+/// Build a floating-overlay [`crate::InteractionResponse`] (a\n/// title-less [`crate::ResponseKind::ShowModal`]) from a body and\n/// zero or more [`crate::ActionRow`]s.\n///\n/// The first argument is the Markdown body (`impl Into<String>`); the\n/// remaining arguments are rows, typically produced by the `row!`\n/// macro.  Returns an `InteractionResponse` so callers can chain\n/// `.ephemeral()`, `.with_correlation_id(...)`, etc.\n///\n/// This macro is sugar over [`crate::InteractionResponse::message`],\n/// which lowers to a `ShowModal` with an empty `title`.  Use\n/// [`show_modal!`] when you need a titled modal form, or\n/// [`chat_message!`] when the payload should be persisted in the\n/// chat history instead of rendered as a transient overlay.\n///\n/// ```ignore\n/// use mumble_plugin_api::{message, row, Button};\n/// let resp = message!(\n///     \"Hello, world\",\n///     row![ Button::new(\"again\", \"Again\") ],\n/// )\n/// .ephemeral();\n/// ```
 #[macro_export]
 macro_rules! message {
     ($content:expr $(, $row:expr)* $(,)?) => {{
@@ -66,12 +66,12 @@ macro_rules! message {
 
 /// Build a `ChatMessage`-kind [`crate::InteractionResponse`] - a
 /// literal chat message inserted into the client's channel/DM
-/// history, exactly like a [`mumble_protocol::proto::mumble_tcp::TextMessage`]
+/// history, exactly like a `mumble_protocol::proto::mumble_tcp::TextMessage`
 /// authored by the plugin.
 ///
 /// Same argument shape as [`message!`]: the first argument is the
 /// Markdown body, followed by zero or more
-/// [`crate::ActionRow`]s (typically produced by [`row!`]).  Chain
+/// [`crate::ActionRow`]s (typically produced by `row!`).  Chain
 /// `.channel(id)` (append a target) or `.channels(ids)` (set the
 /// whole list), plus `.ephemeral()` or `.with_correlation_id(...)`,
 /// on the returned [`crate::InteractionResponse`].

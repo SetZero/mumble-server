@@ -13,6 +13,8 @@
 name = "mumble-friends"
 version = "0.1.0"
 edition = "2021"
+# Internal to the plugin-host workspace; never published to crates.io.
+publish = false
 description = "Friend direct-message (E2E persisted) room provisioning plugin for Fancy Mumble"
 license = "MIT"
 

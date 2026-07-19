@@ -1,4 +1,4 @@
-//! [`CheckboxGroup`] — multi-choice option set.  Discord component
+//! [`CheckboxGroup`] - multi-choice option set.  Discord component
 //! type `22`.  Available in modal forms and in chat-bubble /
 //! overlay component trees: the client renders it as a vertical
 //! stack of native checkbox inputs in both contexts.

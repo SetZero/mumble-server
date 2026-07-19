@@ -636,7 +636,10 @@ mod tests {
             .collect();
         ids.sort();
         assert_eq!(ids, vec!["a".to_owned(), "c".to_owned()]);
-        assert!(store.list_for_uploader(None, "nobody").expect("query").is_empty());
+        assert!(store
+            .list_for_uploader(None, "nobody")
+            .expect("query")
+            .is_empty());
     }
 
     #[test]

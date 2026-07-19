@@ -5,7 +5,7 @@
 //! [`../../wit/world.wit`](../../wit/world.wit)) be loaded and driven through
 //! the *exact same* [`MumblePlugin_TO`] trait object the native cdylib loader
 //! produces. The rest of the host ([`crate::host`], [`crate::ffi`]) therefore
-//! treats WASM and native plugins identically — the polymorphism lives in the
+//! treats WASM and native plugins identically - the polymorphism lives in the
 //! `abi_stable` trait object, not in the host.
 //!
 //! ## Sandbox
@@ -15,7 +15,7 @@
 //! With the `wasm-wasi` feature (on by default) a **locked-down** WASI is also
 //! linked so guests whose toolchain embeds a WASI-dependent runtime (notably
 //! JavaScript plugins built with `ComponentizeJS`) can instantiate. That WASI
-//! context grants no filesystem, network, environment or argument access — only
+//! context grants no filesystem, network, environment or argument access - only
 //! the deterministic capabilities the embedded engine needs (clock, entropy);
 //! `stderr` is inherited so guest diagnostics surface in the server log. Pure
 //! components (e.g. Rust guests built with `wit-bindgen`) simply do not import
@@ -41,7 +41,7 @@ use mumble_plugin_api::{
     PluginMessageOut, PluginResult, ServerId, SessionId, WASM_ABI_VERSION,
 };
 use mumble_plugin_api::{INTERACTION_PAYLOAD_TYPE, INTERACTION_RESPONSE_PAYLOAD_TYPE};
-use wasmtime::component::{Component, Linker};
+use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store};
 
 use crate::loader::{LoadError, LoadedPlugin};
@@ -115,12 +115,14 @@ struct HostState {
 
 #[cfg(feature = "wasm-wasi")]
 impl wasmtime_wasi::WasiView for HostState {
-    fn ctx(&mut self) -> &mut wasmtime_wasi::WasiCtx {
-        &mut self.wasi
-    }
-
-    fn table(&mut self) -> &mut wasmtime_wasi::ResourceTable {
-        &mut self.table
+    // Since wasmtime-wasi 3x the trait exposes a single accessor returning a
+    // view that borrows both the context and the resource table, replacing the
+    // former separate `ctx()` / `table()` methods.
+    fn ctx(&mut self) -> wasmtime_wasi::WasiCtxView<'_> {
+        wasmtime_wasi::WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 
@@ -409,23 +411,25 @@ pub fn load_wasm_plugin(path: &Path) -> Result<LoadedPlugin, LoadError> {
     })?;
 
     let mut linker = Linker::new(engine);
+    // WASI p2 lives behind the `p2` module since wasmtime-wasi 3x.
     #[cfg(feature = "wasm-wasi")]
-    wasmtime_wasi::add_to_linker_sync(&mut linker).map_err(|e| LoadError::Invalid {
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| LoadError::Invalid {
         path: path.to_path_buf(),
         message: format!("failed to link WASI imports: {e}"),
     })?;
-    bindings::mumble::plugin::host::add_to_linker::<_, HostState>(&mut linker, |s| s).map_err(
-        |e| LoadError::Invalid {
+    // The generated `add_to_linker` now takes a `HasData` marker rather than the
+    // store type directly; `HasSelf<T>` is the "host state is the store data"
+    // case, which is what the `|s| s` projection expresses.
+    bindings::mumble::plugin::host::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s)
+        .map_err(|e| LoadError::Invalid {
             path: path.to_path_buf(),
             message: format!("failed to link host imports: {e}"),
-        },
-    )?;
-    bindings::mumble::plugin::ui_host::add_to_linker::<_, HostState>(&mut linker, |s| s).map_err(
-        |e| LoadError::Invalid {
-            path: path.to_path_buf(),
-            message: format!("failed to link ui-host imports: {e}"),
-        },
-    )?;
+        })?;
+    bindings::mumble::plugin::ui_host::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |s| s)
+        .map_err(|e| LoadError::Invalid {
+        path: path.to_path_buf(),
+        message: format!("failed to link ui-host imports: {e}"),
+    })?;
 
     let mut store = Store::new(
         engine,

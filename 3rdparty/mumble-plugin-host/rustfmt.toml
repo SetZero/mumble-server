@@ -1,0 +1,11 @@
+# Pin the formatting style so `cargo fmt --check` is deterministic across
+# developer machines and CI.
+#
+# `max_width` is deliberately left at rustfmt's default (100): the existing code
+# already follows it. Widening to the C++ side's ColumnLimit of 120 would make
+# rustfmt re-join wrapped call sites and produce ~5x the churn.
+edition = "2021"
+
+# CI runs on Linux while development happens on Windows; normalising to LF keeps
+# `--check` from disagreeing between the two.
+newline_style = "Unix"

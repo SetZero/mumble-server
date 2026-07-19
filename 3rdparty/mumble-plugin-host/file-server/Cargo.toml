@@ -2,6 +2,8 @@
 name = "mumble-file-server"
 version = "0.1.0"
 edition = "2021"
+# Internal to the plugin-host workspace; never published to crates.io.
+publish = false
 description = "File sharing plugin for Mumble - HTTP upload/download with signed URLs"
 license = "MIT"
 

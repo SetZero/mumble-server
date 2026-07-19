@@ -1,4 +1,4 @@
-//! [`FileUpload`] — modal-only file uploader.  Discord component type
+//! [`FileUpload`] - modal-only file uploader.  Discord component type
 //! `19`.  Submitted values are Fancy Mumble file ids referencing
 //! uploads the client has staged for this interaction.
 

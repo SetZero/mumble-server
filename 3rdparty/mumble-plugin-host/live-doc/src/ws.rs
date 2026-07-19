@@ -436,8 +436,12 @@ mod tests {
             user_id: session as i64,
             name: format!("user-{session}"),
         };
-        state.set_identity(server_id, 10, ident("owner-cert", 10)).await;
-        state.set_identity(server_id, 11, ident("member-cert", 11)).await;
+        state
+            .set_identity(server_id, 10, ident("owner-cert", 10))
+            .await;
+        state
+            .set_identity(server_id, 11, ident("member-cert", 11))
+            .await;
         let key = DocKey {
             server_id,
             slug: slug.to_owned(),
@@ -528,7 +532,9 @@ mod tests {
         };
         state.set_identity(server_id, 1, ident("owner-cert")).await;
         state.set_identity(server_id, 2, ident("member-cert")).await;
-        state.set_identity(server_id, 3, ident("stranger-cert")).await;
+        state
+            .set_identity(server_id, 3, ident("stranger-cert"))
+            .await;
 
         let key = DocKey {
             server_id,
@@ -546,7 +552,10 @@ mod tests {
         room.add_member("member-cert".into()).await;
 
         assert!(state.session_can_connect(server_id, 1, &key).await, "owner");
-        assert!(state.session_can_connect(server_id, 2, &key).await, "member");
+        assert!(
+            state.session_can_connect(server_id, 2, &key).await,
+            "member"
+        );
         assert!(
             !state.session_can_connect(server_id, 3, &key).await,
             "stranger rejected"

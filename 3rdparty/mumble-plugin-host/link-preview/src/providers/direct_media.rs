@@ -71,7 +71,10 @@ async fn fetch_image(client: &reqwest::Client, url: &Url, kind: Kind) -> Option<
     let mut fields = vec![
         Field {
             name: Some("Resolution".to_owned()),
-            value: Some(format!("{} \u{00d7} {}", res.original_width, res.original_height)),
+            value: Some(format!(
+                "{} \u{00d7} {}",
+                res.original_width, res.original_height
+            )),
             inline: Some(true),
         },
         Field {
@@ -181,6 +184,7 @@ fn human_file_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, reason = "tests panic on failure")]
     use super::*;
 
     fn u(s: &str) -> Url {

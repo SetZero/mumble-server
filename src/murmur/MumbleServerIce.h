@@ -42,7 +42,7 @@ protected:
 	int count;
 	QMutex qmEvent;
 	QWaitCondition qwcEvent;
-	void customEvent(QEvent *evt);
+	void customEvent(QEvent *evt) override;
 	void badMetaProxy(const ::MumbleServer::MetaCallbackPrx &prx);
 	void badServerProxy(const ::MumbleServer::ServerCallbackPrx &prx, const ::Server *server);
 	void badAuthenticator(::Server *);

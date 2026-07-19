@@ -298,7 +298,7 @@ namespace server {
 			assert(fromSchemaVersion <= toSchemaVersion);
 			try {
 				if (fromSchemaVersion < 15) {
-					// Table introduced in schema version 15 — nothing to migrate from older schemas.
+					// Table introduced in schema version 15 - nothing to migrate from older schemas.
 				} else {
 					mdb::Table::migrate(fromSchemaVersion, toSchemaVersion);
 				}

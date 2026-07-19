@@ -444,7 +444,9 @@ mod tests {
         store.add_shared_with("doc", "hash-a", 7, "Alice").unwrap();
         store.add_shared_with("doc", "hash-b", -1, "Bob").unwrap();
         // Idempotent: re-adding updates the display name, no duplicate row.
-        store.add_shared_with("doc", "hash-a", 7, "Alice Cooper").unwrap();
+        store
+            .add_shared_with("doc", "hash-a", 7, "Alice Cooper")
+            .unwrap();
 
         let list = store.list_shared_with("doc").unwrap();
         assert_eq!(list.len(), 2);

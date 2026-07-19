@@ -64,6 +64,9 @@ case "$os" in
 esac
 
 
+# The mumble-plugin-host Rust cdylib the server links against is built by CMake
+# (src/murmur/CMakeLists.txt) as part of the normal build, so nothing to do here.
+
 buildDir="${GITHUB_WORKSPACE}/build"
 
 mkdir -p "$buildDir"

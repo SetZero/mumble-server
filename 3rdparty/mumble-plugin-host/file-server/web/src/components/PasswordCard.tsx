@@ -13,7 +13,7 @@ interface PasswordCardProps {
 
 /**
  * The frosted card shell: lock badge, title, subtitle, then arbitrary content
- * (the form). Layout only — it owns no state, so it is reusable for any
+ * (the form). Layout only - it owns no state, so it is reusable for any
  * "enter a secret to continue" page.
  */
 export function PasswordCard({ title, subtitle, children }: PasswordCardProps) {

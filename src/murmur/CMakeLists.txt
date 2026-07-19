@@ -128,28 +128,120 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
 endif()
 
 # --- mumble-plugin-host (Rust cdylib) -------------------------------------
-# The Rust crate is built out-of-tree (cargo build -p mumble-plugin-host) and
-# its cbindgen-generated header is written to
-#   3rdparty/mumble-plugin-host/host/include/mumble_plugin_host.h
-# Link against the prebuilt shared library if present; otherwise expect the
-# packager to drop the artefact next to the server binary at runtime and link
-# only against the import lib (Windows) / nothing (ELF: dlopen-resolved).
+# The server links against this crate's C ABI (cbindgen header at
+# host/include/mumble_plugin_host.h). It has to exist before the link, so:
+#
+#   * if a packager/CI dropped a prebuilt library in lib/, link that (the Docker
+#     images build the cdylib in a separate stage and copy it there so the C++
+#     build stage needs no Rust toolchain);
+#   * otherwise build it here with cargo, the same way the WebRTC SFU module is
+#     built, so a plain `cmake --build` (local dev, CodeQL, ...) resolves the
+#     plugin_host_* symbols without a separate manual step.
+#
+# Previously this only did find_library + a warning, so every build harness that
+# was not build.sh (CodeQL, local cmake) linked with undefined plugin_host_*.
 set(MUMBLE_PLUGIN_HOST_DIR "${CMAKE_SOURCE_DIR}/3rdparty/mumble-plugin-host")
 target_include_directories(mumble_server_object_lib PUBLIC
     "${MUMBLE_PLUGIN_HOST_DIR}/host/include"
     "${MUMBLE_PLUGIN_HOST_DIR}/include"
 )
+
+# A stale NOTFOUND in the cache must not stick once the library is dropped in;
+# re-resolve every configure.
+unset(MUMBLE_PLUGIN_HOST_LIB CACHE)
 find_library(MUMBLE_PLUGIN_HOST_LIB
     NAMES mumble_plugin_host
     HINTS
         "${MUMBLE_PLUGIN_HOST_DIR}/lib"
-        "${MUMBLE_PLUGIN_HOST_DIR}/host/target/release"
         "${MUMBLE_PLUGIN_HOST_DIR}/target/release"
+    NO_DEFAULT_PATH
 )
+
 if(MUMBLE_PLUGIN_HOST_LIB)
+    message(STATUS "mumble-plugin-host: linking prebuilt ${MUMBLE_PLUGIN_HOST_LIB}")
     target_link_libraries(mumble_server_object_lib PUBLIC "${MUMBLE_PLUGIN_HOST_LIB}")
 else()
-    message(WARNING "mumble_plugin_host library not found - build it with `cargo build --release -p mumble-plugin-host` inside 3rdparty/mumble-plugin-host or drop the artefact in ${MUMBLE_PLUGIN_HOST_DIR}/lib.")
+    find_program(CARGO_EXECUTABLE cargo)
+    if(NOT CARGO_EXECUTABLE)
+        message(FATAL_ERROR
+            "mumble_plugin_host was not found in "
+            "${MUMBLE_PLUGIN_HOST_DIR}/{lib,target/release} and cargo is not "
+            "available to build it. Install Rust (https://rustup.rs) or drop a "
+            "prebuilt libmumble_plugin_host into "
+            "${MUMBLE_PLUGIN_HOST_DIR}/lib.")
+    endif()
+
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(_ph_cargo_profile "")
+        set(_ph_target_subdir "debug")
+    else()
+        set(_ph_cargo_profile "--release")
+        set(_ph_target_subdir "release")
+    endif()
+
+    # WASM component plugins are the plugin host's default feature set, but they
+    # pull in the whole wasmtime runtime, which dominates build time. None of the
+    # exported plugin_host_* C symbols depend on it, so a build that only needs
+    # native cdylib plugins (or a resource-constrained CI runner) can drop it and
+    # still link. Default ON to preserve full functionality.
+    option(plugin-host-wasm
+        "Build the plugin host with WASM component support (pulls in wasmtime)." ON)
+    if(plugin-host-wasm)
+        set(_ph_cargo_features "")
+    else()
+        message(STATUS "mumble-plugin-host: WASM component support disabled (plugin-host-wasm=OFF)")
+        set(_ph_cargo_features "--no-default-features")
+    endif()
+
+    # cdylib output name and the file the C++ actually links against. On MSVC
+    # that is the import lib, and the DLL has to sit next to the binary at
+    # runtime; ELF/Mach-O link the shared object directly.
+    if(WIN32)
+        set(_ph_runtime "mumble_plugin_host.dll")
+        set(_ph_link_lib "${MUMBLE_PLUGIN_HOST_DIR}/target/${_ph_target_subdir}/mumble_plugin_host.dll.lib")
+        set(_ph_build_output "${_ph_link_lib}")
+    elseif(APPLE)
+        set(_ph_link_lib "${MUMBLE_PLUGIN_HOST_DIR}/target/${_ph_target_subdir}/libmumble_plugin_host.dylib")
+        set(_ph_build_output "${_ph_link_lib}")
+    else()
+        set(_ph_link_lib "${MUMBLE_PLUGIN_HOST_DIR}/target/${_ph_target_subdir}/libmumble_plugin_host.so")
+        set(_ph_build_output "${_ph_link_lib}")
+    endif()
+
+    # On the Windows CI the C++ build runs under Git Bash, whose
+    # /usr/bin/link.exe (GNU coreutils) shadows the MSVC linker on PATH, so
+    # cargo's rustc picks the wrong link.exe ("extra operand"). Pin rustc's
+    # linker to the real link.exe next to cl.exe. Same fix as the SFU module.
+    set(_ph_cargo_launcher "")
+    if(WIN32 AND MSVC)
+        get_filename_component(_msvc_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        set(_ph_cargo_launcher ${CMAKE_COMMAND} -E env
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=${_msvc_bin_dir}/link.exe")
+    endif()
+
+    message(STATUS "mumble-plugin-host: building via cargo (${_ph_build_output})")
+    add_custom_command(
+        OUTPUT "${_ph_build_output}"
+        COMMAND ${_ph_cargo_launcher} ${CARGO_EXECUTABLE} build ${_ph_cargo_profile} ${_ph_cargo_features} -p mumble-plugin-host
+        WORKING_DIRECTORY "${MUMBLE_PLUGIN_HOST_DIR}"
+        COMMENT "Building mumble-plugin-host Rust cdylib"
+        VERBATIM
+    )
+    add_custom_target(mumble_plugin_host_build DEPENDS "${_ph_build_output}")
+    # Force cargo to run (and regenerate the cbindgen header) before any C++ in
+    # the object lib compiles or links.
+    add_dependencies(mumble_server_object_lib mumble_plugin_host_build)
+    target_link_libraries(mumble_server_object_lib PUBLIC "${_ph_link_lib}")
+
+    if(WIN32)
+        # The import lib is not enough at runtime; put the DLL next to the exe.
+        add_custom_command(TARGET mumble_plugin_host_build POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MUMBLE_PLUGIN_HOST_DIR}/target/${_ph_target_subdir}/${_ph_runtime}"
+                "${CMAKE_BINARY_DIR}/${_ph_runtime}"
+            COMMENT "Copying mumble_plugin_host.dll next to the server binary"
+        )
+    endif()
 endif()
 
 if(static)

@@ -190,6 +190,14 @@ pub struct PluginHostCallbacks {
     /// Create a sub-channel under `parent` (or return an existing same-named
     /// child) with standard, content-agnostic channel properties, writing the
     /// channel id through `out_channel`.  Returns `true` on success.
+    // The inline function-pointer type must stay inline: cbindgen only emits a
+    // valid C nullable function pointer when it can see the signature here. A
+    // `type` alias makes it generate an incomplete `Option_<Alias>` struct that
+    // breaks the C header. So keep the signature inline and silence the lint.
+    #[allow(
+        clippy::type_complexity,
+        reason = "FFI ABI function-pointer field; cbindgen needs the inline signature to emit a valid C header"
+    )]
     pub create_channel: Option<
         unsafe extern "C" fn(
             user_data: *mut c_void,
@@ -211,6 +219,20 @@ pub struct PluginHostCallbacks {
     /// Grant registered `user_id` access to private `channel`.  Returns `true`
     /// on success.
     pub grant_channel_access: Option<
+        unsafe extern "C" fn(
+            user_data: *mut c_void,
+            server_id: u32,
+            channel: u32,
+            user_id: u32,
+        ) -> bool,
+    >,
+
+    /// Revoke registered `user_id`'s access to private `channel` (the inverse
+    /// of `grant_channel_access`): the host drops the user's per-user allow
+    /// ACLs, moves their sessions out of the channel and, once they can no
+    /// longer see it, tells their clients the channel is gone.  Returns `true`
+    /// on success (including the no-op case of nothing to revoke).
+    pub revoke_channel_access: Option<
         unsafe extern "C" fn(
             user_data: *mut c_void,
             server_id: u32,
@@ -735,6 +757,14 @@ impl PluginContext for ScopedContext {
 
     fn grant_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
         let Some(func) = self.inner.callbacks.grant_channel_access else {
+            return false;
+        };
+        // SAFETY: callback non-null; primitive args passed by value.
+        unsafe { func(self.inner.callbacks.user_data, server_id, channel, user_id) }
+    }
+
+    fn revoke_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
+        let Some(func) = self.inner.callbacks.revoke_channel_access else {
             return false;
         };
         // SAFETY: callback non-null; primitive args passed by value.

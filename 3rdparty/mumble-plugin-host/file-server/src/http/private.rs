@@ -31,12 +31,10 @@ const MAX_PRIVATE_BYTES: usize = 1024 * 1024;
 
 /// Build the `/me/storage` sub-router.
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/me/storage", get(list_keys))
-        .route(
-            "/me/storage/{key}",
-            get(get_value).put(put_value).delete(delete_value),
-        )
+    Router::new().route("/me/storage", get(list_keys)).route(
+        "/me/storage/{key}",
+        get(get_value).put(put_value).delete(delete_value),
+    )
 }
 
 #[derive(Debug, Serialize)]

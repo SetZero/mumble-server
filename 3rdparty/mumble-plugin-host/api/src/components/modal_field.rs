@@ -1,4 +1,4 @@
-//! [`ModalFieldValue`] — typed value carried back from a modal
+//! [`ModalFieldValue`] - typed value carried back from a modal
 //! component on submit.
 //!
 //! Text inputs report a `String`; checkboxes report a `Bool`;

@@ -631,6 +631,11 @@ public:
 	/// Grant a registered user SeeChannel|Enter|Traverse on an existing private
 	/// channel (admission to an invitee-gated room). Returns true on success.
 	bool grantChannelAccess(unsigned int channelId, unsigned int userId);
+	/// Inverse of grantChannelAccess: drop the user's per-user allow ACLs on the
+	/// channel, move their sessions out if inside, and tell them the channel is
+	/// gone (a user who cannot see a room should not keep it in their list).
+	/// Idempotent; returns true unless the channel does not exist.
+	bool revokeChannelAccess(unsigned int channelId, unsigned int userId);
 
 	void linkChannels(Channel &first, Channel &second);
 	void unlinkChannels(Channel &first, Channel &second);

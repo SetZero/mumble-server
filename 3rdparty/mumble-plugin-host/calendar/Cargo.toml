@@ -12,6 +12,8 @@
 name = "mumble-calendar"
 version = "0.1.0"
 edition = "2021"
+# Internal to the plugin-host workspace; never published to crates.io.
+publish = false
 description = "Calendar/scheduling relay plugin for Fancy Mumble"
 license = "MIT"
 

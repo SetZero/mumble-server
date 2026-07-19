@@ -3,8 +3,8 @@
 React + [Material UI 9](https://mui.com/) + [lucide-react](https://lucide.dev/)
 source for the HTML pages embedded into the Mumble file-server.
 
-Today this builds a single page — the **password-entry page** served when a
-password-protected file is opened in a browser without a ticket — but it is
+Today this builds a single page - the **password-entry page** served when a
+password-protected file is opened in a browser without a ticket - but it is
 structured as a normal multi-component app so further pages (admin, "me", file
 listings) can be added alongside it.
 
@@ -13,7 +13,7 @@ listings) can be added alongside it.
 `npm run build` produces **one self-contained file**, `dist/password.html`:
 
 1. `vite build` bundles the app and `vite-plugin-singlefile` inlines all JS/CSS
-   (no external asset requests — required by the page's strict CSP).
+   (no external asset requests - required by the page's strict CSP).
 2. `scripts/postbuild.mjs` stamps `nonce="__CSP_NONCE__"` onto every `<script>`
    and renames the output to `dist/password.html`.
 

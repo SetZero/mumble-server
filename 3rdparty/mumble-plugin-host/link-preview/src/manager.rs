@@ -1,6 +1,6 @@
 //! Orchestration: validate + rate-limit a request, run each URL through the
-//! provider chain (direct-media -> oEmbed -> OpenGraph), enrich with an
-//! OpenGraph description fallback and server-side downscaled media previews,
+//! provider chain (direct-media -> oEmbed -> `OpenGraph`), enrich with an
+//! `OpenGraph` description fallback and server-side downscaled media previews,
 //! cache raw provider results, and assemble the response. Port of
 //! `LinkPreviewManager.cpp`.
 
@@ -105,7 +105,8 @@ impl Manager {
         }
 
         self.enrich_media(&mut embed.image, DEFAULT_MAX_DIM).await;
-        self.enrich_media(&mut embed.thumbnail, DEFAULT_MAX_DIM).await;
+        self.enrich_media(&mut embed.thumbnail, DEFAULT_MAX_DIM)
+            .await;
         self.enrich_media(&mut embed.favicon, FAVICON_MAX_DIM).await;
         Some(embed)
     }
@@ -186,7 +187,7 @@ impl Manager {
 }
 
 /// Provider chain in priority order: direct-media (5) -> oEmbed (10) ->
-/// OpenGraph (1000). First success wins.
+/// `OpenGraph` (1000). First success wins.
 async fn fetch_via_chain(client: &reqwest::Client, url: &Url) -> Option<Embed> {
     if direct_media::can_handle(url) {
         if let Some(e) = direct_media::fetch_preview(client, url).await {
@@ -201,7 +202,7 @@ async fn fetch_via_chain(client: &reqwest::Client, url: &Url) -> Option<Embed> {
     opengraph::fetch_preview(client, url).await
 }
 
-/// Fill empty fields of `target` from an OpenGraph `og` embed (mirrors
+/// Fill empty fields of `target` from an `OpenGraph` `og` embed (mirrors
 /// `LinkPreviewManager::mergeOgIntoTarget`).
 fn merge_og(target: &mut Embed, og: Embed) {
     fn fill(t: &mut Option<String>, s: Option<String>) {
@@ -275,12 +276,17 @@ mod tests {
         ];
         let valid = validate_urls(&urls);
         let strs: Vec<_> = valid.iter().map(Url::as_str).collect();
-        assert_eq!(strs, vec!["https://example.com/a#frag", "https://example.org/b"]);
+        assert_eq!(
+            strs,
+            vec!["https://example.com/a#frag", "https://example.org/b"]
+        );
     }
 
     #[test]
     fn validate_caps_at_five() {
-        let urls: Vec<String> = (0..10).map(|i| format!("https://example.com/{i}")).collect();
+        let urls: Vec<String> = (0..10)
+            .map(|i| format!("https://example.com/{i}"))
+            .collect();
         assert_eq!(validate_urls(&urls).len(), 5);
     }
 

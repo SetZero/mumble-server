@@ -1,4 +1,4 @@
-//! [`ActionRow`] — horizontal container for up to five interactive
+//! [`ActionRow`] - horizontal container for up to five interactive
 //! components.
 //!
 //! Mirrors Discord's component type `1`.  Used both at message

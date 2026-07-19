@@ -1,4 +1,4 @@
-//! [`MediaGallery`] — 1 to 10 media items rendered as a gallery.
+//! [`MediaGallery`] - 1 to 10 media items rendered as a gallery.
 //! Discord component type `12`.
 
 use serde::{Deserialize, Serialize};

@@ -15,6 +15,7 @@
 #include "AudioInput.h"
 #include "AudioOutput.h"
 #include "Cert.h"
+#include "MumbleDeprecation.h"
 #include "Connection.h"
 #include "Database.h"
 #include "HostAddress.h"
@@ -1007,7 +1008,11 @@ void ServerHandler::createChannel(unsigned int parent_id, const QString &name, c
 	mpcs.set_name(u8(name));
 	mpcs.set_description(u8(description));
 	mpcs.set_position(static_cast< int >(position));
+	// set_temporary is proto-deprecated (superseded by the attribute set) but
+	// still sent so legacy servers understand a temporary-channel create request.
+	MUMBLE_DEPRECATED_PUSH
 	mpcs.set_temporary(temporary);
+	MUMBLE_DEPRECATED_POP
 	mpcs.set_max_users(maxUsers);
 	sendMessage(mpcs);
 }

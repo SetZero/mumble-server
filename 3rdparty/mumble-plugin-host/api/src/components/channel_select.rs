@@ -1,4 +1,4 @@
-//! [`ChannelSelect`] — pick one or more Mumble channels.  Discord
+//! [`ChannelSelect`] - pick one or more Mumble channels.  Discord
 //! component type `8`.  Returned values are Mumble `ChannelId`s
 //! (stringified on the wire).
 
