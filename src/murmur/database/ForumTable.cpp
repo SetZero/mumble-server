@@ -298,12 +298,16 @@ namespace server {
 			try {
 				::mdb::TransactionHolder transaction = ensureTransaction();
 
-				int one = 1;
-				m_sql << "UPDATE \"" << NAME << "\" SET \"" << column::deleted << "\" = :one WHERE \""
-					  << column::server_id << "\" = :sid AND \"" << column::post_id << "\" = :pid",
-					soci::use(one), soci::use(serverID), soci::use(postId);
-
-				bool affected = m_sql.got_data();
+				// got_data() only reports fetched rows, so it is always false
+				// for an UPDATE - callers saw "nothing deleted" and skipped
+				// the removal broadcast. Count the affected rows instead.
+				int one            = 1;
+				soci::statement st = (m_sql.prepare << "UPDATE \"" << NAME << "\" SET \"" << column::deleted
+													<< "\" = :one WHERE \"" << column::server_id << "\" = :sid AND \""
+													<< column::post_id << "\" = :pid",
+									  soci::use(one), soci::use(serverID), soci::use(postId));
+				st.execute(true);
+				const bool affected = st.get_affected_rows() > 0;
 				transaction.commit();
 				return affected;
 			} catch (const soci::soci_error &) {
