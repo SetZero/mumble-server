@@ -39,6 +39,15 @@ different trust and privacy properties.
   viewer half, searchable both by point-and-click filters and by a SQL-like
   query language — parsed with **`sqlparser`** behind a deny-by-default AST
   whitelist that lowers to the same gated query as the filter builder (§10.3).
+- **The event stream is a durable, Kafka-like log** (§7.10): append-only,
+  offset-addressed, per-consumer offsets, at-least-once with replay — so no
+  event is lost because a plugin was busy or restarting.
+- **Every privileged plugin callback emits**; what gets *recorded* is a toggle,
+  not an emit-time filter (§7.10, §9.2).
+- **Toggles stop the future, never rewrite the past** (§9.2): switching a part
+  off halts new entries but deletes nothing, deletion is a separate audited
+  action, and the toggle change is itself an audit entry — so disabling the
+  watcher is the first thing the log shows.
 
 ---
 
@@ -291,8 +300,11 @@ signal-view permission (§9).
   `FancyOnboardingConfig` (136–140) surface. Off by default; the admin opts in.
 - **Data-subject controls.** Aggregates are pseudonymous; raw edges are
   deletable per user (right-to-erasure) and covered by the retention policy.
-- **Reversibility.** Turning a part off stops that collection and (configurable)
-  purges the raw edges it produced.
+- **Reversibility.** Turning a part off stops *new* collection; it does not
+  delete what was already gathered (§9.2). Removing existing data is a separate,
+  explicit and audited action — the retention policy or a right-to-erasure
+  request (§7.9) — so "stop collecting this" and "destroy what we collected"
+  stay distinct decisions.
 
 ### 6.5 Wire
 
@@ -427,22 +439,52 @@ exist on the bridge, they are reusable infrastructure:
 So the audit feature pays for a general capability. This is worth calling out as
 its own win: **the bridge becomes event-driven, not just request/response.**
 
-**Subscription + filtering.** A plugin declares which `kind`s it wants (so a
-calendar plugin isn't woken for every mute). The host tracks subscriptions like
-it already tracks pchat verified-session delivery, and applies the same
-per-plugin rate/backpressure discipline.
+**Transport: a small Kafka-like log, not a fire-and-forget callback.** The
+stream is a **durable, append-only, offset-addressed log** owned by the host:
 
-**Auditing plugin actions themselves (destructive/invasive).** Plugins already
-hold privileged `PluginContext` calls — `create_channel`, `grant_channel_access`,
-`revoke_channel_access`, pchat message deletion, config writes. Those are
-exactly the actions that must not be invisible. The host emits a
-`plugin.action` server event **from inside the privileged callbacks** (not from
-the calling plugin, which can't be trusted to self-report), tagged with the
-plugin name/slot, the operation, and its arguments. Result: a plugin deleting a
-channel or revoking access lands in the same hash-chained audit trail as a human
-admin doing it, with `source='plugin'`. Destructive callbacks can also be
-gated by an audit policy (e.g. "channel deletion by a plugin requires the
-plugin to hold capability X"), enforced host-side.
+- every event gets a monotonic `offset` (per virtual server) and is appended
+  before any consumer is woken, so an event can't be lost because a plugin was
+  busy, slow or restarting;
+- each subscribed plugin is a **consumer with its own committed offset**;
+  delivery is **at-least-once** and resumes from the last commit after a plugin
+  reload or a server restart;
+- consumers are **independent** — a stalled calendar plugin cannot block the
+  audit plugin, and a new plugin can **replay** history from offset 0 (or from
+  the retention floor) to backfill;
+- the log is **bounded** by size/age. A consumer that lags past the floor gets
+  an explicit "gap" signal rather than silently missing events — the audit
+  plugin records that gap as an entry, so a hole in the record is itself
+  visible.
+
+Implementation can be modest: an append-only table in the host's SQLite (already
+a dependency) with a `consumer_offsets` table, rather than a real broker. The
+semantics are what matter, not the machinery.
+
+**At-least-once means consumers must be idempotent.** This matters specifically
+for the hash chain (§7.1): a redelivered event must not append a second chained
+entry. The audit plugin therefore keys on the event `offset`, records the last
+applied one, and skips anything it has already chained.
+
+**Subscription + filtering.** A plugin declares which `kind`s it wants (so a
+calendar plugin isn't woken for every mute), applied as a server-side filter on
+the log read.
+
+**Auditing plugin actions themselves.** Plugins hold privileged
+`PluginContext` calls — `create_channel`, `grant_channel_access`,
+`revoke_channel_access`, pchat message deletion, config writes. **Every
+privileged callback emits a `plugin.action` event**, not just a
+"destructive" subset: deciding up front which calls are interesting bakes a
+judgement into the emit path, and the cheap, reversible place to make that
+choice is the *logging* toggle (§9.2), not the event source. Emission is
+uniform; what gets recorded is policy.
+
+The event is emitted **from inside the host's privileged callback** — never
+self-reported by the calling plugin, which can't be trusted to report its own
+actions — and is tagged with the plugin name/slot, the operation and its
+arguments. A plugin deleting a channel or revoking access therefore lands in
+the same hash-chained trail as a human admin doing it, with `source='plugin'`.
+Destructive callbacks can additionally be gated by policy (e.g. "channel
+deletion by a plugin requires capability X"), enforced host-side.
 
 **Trust boundary.** Core still *owns* emitting the authoritative events (a
 plugin can't fabricate a "ban" it didn't cause, because the event originates in
@@ -613,9 +655,29 @@ retention }`:
 everything off, the plugin still records the server-authoritative audit trail
 (which is the actual ticket) and simply collects no client signals.
 
-Turning a part off stops collection immediately and (configurably) purges the
-data it produced (§6.4). The toggle set is itself versioned in the audit log, so
-"who enabled mute telemetry, and when" is answerable.
+#### Toggle semantics: stop the future, never rewrite the past
+
+A toggle governs **what is recorded from now on. It never deletes what was
+already recorded.** Three consequences:
+
+1. **Turning a part off stops new entries only.** Existing history stays exactly
+   as it was. Anything else would be rewriting the past — and for chained
+   entries (§7.1) it is not even possible without visibly breaking the chain,
+   which is the point of having one.
+2. **Deleting is a separate, explicit, permissioned action** — retention policy
+   or a right-to-erasure request (§7.9) — never a side effect of flipping a
+   switch. That separation keeps "stop collecting this" and "destroy what we
+   collected" from being the same gesture, because they are very different
+   decisions.
+3. **The toggle change is itself an audit event.** Enabling or disabling any
+   part writes an entry (`category='config'`, actor recorded), so "who turned
+   off `audit.plugin_action`, and when" is always answerable. An operator cannot
+   quietly disable the thing that is watching them without that act being the
+   first thing in the log.
+
+This is also why `audit.plugin_action` is a *logging* toggle rather than an
+emit-time filter (§7.10): the event stream stays uniform and complete, and the
+toggle only decides what the audit plugin persists.
 
 ---
 
@@ -803,11 +865,7 @@ Since it's a plugin, the first real work is the **bridge event stream** (§7.10)
   has tests behind it.
 - **Retention defaults** per part (§9.2) — what does the reference deployment
   want (e.g. bans forever, raw mute-edges 30 days, aggregates 1 year)?
-- **Event-stream delivery guarantees.** Is best-effort in-process fan-out enough,
-  or does the audit plugin need an at-least-once queue so an event can't be lost
-  if the plugin is briefly busy? (Leaning: a small bounded durable queue for
-  `audit.*`, best-effort for reactive consumers.)
-- **`plugin.action` granularity.** Emit for every privileged callback, or only
-  the destructive/invasive subset (channel delete, access revoke, message
-  purge, config write)? Leaning destructive-subset by default, all-on behind a
-  toggle.
+- **Log retention floor for the event stream (§7.10).** Decided that it is a
+  bounded Kafka-like log; still open is *how* bounded (size vs age), and whether
+  the audit consumer should get a stricter floor than reactive consumers so it
+  can never be the one that hits a gap.
