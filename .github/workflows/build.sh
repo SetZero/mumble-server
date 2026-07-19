@@ -64,26 +64,8 @@ case "$os" in
 esac
 
 
-# --- Build the mumble-plugin-host Rust cdylib -----------------------------
-# The server links against libmumble_plugin_host (src/murmur/CMakeLists.txt
-# discovers it via find_library). It is built out-of-tree, so build it before
-# configuring CMake or the mumble-server link fails with undefined
-# plugin_host_* references. Only the host crate is a link-time dependency; the
-# plugin cdylibs (file-server, calendar, ...) are loaded at runtime and are not
-# needed here. This runs after the OS case block so the Windows MSVC toolchain
-# (from vcvarsall) is available for the cargo build.
-pluginHostDir="${GITHUB_WORKSPACE}/3rdparty/mumble-plugin-host"
-( cd "$pluginHostDir" && cargo build --release -p mumble-plugin-host )
-if [[ "$os" = "windows" ]]; then
-	# On MSVC find_library() wants mumble_plugin_host.lib, but cargo emits the
-	# import lib as mumble_plugin_host.dll.lib; drop a correctly named copy where
-	# CMake looks. (ELF/Mach-O builds are found directly in target/release.)
-	mkdir -p "$pluginHostDir/lib"
-	cp "$pluginHostDir/target/release/mumble_plugin_host.dll" "$pluginHostDir/lib/"
-	cp "$pluginHostDir/target/release/mumble_plugin_host.dll.lib" \
-		"$pluginHostDir/lib/mumble_plugin_host.lib" 2>/dev/null \
-		|| cp "$pluginHostDir/target/release/mumble_plugin_host.lib" "$pluginHostDir/lib/"
-fi
+# The mumble-plugin-host Rust cdylib the server links against is built by CMake
+# (src/murmur/CMakeLists.txt) as part of the normal build, so nothing to do here.
 
 buildDir="${GITHUB_WORKSPACE}/build"
 
