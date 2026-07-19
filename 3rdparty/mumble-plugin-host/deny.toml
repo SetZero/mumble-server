@@ -14,12 +14,21 @@ all-features = true
 # ---------------------------------------------------------------------------
 [advisories]
 yanked = "deny"
-# Intentionally empty. See the note on the advisories step in
-# .github/workflows/plugin-host.yml: the workspace currently has open
-# advisories in wasmtime/wasmtime-wasi 27.0.0 (including two sandbox escapes)
-# that need a real version bump rather than a suppression. Add entries here only
-# with a justification and a tracking issue.
-ignore = []
+# Add entries here only with a justification, and only when there is genuinely
+# no upgrade path - never to silence a fixable vulnerability. (The wasmtime
+# 27.x advisories that used to sit here, including two sandbox escapes, were
+# fixed properly by moving to the 36.x LTS line, not suppressed.)
+ignore = [
+    # Both are transitive dependencies of `abi_stable`, which is the foundation
+    # of the whole plugin ABI - every plugin crate links it. Neither advisory is
+    # a vulnerability; both are "crate is unmaintained" notices with no patched
+    # version to move to, and abi_stable 0.11.3 is itself the latest release
+    # (2023-10-12), so there is nothing to upgrade into. Revisit if abi_stable
+    # publishes a release that drops them, or if either advisory is upgraded to
+    # an actual vulnerability.
+    { id = "RUSTSEC-2024-0014", reason = "generational-arena unmaintained; transitive via abi_stable, no fixed version exists" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive via abi_stable, no fixed version exists" },
+]
 
 # ---------------------------------------------------------------------------
 # Licences

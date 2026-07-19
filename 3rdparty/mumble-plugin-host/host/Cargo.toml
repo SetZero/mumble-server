@@ -49,7 +49,12 @@ tar = "0.4"
 # WASM component runtime for `.wasm` plugins. Synchronous. Guests get the
 # `host` interface imports defined in `../wit/world.wit`; with the `wasm-wasi`
 # feature they additionally get a sandboxed WASI (see below).
-wasmtime = { version = "27", default-features = false, features = [
+#
+# Pinned to the 36.x LTS line: it carries backported security fixes (27.x does
+# not and is affected by RUSTSEC advisories including two sandbox escapes -
+# aarch64 Cranelift miscompilation and a Winch memory access), while avoiding
+# the monthly-major treadmill of the latest release.
+wasmtime = { version = "36", default-features = false, features = [
     "runtime",
     "component-model",
     "cranelift",
@@ -59,7 +64,7 @@ wasmtime = { version = "27", default-features = false, features = [
 # components that embed a WASI-dependent runtime (e.g. the JavaScript engine
 # produced by ComponentizeJS) can instantiate. The provided context grants no
 # filesystem, network, environment or argument access.
-wasmtime-wasi = { version = "27", optional = true }
+wasmtime-wasi = { version = "36", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # ELF pre-validation: parse the binary without dlopen so a corrupt or

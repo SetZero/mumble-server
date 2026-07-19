@@ -130,33 +130,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Policy gates: these pass today, so they block.
-      #   bans:     wildcard/banned crates (duplicates only warn)
-      #   licenses: allow-list compliance
-      #   sources:  crates.io only
-      - name: Policy (bans, licenses, sources)
+      # All four checks pass and therefore block:
+      #   advisories: RUSTSEC vulnerabilities, unmaintained crates, yanked versions
+      #   bans:       wildcard/banned crates (duplicates only warn)
+      #   licenses:   allow-list compliance
+      #   sources:    crates.io only
+      #
+      # advisories was previously advisory-only because wasmtime 27.x carried 18
+      # open advisories (including two sandbox escapes). That was fixed by moving
+      # to the 36.x LTS line rather than suppressing it, so the gate now blocks -
+      # a new vulnerability in the plugin sandbox should fail the build.
+      - name: cargo-deny (advisories, bans, licenses, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           manifest-path: 3rdparty/mumble-plugin-host/Cargo.toml
-          command: check bans licenses sources
-
-      # RUSTSEC advisories are reported separately and do NOT block yet.
-      #
-      # The workspace pins wasmtime/wasmtime-wasi 27.0.0, which currently has 18
-      # open advisories - including two sandbox escapes (RUSTSEC aarch64
-      # Cranelift miscompilation and the Winch backend memory access) plus
-      # several host panics reachable from guest code. Fixing them means moving
-      # to wasmtime >= 45, a major upgrade with API breakage, so it cannot be a
-      # drive-by change. This step is deliberately visible-but-advisory so the
-      # rest of the pipeline stays usable while that upgrade is scheduled.
-      #
-      # Once wasmtime is upgraded, delete continue-on-error so regressions block.
-      - name: Advisories (RUSTSEC)
-        continue-on-error: true
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          manifest-path: 3rdparty/mumble-plugin-host/Cargo.toml
-          command: check advisories
+          command: check advisories bans licenses sources
 
   # ---------------------------------------------------------------------------
   # Miri: real UB detection for the unsafe FFI surface.
