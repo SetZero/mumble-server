@@ -998,6 +998,39 @@ void Server::msgUDPTunnel(ServerUser *, MumbleProto::UDPTunnel &) {
 	qWarning("Messages: Reached theoretically unreachable function msgUDPTunnel");
 }
 
+/// Emit one audit event per speak-state attribute a moderator actually
+/// changed. Each attribute is its own event kind; the audit plugin folds
+/// mute/deafen/suppress/priority_speaker into the single
+/// `audit.mute_deafen_suppress` part. Attributes whose value is unchanged are
+/// skipped so a UserState carrying the current state is not logged as an
+/// action.
+static void emitSpeakStateAudit(AuditLogBridge *bridge, const ServerUser *actor,
+								const ServerUser *target, bool prevMute, bool prevDeaf,
+								bool prevSuppress, bool prevPriority) {
+	const struct {
+		const char *kind;
+		bool before;
+		bool after;
+	} changes[] = {
+		{ "mute", prevMute, target->bMute },
+		{ "deafen", prevDeaf, target->bDeaf },
+		{ "suppress", prevSuppress, target->bSuppress },
+		{ "priority_speaker", prevPriority, target->bPrioritySpeaker },
+	};
+
+	const int64_t channelId =
+		target->cChannel ? static_cast< int64_t >(target->cChannel->iId) : -1;
+
+	for (const auto &change : changes) {
+		if (change.before == change.after) {
+			continue;
+		}
+		QJsonObject detail;
+		detail.insert(QStringLiteral("enabled"), change.after);
+		bridge->emitEvent(QLatin1String(change.kind), actor, target, channelId, detail);
+	}
+}
+
 void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 	ZoneScoped;
 
@@ -1251,10 +1284,21 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 
 
 
+	// Speak-state before this message, captured for the audit trail; the events
+	// are emitted after the write lock is released.
+	bool speakStateTouched = false;
+	bool prevMute = false, prevDeaf = false, prevSuppress = false, prevPriority = false;
+
 	if (msg.has_mute() || msg.has_deaf() || msg.has_suppress() || msg.has_priority_speaker()) {
 		// Writing to bDeaf, bMute and bSuppress requires
 		// holding a write lock on qrwlVoiceThread.
 		QWriteLocker wl(&qrwlVoiceThread);
+
+		speakStateTouched = true;
+		prevMute          = pDstServerUser->bMute;
+		prevDeaf          = pDstServerUser->bDeaf;
+		prevSuppress      = pDstServerUser->bSuppress;
+		prevPriority      = pDstServerUser->bPrioritySpeaker;
 
 		if (msg.has_deaf()) {
 			pDstServerUser->bDeaf = msg.deaf();
@@ -1280,6 +1324,12 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 							  QString::number(pDstServerUser->bPrioritySpeaker)));
 
 		bBroadcast = true;
+	}
+
+	// Outside the voice-thread write lock: publishing an event can do I/O.
+	if (speakStateTouched && m_auditBridge) {
+		emitSpeakStateAudit(m_auditBridge.get(), uSource, pDstServerUser, prevMute, prevDeaf,
+							prevSuppress, prevPriority);
 	}
 
 	if (msg.has_recording() && (pDstServerUser->bRecording != msg.recording())) {
@@ -1326,6 +1376,21 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 		presenceChannelMoved = (c != pDstServerUser->cChannel);
 		userEnterChannel(pDstServerUser, c, msg);
 		log(uSource, QString("Moved %1 to %2").arg(QString(*pDstServerUser), QString(*c)));
+
+		// Only an actual channel change is an auditable move; a UserState that
+		// merely restates the current channel is not.
+		if (m_auditBridge && c && presenceChannelMoved) {
+			QJsonObject detail;
+			if (presencePrevChannel) {
+				detail.insert(QStringLiteral("from_channel_id"),
+							  static_cast< qint64 >(presencePrevChannel->iId));
+				detail.insert(QStringLiteral("from_channel_name"), presencePrevChannel->qsName);
+			}
+			detail.insert(QStringLiteral("to_channel_name"), c->qsName);
+			m_auditBridge->emitEvent(QStringLiteral("move"), uSource, pDstServerUser,
+									 static_cast< int64_t >(c->iId), detail);
+		}
+
 		bBroadcast = true;
 	}
 
@@ -1412,6 +1477,16 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 			assert(pDstServerUser->iId >= 0);
 			msg.set_user_id(static_cast< unsigned int >(pDstServerUser->iId));
 			bDstAclChanged = true;
+
+			if (m_auditBridge) {
+				QJsonObject detail;
+				detail.insert(QStringLiteral("user_id"), static_cast< qint64 >(pDstServerUser->iId));
+				// Self-registration and an admin registering someone else are
+				// the same wire message; the actor/target pair distinguishes them.
+				detail.insert(QStringLiteral("self"), uSource == pDstServerUser);
+				m_auditBridge->emitEvent(QStringLiteral("register"), uSource, pDstServerUser, -1,
+										 detail);
+			}
 		} else {
 			// Registration failed
 			msg.clear_user_id();
@@ -2013,6 +2088,42 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		if (!c->hasAttribute(ChannelAttribute::Temporary)) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
 		}
+
+		// One event for the whole edit (a single ChannelState can rename, move
+		// and re-describe at once); `fields` says what the operator touched.
+		if (m_auditBridge) {
+			QJsonArray fields;
+			if (p) {
+				fields.append(QStringLiteral("parent"));
+			}
+			if (msg.has_name()) {
+				fields.append(QStringLiteral("name"));
+			}
+			if (msg.has_description()) {
+				fields.append(QStringLiteral("description"));
+			}
+			if (msg.has_position()) {
+				fields.append(QStringLiteral("position"));
+			}
+			if (msg.has_max_users()) {
+				fields.append(QStringLiteral("max_users"));
+			}
+			if (msg.has_hidden()) {
+				fields.append(QStringLiteral("hidden"));
+			}
+			if (msg.has_expiry_mode() || msg.has_expiry_duration_secs()) {
+				fields.append(QStringLiteral("expiry"));
+			}
+
+			if (!fields.isEmpty()) {
+				QJsonObject detail;
+				detail.insert(QStringLiteral("channel_name"), c->qsName);
+				detail.insert(QStringLiteral("fields"), fields);
+				m_auditBridge->emitEvent(QStringLiteral("channel.update"), uSource, nullptr,
+										 static_cast< int64_t >(c->iId), detail);
+			}
+		}
+
 		m_events.channelStateChanged(c);
 
 		sendToObservers(c, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
@@ -2973,6 +3084,15 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 			if (!user.has_name()) {
 				log(uSource, QString::fromLatin1("Unregistered user %1").arg(id));
 				unregisterUser(static_cast< int >(id));
+
+				if (m_auditBridge) {
+					// The account is gone by now, so the id is all we can record
+					// as the target; there is no ServerUser to attribute it to.
+					QJsonObject detail;
+					detail.insert(QStringLiteral("user_id"), static_cast< qint64 >(id));
+					m_auditBridge->emitEvent(QStringLiteral("deregister"), uSource, nullptr, -1,
+											 detail);
+				}
 			} else {
 				const QString &name = u8(user.name()).trimmed();
 				if (validateUserName(name)) {
@@ -3555,6 +3675,35 @@ void Server::msgPchatDeleteMessages(ServerUser *uSource, MumbleProto::PchatDelet
 
 	if (m_pchatManager) {
 		m_pchatManager->handlePchatDeleteMessages(uSource->uiSession, msg);
+	}
+
+	// Deleting someone else's messages is a moderation action (gated on
+	// DeleteMessage above), so it belongs in the audit trail.
+	if (m_auditBridge) {
+		// Deletion has three scopes (explicit ids, a time window, or every
+		// message from one sender); record which was used, not just a count -
+		// a range delete carries no ids and would otherwise look like a no-op.
+		QJsonObject detail;
+		detail.insert(QStringLiteral("channel_name"), c->qsName);
+		if (msg.message_ids_size() > 0) {
+			detail.insert(QStringLiteral("message_count"),
+						  static_cast< qint64 >(msg.message_ids_size()));
+		}
+		if (msg.has_time_range()) {
+			QJsonObject range;
+			if (msg.time_range().has_from()) {
+				range.insert(QStringLiteral("from"), static_cast< qint64 >(msg.time_range().from()));
+			}
+			if (msg.time_range().has_to()) {
+				range.insert(QStringLiteral("to"), static_cast< qint64 >(msg.time_range().to()));
+			}
+			detail.insert(QStringLiteral("time_range"), range);
+		}
+		if (msg.has_sender_hash()) {
+			detail.insert(QStringLiteral("sender_hash"), u8(msg.sender_hash()));
+		}
+		m_auditBridge->emitEvent(QStringLiteral("pchat.delete_messages"), uSource, nullptr,
+								 static_cast< int64_t >(c->iId), detail);
 	}
 }
 
@@ -4296,6 +4445,10 @@ void Server::msgFancyServerSettingsUpdate(ServerUser *uSource,
 	}
 
 	QSet< QString > pluginsToReload;
+	// Keys that were actually applied, for the audit trail. Values are
+	// deliberately never recorded: server settings carry secrets (passwords,
+	// tokens) that must not be persisted into the audit log.
+	QJsonArray auditedKeys;
 	int applied = 0;
 	for (int i = 0; i < msg.settings_size(); ++i) {
 		const QString key   = u8(msg.settings(i).key());
@@ -4315,10 +4468,12 @@ void Server::msgFancyServerSettingsUpdate(ServerUser *uSource,
 			if (!pluginName.isEmpty()) {
 				pluginsToReload.insert(pluginName);
 			}
+			auditedKeys.append(key);
 			++applied;
 		} else if (isCoreSettingKey(key)) {
 			m_dbWrapper.setConfiguration(iServerNum, key.toStdString(), value.toStdString());
 			setLiveConf(key, value);
+			auditedKeys.append(key);
 			++applied;
 		}
 		// Unknown keys are ignored.
@@ -4343,6 +4498,14 @@ void Server::msgFancyServerSettingsUpdate(ServerUser *uSource,
 	log(uSource, QString("server settings updated (%1 change(s), revision %2)")
 					 .arg(applied)
 					 .arg(m_serverSettingsRevision));
+
+	if (m_auditBridge && applied > 0) {
+		QJsonObject detail;
+		detail.insert(QStringLiteral("revision"), static_cast< qint64 >(m_serverSettingsRevision));
+		detail.insert(QStringLiteral("changed"), static_cast< qint64 >(applied));
+		detail.insert(QStringLiteral("keys"), auditedKeys);
+		m_auditBridge->emitEvent(QStringLiteral("config"), uSource, nullptr, -1, detail);
+	}
 }
 
 
@@ -4841,6 +5004,15 @@ void Server::msgFancyPluginAdminSetEnabled(ServerUser *uSource,
 	if (result.ok) {
 		log(uSource, QString("plugin %1 %2")
 						 .arg(name, QLatin1String(enabled ? "enabled" : "disabled")));
+
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("plugin"), name);
+			m_auditBridge->emitEvent(enabled ? QStringLiteral("plugin.enable")
+											 : QStringLiteral("plugin.disable"),
+									 uSource, nullptr, -1, detail);
+		}
+
 		broadcastPluginAdminList(this);
 		broadcastPluginRegistry(this);
 		// A plugin enabling/disabling changes the editable settings list, so
@@ -4886,6 +5058,15 @@ void Server::msgFancyPluginAdminInstall(ServerUser *uSource,
 	if (result.ok) {
 		log(uSource,
 			QString("plugin %1 installed (%2)").arg(result.pluginName, marketplaceId));
+
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("plugin"), result.pluginName);
+			detail.insert(QStringLiteral("marketplace_id"), marketplaceId);
+			detail.insert(QStringLiteral("version"), version);
+			m_auditBridge->emitEvent(QStringLiteral("plugin.install"), uSource, nullptr, -1, detail);
+		}
+
 		broadcastPluginAdminList(this);
 		broadcastPluginRegistry(this);
 	} else {
@@ -4920,6 +5101,14 @@ void Server::msgFancyPluginAdminUninstall(ServerUser *uSource,
 	sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_UNINSTALL, result);
 	if (result.ok) {
 		log(uSource, QString("plugin %1 uninstalled").arg(name));
+
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("plugin"), name);
+			m_auditBridge->emitEvent(QStringLiteral("plugin.uninstall"), uSource, nullptr, -1,
+									 detail);
+		}
+
 		broadcastPluginAdminList(this);
 		broadcastPluginRegistry(this);
 	}
