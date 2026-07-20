@@ -225,9 +225,7 @@ impl AuditPlugin {
                 let Some(key) = setting.get("key").and_then(serde_json::Value::as_str) else {
                     continue;
                 };
-                let Some(part) = key
-                    .strip_prefix(TOGGLE_KEY_PREFIX)
-                    .and_then(Part::from_str)
+                let Some(part) = key.strip_prefix(TOGGLE_KEY_PREFIX).and_then(Part::from_str)
                 else {
                     continue;
                 };

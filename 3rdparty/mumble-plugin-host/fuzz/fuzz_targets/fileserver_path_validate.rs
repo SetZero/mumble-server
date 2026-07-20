@@ -17,9 +17,18 @@ fuzz_target!(|data: &[u8]| {
     // Exercise the full validator and assert its safety contract holds for
     // every accepted input.
     if let Ok(name) = fuzz::validate_name(&raw) {
-        assert!(!name.contains(".."), "validate_name accepted a traversal: {name:?}");
-        assert!(!name.starts_with('/'), "validate_name accepted an absolute path: {name:?}");
-        assert!(!name.ends_with('/'), "validate_name accepted a trailing slash: {name:?}");
+        assert!(
+            !name.contains(".."),
+            "validate_name accepted a traversal: {name:?}"
+        );
+        assert!(
+            !name.starts_with('/'),
+            "validate_name accepted an absolute path: {name:?}"
+        );
+        assert!(
+            !name.ends_with('/'),
+            "validate_name accepted a trailing slash: {name:?}"
+        );
         assert!(!name.is_empty(), "validate_name accepted an empty name");
     }
 });
