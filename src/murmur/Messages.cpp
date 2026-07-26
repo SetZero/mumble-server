@@ -196,7 +196,10 @@ bool isChannelEnterRestricted(Channel *c) {
 /// temporary booleans, and adds the detached marker. The legacy booleans are
 /// still set by callers for non-Fancy clients.
 static void serializeChannelAttributes(MumbleProto::ChannelState &mpcs, Channel *c, ServerUser *recipient) {
-	if (recipient->hasPermission(c, ChanACL::Enter))
+	// A structural channel is a heading, never a destination, so it is never
+	// advertised as enterable however permissive its ACLs are. This keeps the
+	// client's affordances in step with what the server will actually allow.
+	if (!c->hasAttribute(ChannelAttribute::Structural) && recipient->hasPermission(c, ChanACL::Enter))
 		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_CAN_ENTER);
 	if (isChannelEnterRestricted(c))
 		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_ENTER_RESTRICTED);
@@ -206,6 +209,67 @@ static void serializeChannelAttributes(MumbleProto::ChannelState &mpcs, Channel 
 		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_TEMPORARY);
 	if (c->hasAttribute(ChannelAttribute::Detached))
 		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_DETACHED);
+	if (c->hasAttribute(ChannelAttribute::Structural))
+		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_STRUCTURAL);
+}
+
+/// Attributes a client may assign via ChannelState. Everything else in
+/// ChannelAttribute is either server-computed per recipient (CanEnter,
+/// EnterRestricted, Hidden, Temporary) or create-only (Detached).
+///
+/// Extend this table to make a new attribute settable - `applyChannelAttributes`
+/// below stays untouched.
+static const struct {
+	MumbleProto::ChannelAttribute wire;
+	ChannelAttribute attribute;
+} SETTABLE_CHANNEL_ATTRIBUTES[] = {
+	{ MumbleProto::CHANNEL_ATTRIBUTE_STRUCTURAL, ChannelAttribute::Structural },
+};
+
+/// Apply the settable attributes carried by @p msg to @p c, honouring the
+/// generic `attribute_mask` write-mask: an attribute named in the mask is set
+/// when it also appears in `attributes` and cleared otherwise, while attributes
+/// absent from the mask are left alone. A message with no mask changes nothing,
+/// so partial updates (a rename, say) never disturb unrelated traits.
+///
+/// @returns true when any attribute actually changed.
+static bool applyChannelAttributes(Channel *c, const MumbleProto::ChannelState &msg) {
+	bool changed = false;
+	for (const auto &entry : SETTABLE_CHANNEL_ATTRIBUTES) {
+		// The root is every user's last-resort landing channel, so making it
+		// structural would leave nowhere to log in to. Refuse it outright.
+		if (entry.attribute == ChannelAttribute::Structural && c->iId == 0)
+			continue;
+
+		bool masked = false;
+		for (int i = 0; i < msg.attribute_mask_size(); ++i) {
+			if (msg.attribute_mask(i) == entry.wire) {
+				masked = true;
+				break;
+			}
+		}
+		if (!masked)
+			continue;
+
+		bool desired = false;
+		for (int i = 0; i < msg.attributes_size(); ++i) {
+			if (msg.attributes(i) == entry.wire) {
+				desired = true;
+				break;
+			}
+		}
+		if (c->hasAttribute(entry.attribute) != desired) {
+			c->setAttribute(entry.attribute, desired);
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+/// Whether @p c refuses entry because it is structural: such a channel exists
+/// only to organise the tree and never holds users.
+static bool isChannelStructural(const Channel *c) {
+	return c && c->hasAttribute(ChannelAttribute::Structural);
 }
 
 /// Build the ChannelState for @p c as seen by @p recipient, for the channel
@@ -478,9 +542,13 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		lc                         = qhChannels.value(lastChannelID);
 	}
 
-	if (!lc || !uSource->hasPermission(lc, ChanACL::Enter) || isChannelFull(lc, uSource)) {
+	// Structural channels hold no users, so a remembered or configured landing
+	// channel that has become structural falls through to the next candidate.
+	if (!lc || isChannelStructural(lc) || !uSource->hasPermission(lc, ChanACL::Enter)
+		|| isChannelFull(lc, uSource)) {
 		lc = qhChannels.value(iDefaultChan);
-		if (!lc || !uSource->hasPermission(lc, ChanACL::Enter) || isChannelFull(lc, uSource)) {
+		if (!lc || isChannelStructural(lc) || !uSource->hasPermission(lc, ChanACL::Enter)
+			|| isChannelFull(lc, uSource)) {
 			lc = root;
 			if (isChannelFull(lc, uSource)) {
 				reason = QString::fromLatin1("Server channels are full");
@@ -1078,6 +1146,12 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 		}
 
 		if (!uSource->hasPermission(c, ChanACL::Move) && !pDstServerUser->hasPermission(c, ChanACL::Enter)) {
+			PERM_DENIED(pDstServerUser, c, ChanACL::Enter);
+			return;
+		}
+		// Structural channels only organise the tree; nobody may be moved into
+		// one, not even by an operator holding Move.
+		if (isChannelStructural(c)) {
 			PERM_DENIED(pDstServerUser, c, ChanACL::Enter);
 			return;
 		}
@@ -1793,6 +1867,17 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			c->setAttribute(ChannelAttribute::Hidden, msg.hidden());
 		}
 
+		// A new channel has nothing to clear, so the listed attributes are taken
+		// as-is rather than through the write-mask.
+		for (const auto &entry : SETTABLE_CHANNEL_ATTRIBUTES) {
+			for (int i = 0; i < msg.attributes_size(); ++i) {
+				if (msg.attributes(i) == entry.wire) {
+					c->setAttribute(entry.attribute);
+					break;
+				}
+			}
+		}
+
 		// Stamp creation time (anchor for absolute expiry) and read expiry config.
 		c->uiCreatedAt   = static_cast< uint32_t >(QDateTime::currentSecsSinceEpoch());
 		c->iLastActivity = c->uiCreatedAt;
@@ -2080,6 +2165,8 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			c->setAttribute(ChannelAttribute::Hidden, msg.hidden());
 		}
 
+		const bool attributesChanged = applyChannelAttributes(c, msg);
+
 		if (msg.has_expiry_mode())
 			c->uiExpiryMode = msg.expiry_mode();
 		if (msg.has_expiry_duration_secs())
@@ -2131,7 +2218,41 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			msg.clear_description();
 			msg.set_description_hash(blob(c->qbaDescHash));
 		}
+		// `attributes` / `attribute_mask` are input-only, and unlike the plain
+		// booleans the attribute set is computed per recipient (CAN_ENTER differs
+		// per user), so relaying the sender's copy verbatim would overwrite every
+		// other client's view of this channel with the editor's request. Strip
+		// them and, when a trait actually changed, follow up with a per-recipient
+		// refresh.
+		msg.clear_attributes();
+		msg.clear_attribute_mask();
 		sendToObservers(c, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
+
+		if (attributesChanged) {
+			MumbleProto::ChannelState refresh;
+			refresh.set_channel_id(c->iId);
+			// Mark the message authoritative for every attribute the server
+			// computes. Without the mask a recipient who ends up with an empty
+			// set (no CAN_ENTER, nothing else) could not tell "cleared" from
+			// "omitted", and would keep a stale trait until reconnect.
+			for (int attribute = MumbleProto::ChannelAttribute_MIN; attribute <= MumbleProto::ChannelAttribute_MAX;
+				 ++attribute) {
+				if (MumbleProto::ChannelAttribute_IsValid(attribute)
+					&& attribute != MumbleProto::CHANNEL_ATTRIBUTE_UNSPECIFIED) {
+					refresh.add_attribute_mask(static_cast< MumbleProto::ChannelAttribute >(attribute));
+				}
+			}
+			for (ServerUser *user : qhUsers) {
+				if (c->iId != 0 && !user->canSee(c)) {
+					continue;
+				}
+				// Repeated field: empty it per recipient, or each user inherits
+				// the previous one's attribute set.
+				refresh.clear_attributes();
+				serializeChannelAttributes(refresh, c, user);
+				sendMessage(user, refresh);
+			}
+		}
 
 		// Expiry config may have changed (or been added/removed) -> re-arm.
 		rescheduleChannelExpiry();
@@ -2849,6 +2970,11 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 			if (c->iId != 0 && !user->canSee(c)) {
 				continue;
 			}
+			// `attributes` is a repeated field and serializeChannelAttributes
+			// appends, so it must be emptied per recipient - otherwise each user
+			// inherits the previous one's set and e.g. CAN_ENTER leaks to users
+			// who do not have it.
+			mpcs.clear_attributes();
 			// Proto-deprecated legacy booleans, still sent for legacy clients.
 			MUMBLE_DEPRECATED_PUSH
 			mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));

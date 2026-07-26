@@ -45,6 +45,10 @@ enum class ChannelAttribute : std::size_t {
 	/// meeting rooms. A detached channel is implicitly hidden from the tree, but
 	/// unlike Hidden it is not nested anywhere.
 	Detached = 3,
+	/// Channel is structural: it exists only to organise the tree. Entering is
+	/// refused, so it never holds users, and clients render it as a heading for
+	/// the channels nested beneath it.
+	Structural = 4,
 };
 
 class Channel : public QObject {
