@@ -1676,6 +1676,12 @@ void Server::encrypted() {
 		mpv.set_os_version(u8(meta->qsOSVersion));
 	}
 	mpv.set_fancy_version(::Version::fromComponents(FANCY_VERSION_MAJOR, FANCY_VERSION_MINOR, FANCY_VERSION_PATCH));
+	// Stated rather than left to default, even though 0 is what an absent field
+	// means. This server speaks the interleaved 100-999 layout and always has;
+	// saying so out loud is what lets a client tell "an old Fancy server" from
+	// "a server that has not been taught about epochs yet", and the two need
+	// different handling the moment a second epoch exists.
+	mpv.set_fancy_protocol(FANCY_PROTOCOL_EPOCH);
 	sendMessage(uSource, mpv);
 
 	QList< QSslCertificate > certs = uSource->peerCertificateChain();

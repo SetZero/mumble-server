@@ -28,6 +28,12 @@ set(FANCY_VERSION_MAJOR 0)
 set(FANCY_VERSION_MINOR 4)
 set(FANCY_VERSION_PATCH 2)
 
+# The Fancy *wire* epoch, which is not the product version above: it names the
+# message numbering, and only changes when that numbering does. 0 is the
+# historical interleaved 100-999 layout this server implements. See
+# Mumble.proto's `Version.fancy_protocol`.
+set(FANCY_PROTOCOL_EPOCH 0)
+
 set(3RDPARTY_DIR "${CMAKE_SOURCE_DIR}/3rdparty")
 set(PLUGINS_DIR "${CMAKE_SOURCE_DIR}/plugins")
 

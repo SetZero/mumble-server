@@ -58,3 +58,8 @@ tests/integration/test_ghost_kick.py
 
 # C++ libFuzzer build tree (at repo root, produced by tools.dev_fuzz cpp)
 build-fuzz-cpp/
+
+# pnpm's content-addressable store. A stray `pnpm` invocation leaves one in
+# whatever directory it ran from, and it is a large untracked tree of hashed
+# files that says nothing about this repo.
+.pnpm-store/
