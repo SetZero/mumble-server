@@ -140,6 +140,8 @@ private:
 	friend class PluginHostManager;
 	friend class LinkPreviewBridge;
 	friend class AuditLogBridge;
+	// Reaches m_auditBridge to publish pchat key-management events.
+	friend class pchat::ServerBridge;
 
 protected:
 	bool bRunning;

@@ -276,6 +276,17 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	m_pchatRateLimiter->defineLimit("key_exchange", 20, 1.0);
 	m_pchatRateLimiter->defineLimit("reaction", 15, 2.0);
 	m_pchatRateLimiter->defineLimit("pin", 5, 0.5);
+	// Key management was entirely unlimited, which is the half of the message
+	// set that writes holder rows and drives the key-possession challenge -- the
+	// part worth attempting at line speed. Budgets are deliberately small: these
+	// are all setup-time operations a well-behaved client performs once or twice
+	// per channel it joins, not per message.
+	m_pchatRateLimiter->defineLimit("key_holder_report", 10, 0.5);
+	m_pchatRateLimiter->defineLimit("key_challenge_response", 10, 0.5);
+	m_pchatRateLimiter->defineLimit("key_holders_query", 10, 1.0);
+	m_pchatRateLimiter->defineLimit("sender_key_distribution", 20, 1.0);
+	m_pchatRateLimiter->defineLimit("epoch_countersig", 10, 0.5);
+	m_pchatRateLimiter->defineLimit("delete_messages", 10, 0.5);
 
 	m_pchatBridge = std::make_unique< pchat::ServerBridge >(*this);
 
@@ -1852,8 +1863,15 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 			m_botCount--;
 		}
 
-		// Notify pchat manager so stale pending key requests are cleaned up.
-		if (m_pchatManager && !u->qsHash.isEmpty()) {
+		// Notify pchat manager so stale pending key requests, verified sessions
+		// and rate-limit buckets are cleaned up.
+		//
+		// Deliberately not conditional on the certificate hash: the session id is
+		// reinserted into the reuse pool below, and pchat keys verified status on
+		// that id, so an anonymous client's verified state would otherwise be
+		// inherited by whoever draws the id next. The manager decides for itself
+		// which parts of the cleanup need a hash.
+		if (m_pchatManager) {
 			m_pchatManager->onUserDisconnected(u->uiSession, u->qsHash.toStdString());
 		}
 

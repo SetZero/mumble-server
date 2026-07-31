@@ -19,6 +19,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace mumble {
@@ -165,6 +166,17 @@ struct IServerBridge {
 
 	/// Get the session ID for a user with a given cert hash (0 if offline).
 	virtual unsigned int getSessionForCertHash(const std::string &certHash) const = 0;
+
+	/// Record a security-relevant pchat state change in the audit log.
+	///
+	/// Key-holder writes and challenge resets decide who can read a channel's
+	/// archive, which makes them exactly the transitions an operator needs to be
+	/// able to review after the fact; before this they reached nothing but
+	/// qWarning. `detail` is a flat key/value list the implementation serialises
+	/// into the event's detail_json, so this interface stays free of any JSON
+	/// type.
+	virtual void emitAuditEvent(const std::string &kind, unsigned int actorSession, unsigned int channelId,
+								const std::vector< std::pair< std::string, std::string > > &detail) = 0;
 };
 
 /// Server-side persistent chat companion manager.
@@ -305,6 +317,18 @@ private:
 	void drainOfflineQueue(unsigned int sessionId, unsigned int channelId, const std::string &certHash);
 
 	std::string generateUUID();
+
+	/// Rate-limit bucket key for a client.
+	///
+	/// Keyed on the certificate hash where there is one, so a limit is not
+	/// cleared by reconnecting -- session ids change on every connection, which
+	/// made every limit a formality. Certificate-less clients fall back to the
+	/// session id: keying them all on one shared empty string would let any one
+	/// of them drain the bucket for every other.
+	static std::string rateLimitKey(unsigned int sessionId, const std::string &certHash);
+
+	/// Rate-limit bucket key for a still-connected session.
+	std::string rateLimitKey(unsigned int sessionId) const;
 
 	::mumble::server::db::PChatMessageTable &m_msgTable;
 	::mumble::server::db::PChatUserKeysTable &m_keysTable;

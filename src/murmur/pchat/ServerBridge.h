@@ -62,6 +62,8 @@ public:
 	unsigned int serverNum() const override;
 	bool isUserRegistered(unsigned int sessionId) const override;
 	unsigned int getSessionForCertHash(const std::string &certHash) const override;
+	void emitAuditEvent(const std::string &kind, unsigned int actorSession, unsigned int channelId,
+						const std::vector< std::pair< std::string, std::string > > &detail) override;
 
 private:
 	Server &m_server;
