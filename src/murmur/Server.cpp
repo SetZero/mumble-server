@@ -2031,7 +2031,18 @@ void Server::message(Mumble::Protocol::TCPMessageType type, const QByteArray &qb
 		}
 #endif
 
-	switch (type) { MUMBLE_ALL_TCP_MESSAGES }
+	// Only upstream types and service envelopes are routed. The Fancy message
+	// numbers are deliberately absent: under wire epoch 1 they never arrive as
+	// an outer type, and accepting them anyway would be epoch-0 support by the
+	// back door. They reach their handlers by being unwrapped from an envelope.
+	switch (type) {
+		MUMBLE_UPSTREAM_TCP_MESSAGES
+		MUMBLE_FANCY_SERVICE_MESSAGES
+		default:
+			// An outer type this server does not route. Dropping the frame is
+			// correct: the length prefix already told us how much to skip.
+			break;
+	}
 
 #undef PROCESS_MUMBLE_TCP_MESSAGE
 }

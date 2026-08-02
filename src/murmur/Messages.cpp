@@ -939,14 +939,10 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			break;
 	}
 
-	// Send the active onboarding config to Fancy 0.3.1+ clients so the
-	// onboarding modal can render immediately after connect without an
-	// extra round-trip.
-	if (uSource->m_FancyVersion.has_value()
-		&& uSource->m_FancyVersion.value() >= Version::fromComponents(0, 3, 1)
-		&& m_onboardingConfig.has_enabled()) {
-		sendMessage(uSource, m_onboardingConfig);
-	}
+	// Send the onboarding state (this user's stored answers, then the active
+	// config) to Fancy 0.3.1+ clients so the modal can decide whether to
+	// render immediately after connect, without an extra round-trip.
+	sendFancyOnboardingState(uSource);
 
 	// Advertise the editable server-settings schema to root-Write admins so the
 	// Admin > Server Settings panel populates immediately (the helper enforces
@@ -4250,6 +4246,105 @@ void Server::msgFancyDrawStroke(ServerUser *uSource, MumbleProto::FancyDrawStrok
 // Fancy Mumble: onboarding workflow (IDs 136-140) - introduced in 0.3.1
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Per-server config key the onboarding flow is persisted under.
+const char *ONBOARDING_CONFIG_KEY = "fancy_onboarding_config";
+
+/// Per-server config key one user's onboarding answers are persisted under.
+/// Identities are certificate hashes (40 hex chars) or `uid:<n>`, so the key
+/// stays well inside the 255-character column.
+std::string onboardingResponseConfigKey(const QString &identity) {
+	return std::string("fancy_onboarding_response/") + identity.toStdString();
+}
+
+/// The config table stores text, so protobufs travel base64-encoded.
+template< typename Msg > std::string encodeOnboardingBlob(const Msg &msg) {
+	return QByteArray::fromStdString(msg.SerializeAsString()).toBase64().toStdString();
+}
+
+/// Inverse of `encodeOnboardingBlob`; false when the row is missing or junk.
+template< typename Msg > bool decodeOnboardingBlob(const QByteArray &encoded, Msg &out) {
+	if (encoded.isEmpty()) {
+		return false;
+	}
+	const QByteArray blob = QByteArray::fromBase64(encoded);
+	return out.ParseFromArray(blob.constData(), static_cast< int >(blob.size()));
+}
+
+} // namespace
+
+QString Server::onboardingIdentity(const ServerUser *u) {
+	if (!u) {
+		return QString();
+	}
+	if (!u->qsHash.isEmpty()) {
+		return u->qsHash;
+	}
+	// Password-authenticated users have no certificate hash. Their account is
+	// the only stable key left; without one there is nothing to remember them
+	// by, and storing the answers would only strand them.
+	if (u->iId >= 0) {
+		return QStringLiteral("uid:%1").arg(u->iId);
+	}
+	return QString();
+}
+
+const MumbleProto::FancyOnboardingResponse *Server::onboardingResponseFor(const QString &identity) {
+	if (identity.isEmpty()) {
+		return nullptr;
+	}
+	const auto cached = m_onboardingResponses.constFind(identity);
+	if (cached != m_onboardingResponses.constEnd()) {
+		return &cached.value();
+	}
+
+	QByteArray encoded;
+	m_dbWrapper.getConfigurationTo(iServerNum, onboardingResponseConfigKey(identity), encoded);
+	MumbleProto::FancyOnboardingResponse stored;
+	if (!decodeOnboardingBlob(encoded, stored)) {
+		return nullptr;
+	}
+	return &(m_onboardingResponses[identity] = stored);
+}
+
+void Server::ensureOnboardingConfigLoaded() {
+	if (m_onboardingConfigLoaded) {
+		return;
+	}
+	m_onboardingConfigLoaded = true;
+
+	QByteArray encoded;
+	m_dbWrapper.getConfigurationTo(iServerNum, ONBOARDING_CONFIG_KEY, encoded);
+	MumbleProto::FancyOnboardingConfig stored;
+	if (decodeOnboardingBlob(encoded, stored)) {
+		m_onboardingConfig = stored;
+	}
+}
+
+void Server::sendFancyOnboardingState(ServerUser *u) {
+	if (!u || u->sState != ServerUser::Authenticated) {
+		return;
+	}
+	if (!u->m_FancyVersion.has_value() || u->m_FancyVersion.value() < Version::fromComponents(0, 3, 1)) {
+		return;
+	}
+	ensureOnboardingConfigLoaded();
+
+	// Unconditional, and ahead of the config: an absent deliver is
+	// indistinguishable from one still in flight, so a client that never
+	// gets one has to assume the user has never answered.
+	MumbleProto::FancyOnboardingResponseDeliver deliver;
+	if (const MumbleProto::FancyOnboardingResponse *stored = onboardingResponseFor(onboardingIdentity(u))) {
+		*deliver.mutable_response() = *stored;
+	}
+	sendMessage(u, deliver);
+
+	if (m_onboardingConfig.has_enabled()) {
+		sendMessage(u, m_onboardingConfig);
+	}
+}
+
 void Server::msgFancyOnboardingConfig(ServerUser *, MumbleProto::FancyOnboardingConfig &) {
 	// Server -> Client only; ignore inbound.
 }
@@ -4276,6 +4371,10 @@ void Server::msgFancyOnboardingConfigUpdate(ServerUser *uSource,
 	}
 
 	MumbleProto::FancyOnboardingConfig config = msg.config();
+	// Load first: revisions must keep climbing across a restart, or answers
+	// stored against an older, higher revision would look like answers to a
+	// config from the future and never be re-asked.
+	ensureOnboardingConfigLoaded();
 	// Server-side metadata stamping; clients leave these empty.
 	const uint64_t prevRevision = m_onboardingConfig.has_revision() ? m_onboardingConfig.revision() : 0;
 	config.set_revision(prevRevision + 1);
@@ -4283,6 +4382,7 @@ void Server::msgFancyOnboardingConfigUpdate(ServerUser *uSource,
 	config.set_updated_at(static_cast< uint64_t >(QDateTime::currentMSecsSinceEpoch()));
 
 	m_onboardingConfig = config;
+	m_dbWrapper.setConfiguration(iServerNum, ONBOARDING_CONFIG_KEY, encodeOnboardingBlob(m_onboardingConfig));
 
 	// Broadcast to every Fancy 0.3.1+ client.
 	const Version::full_t minVersion = Version::fromComponents(0, 3, 1);
@@ -4306,17 +4406,19 @@ void Server::msgFancyOnboardingResponse(ServerUser *uSource,
 	MSG_SETUP(ServerUser::Authenticated);
 	RATELIMIT(uSource);
 
-	if (uSource->qsHash.isEmpty()) {
-		// Without a TLS certificate hash we cannot key the response
-		// stably across reconnects.
+	const QString identity = onboardingIdentity(uSource);
+	if (identity.isEmpty()) {
+		// Neither a certificate hash nor an account: nothing keys the
+		// response stably across reconnects, so it cannot be stored.
 		return;
 	}
 
 	// Stamp the sender's identity & timestamp; clients leave these empty.
-	msg.set_user_hash(uSource->qsHash.toStdString());
+	msg.set_user_hash(identity.toStdString());
 	msg.set_submitted_at(static_cast< uint64_t >(QDateTime::currentMSecsSinceEpoch()));
 
-	m_onboardingResponses[uSource->qsHash] = msg;
+	m_onboardingResponses[identity] = msg;
+	m_dbWrapper.setConfiguration(iServerNum, onboardingResponseConfigKey(identity), encodeOnboardingBlob(msg));
 
 	log(uSource, QString("onboarding response stored (%1 selections, revision %2)")
 					 .arg(msg.selections_size())
@@ -4329,8 +4431,8 @@ void Server::msgFancyOnboardingResponseQuery(ServerUser *uSource,
 	RATELIMIT(uSource);
 
 	MumbleProto::FancyOnboardingResponseDeliver reply;
-	if (!uSource->qsHash.isEmpty() && m_onboardingResponses.contains(uSource->qsHash)) {
-		*reply.mutable_response() = m_onboardingResponses.value(uSource->qsHash);
+	if (const MumbleProto::FancyOnboardingResponse *stored = onboardingResponseFor(onboardingIdentity(uSource))) {
+		*reply.mutable_response() = *stored;
 	}
 	sendMessage(uSource, reply);
 }
@@ -5428,3 +5530,282 @@ void Server::msgFancyAuditConfig(ServerUser *, MumbleProto::FancyAuditConfig &) 
 #undef PERM_DENIED_TYPE
 #undef PERM_DENIED_FALLBACK
 #undef PERM_DENIED_HASH
+
+// ---------------------------------------------------------------------------
+// Fancy wire epoch 1: unwrap a service envelope and hand the message to the
+// handler that already knows it. The per-message handlers below are untouched
+// by the epoch - only how the message arrived has changed.
+// ---------------------------------------------------------------------------
+
+void Server::msgPchatEnvelope(ServerUser *uSource, MumbleProto::PchatEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::PchatEnvelope::kMessage:
+			msgPchatMessage(uSource, *msg.mutable_message());
+			break;
+		case MumbleProto::PchatEnvelope::kFetch:
+			msgPchatFetch(uSource, *msg.mutable_fetch());
+			break;
+		case MumbleProto::PchatEnvelope::kFetchResponse:
+			msgPchatFetchResponse(uSource, *msg.mutable_fetch_response());
+			break;
+		case MumbleProto::PchatEnvelope::kDeliver:
+			msgPchatMessageDeliver(uSource, *msg.mutable_deliver());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyAnnounce:
+			msgPchatKeyAnnounce(uSource, *msg.mutable_key_announce());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyExchange:
+			msgPchatKeyExchange(uSource, *msg.mutable_key_exchange());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyRequest:
+			msgPchatKeyRequest(uSource, *msg.mutable_key_request());
+			break;
+		case MumbleProto::PchatEnvelope::kAck:
+			msgPchatAck(uSource, *msg.mutable_ack());
+			break;
+		case MumbleProto::PchatEnvelope::kEpochCountersig:
+			msgPchatEpochCountersig(uSource, *msg.mutable_epoch_countersig());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyHolderReport:
+			msgPchatKeyHolderReport(uSource, *msg.mutable_key_holder_report());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyHoldersQuery:
+			msgPchatKeyHoldersQuery(uSource, *msg.mutable_key_holders_query());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyHoldersList:
+			msgPchatKeyHoldersList(uSource, *msg.mutable_key_holders_list());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyChallenge:
+			msgPchatKeyChallenge(uSource, *msg.mutable_key_challenge());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyChallengeResponse:
+			msgPchatKeyChallengeResponse(uSource, *msg.mutable_key_challenge_response());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyChallengeResult:
+			msgPchatKeyChallengeResult(uSource, *msg.mutable_key_challenge_result());
+			break;
+		case MumbleProto::PchatEnvelope::kDeleteMessages:
+			msgPchatDeleteMessages(uSource, *msg.mutable_delete_messages());
+			break;
+		case MumbleProto::PchatEnvelope::kOfflineQueueDrain:
+			msgPchatOfflineQueueDrain(uSource, *msg.mutable_offline_queue_drain());
+			break;
+		case MumbleProto::PchatEnvelope::kSenderKeyDistribution:
+			msgPchatSenderKeyDistribution(uSource, *msg.mutable_sender_key_distribution());
+			break;
+		case MumbleProto::PchatEnvelope::kPin:
+			msgPchatPin(uSource, *msg.mutable_pin());
+			break;
+		case MumbleProto::PchatEnvelope::kPinDeliver:
+			msgPchatPinDeliver(uSource, *msg.mutable_pin_deliver());
+			break;
+		case MumbleProto::PchatEnvelope::kPinFetchResponse:
+			msgPchatPinFetchResponse(uSource, *msg.mutable_pin_fetch_response());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgSocialEnvelope(ServerUser *uSource, MumbleProto::SocialEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::SocialEnvelope::kReaction:
+			msgPchatReaction(uSource, *msg.mutable_reaction());
+			break;
+		case MumbleProto::SocialEnvelope::kReactionDeliver:
+			msgPchatReactionDeliver(uSource, *msg.mutable_reaction_deliver());
+			break;
+		case MumbleProto::SocialEnvelope::kReactionFetchResponse:
+			msgPchatReactionFetchResponse(uSource, *msg.mutable_reaction_fetch_response());
+			break;
+		case MumbleProto::SocialEnvelope::kCustomReactions:
+			msgFancyCustomReactionsConfig(uSource, *msg.mutable_custom_reactions());
+			break;
+		case MumbleProto::SocialEnvelope::kReadReceipt:
+			msgFancyReadReceipt(uSource, *msg.mutable_read_receipt());
+			break;
+		case MumbleProto::SocialEnvelope::kReadReceiptDeliver:
+			msgFancyReadReceiptDeliver(uSource, *msg.mutable_read_receipt_deliver());
+			break;
+		case MumbleProto::SocialEnvelope::kTyping:
+			msgFancyTypingIndicator(uSource, *msg.mutable_typing());
+			break;
+		case MumbleProto::SocialEnvelope::kWatchSync:
+			msgFancyWatchSync(uSource, *msg.mutable_watch_sync());
+			break;
+		case MumbleProto::SocialEnvelope::kDrawStroke:
+			msgFancyDrawStroke(uSource, *msg.mutable_draw_stroke());
+			break;
+		case MumbleProto::SocialEnvelope::kPoll:
+			msgFancyPoll(uSource, *msg.mutable_poll());
+			break;
+		case MumbleProto::SocialEnvelope::kPollVote:
+			msgFancyPollVote(uSource, *msg.mutable_poll_vote());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgPushEnvelope(ServerUser *uSource, MumbleProto::PushEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::PushEnvelope::kPushRegister:
+			msgFancyPushRegister(uSource, *msg.mutable_push_register());
+			break;
+		case MumbleProto::PushEnvelope::kUpdate:
+			msgFancyPushUpdate(uSource, *msg.mutable_update());
+			break;
+		case MumbleProto::PushEnvelope::kSubscribe:
+			msgFancySubscribePush(uSource, *msg.mutable_subscribe());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgScreenshareEnvelope(ServerUser *uSource, MumbleProto::ScreenshareEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::ScreenshareEnvelope::kSignal:
+			msgWebRtcSignal(uSource, *msg.mutable_signal());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgLinkPreviewEnvelope(ServerUser *uSource, MumbleProto::LinkPreviewEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::LinkPreviewEnvelope::kRequest:
+			msgFancyLinkPreviewRequest(uSource, *msg.mutable_request());
+			break;
+		case MumbleProto::LinkPreviewEnvelope::kResponse:
+			msgFancyLinkPreviewResponse(uSource, *msg.mutable_response());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgOnboardingEnvelope(ServerUser *uSource, MumbleProto::OnboardingEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::OnboardingEnvelope::kConfig:
+			msgFancyOnboardingConfig(uSource, *msg.mutable_config());
+			break;
+		case MumbleProto::OnboardingEnvelope::kConfigUpdate:
+			msgFancyOnboardingConfigUpdate(uSource, *msg.mutable_config_update());
+			break;
+		case MumbleProto::OnboardingEnvelope::kResponse:
+			msgFancyOnboardingResponse(uSource, *msg.mutable_response());
+			break;
+		case MumbleProto::OnboardingEnvelope::kResponseQuery:
+			msgFancyOnboardingResponseQuery(uSource, *msg.mutable_response_query());
+			break;
+		case MumbleProto::OnboardingEnvelope::kResponseDeliver:
+			msgFancyOnboardingResponseDeliver(uSource, *msg.mutable_response_deliver());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgPluginsEnvelope(ServerUser *uSource, MumbleProto::PluginsEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::PluginsEnvelope::kListRequest:
+			msgFancyPluginAdminListRequest(uSource, *msg.mutable_list_request());
+			break;
+		case MumbleProto::PluginsEnvelope::kList:
+			msgFancyPluginAdminList(uSource, *msg.mutable_list());
+			break;
+		case MumbleProto::PluginsEnvelope::kSetEnabled:
+			msgFancyPluginAdminSetEnabled(uSource, *msg.mutable_set_enabled());
+			break;
+		case MumbleProto::PluginsEnvelope::kInstall:
+			msgFancyPluginAdminInstall(uSource, *msg.mutable_install());
+			break;
+		case MumbleProto::PluginsEnvelope::kUninstall:
+			msgFancyPluginAdminUninstall(uSource, *msg.mutable_uninstall());
+			break;
+		case MumbleProto::PluginsEnvelope::kAck:
+			msgFancyPluginAdminAck(uSource, *msg.mutable_ack());
+			break;
+		case MumbleProto::PluginsEnvelope::kPluginMessage:
+			msgPluginMessage(uSource, *msg.mutable_plugin_message());
+			break;
+		case MumbleProto::PluginsEnvelope::kRegistry:
+			msgPluginRegistry(uSource, *msg.mutable_registry());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgServerConfigEnvelope(ServerUser *uSource, MumbleProto::ServerConfigEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::ServerConfigEnvelope::kSettings:
+			msgFancyServerSettings(uSource, *msg.mutable_settings());
+			break;
+		case MumbleProto::ServerConfigEnvelope::kSettingsUpdate:
+			msgFancyServerSettingsUpdate(uSource, *msg.mutable_settings_update());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgUserdataEnvelope(ServerUser *uSource, MumbleProto::UserdataEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::UserdataEnvelope::kAccountSettings:
+			msgFancyAccountSettings(uSource, *msg.mutable_account_settings());
+			break;
+		case MumbleProto::UserdataEnvelope::kAccountSettingsUpdate:
+			msgFancyAccountSettingsUpdate(uSource, *msg.mutable_account_settings_update());
+			break;
+		case MumbleProto::UserdataEnvelope::kAccountAck:
+			msgFancyAccountAck(uSource, *msg.mutable_account_ack());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgAuditEnvelope(ServerUser *uSource, MumbleProto::AuditEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::AuditEnvelope::kQuery:
+			msgFancyAuditQuery(uSource, *msg.mutable_query());
+			break;
+		case MumbleProto::AuditEnvelope::kResponse:
+			msgFancyAuditResponse(uSource, *msg.mutable_response());
+			break;
+		case MumbleProto::AuditEnvelope::kEvent:
+			msgFancyAuditEvent(uSource, *msg.mutable_event());
+			break;
+		case MumbleProto::AuditEnvelope::kConfig:
+			msgFancyAuditConfig(uSource, *msg.mutable_config());
+			break;
+		case MumbleProto::AuditEnvelope::kConfigUpdate:
+			msgFancyAuditConfigUpdate(uSource, *msg.mutable_config_update());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}

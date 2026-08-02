@@ -439,12 +439,34 @@ public:
 	/// Latest broadcast onboarding config. Empty by default; set via
 	/// `FancyOnboardingConfigUpdate` from a Write-permitted user on the
 	/// root channel. Sent to every Fancy 0.3.1+ client after ServerSync.
+	/// Persisted, so the flow (and its revision counter) survives a restart.
 	MumbleProto::FancyOnboardingConfig m_onboardingConfig;
-	/// Per-cert-hash onboarding responses. Looked up on
-	/// `FancyOnboardingResponseQuery` and used to apply the
-	/// answer-mapped ACL group memberships when the response is
-	/// updated.
+	/// True once `m_onboardingConfig` has been read back from the database.
+	bool m_onboardingConfigLoaded = false;
+	/// Onboarding responses by `onboardingIdentity()`. A write-through cache
+	/// over the persisted copies: an answer a user gave before the last
+	/// restart still has to count as answered.
 	QHash< QString, MumbleProto::FancyOnboardingResponse > m_onboardingResponses;
+
+	/// Identity an onboarding response is stored under: the certificate hash
+	/// when the user has one, else their registered account. Empty for an
+	/// unregistered user connecting without a certificate - there is nothing
+	/// stable to key on, so their answers cannot be remembered.
+	static QString onboardingIdentity(const ServerUser *u);
+
+	/// Stored onboarding response for `identity`, or nullptr when there is
+	/// none. Reads through to the database on the first lookup after a
+	/// restart.
+	const MumbleProto::FancyOnboardingResponse *onboardingResponseFor(const QString &identity);
+
+	/// Read `m_onboardingConfig` back from the database, once per process.
+	void ensureOnboardingConfigLoaded();
+
+	/// Send `u` its onboarding state after ServerSync: the stored response
+	/// first (even when there is none), then the active config. The response
+	/// is unconditional because a client that cannot tell "never answered"
+	/// from "not delivered yet" re-asks an onboarded user on every connect.
+	void sendFancyOnboardingState(ServerUser *u);
 
 	/// Monotonic revision for the editable server-settings snapshot, bumped
 	/// each time an admin applies a change so clients can drop stale
@@ -530,8 +552,48 @@ public:
 		sendProtoToChannelObserversExcept(u, c, msg, Mumble::Protocol::TCPMessageType::name, v, mode); \
 	}
 
-	MUMBLE_ALL_TCP_MESSAGES
+	MUMBLE_UPSTREAM_TCP_MESSAGES
+	MUMBLE_FANCY_SERVICE_MESSAGES
 #undef PROCESS_MUMBLE_TCP_MESSAGE
+
+	// Fancy messages are never an outer type on the epoch-1 wire: each one is
+	// wrapped in its service envelope and sent under the service. Generating
+	// these as overloads means the hundreds of call sites keep reading
+	// `sendMessage(u, msg)` and pick up the framing for free.
+#define PROCESS_FANCY_ENVELOPE(name, envelope, arm)                                                   \
+	void sendMessage(ServerUser *u, const MumbleProto::name &msg) {                                     \
+		MumbleProto::envelope wrapper;                                                                    \
+		*wrapper.mutable_##arm() = msg;                                                                   \
+		sendProtoMessage(u, wrapper, Mumble::Protocol::TCPMessageType::envelope);                         \
+	}                                                                                                   \
+	void sendAll(const MumbleProto::name &msg, Version::full_t v = Version::UNKNOWN,                    \
+				 Version::CompareMode mode = Version::CompareMode::AtLeast) {                                 \
+		MumbleProto::envelope wrapper;                                                                    \
+		*wrapper.mutable_##arm() = msg;                                                                   \
+		sendProtoAll(wrapper, Mumble::Protocol::TCPMessageType::envelope, v, mode);                       \
+	}                                                                                                   \
+	void sendExcept(ServerUser *u, const MumbleProto::name &msg, Version::full_t v = Version::UNKNOWN,  \
+					Version::CompareMode mode = Version::CompareMode::AtLeast) {                                \
+		MumbleProto::envelope wrapper;                                                                    \
+		*wrapper.mutable_##arm() = msg;                                                                   \
+		sendProtoExcept(u, wrapper, Mumble::Protocol::TCPMessageType::envelope, v, mode);                 \
+	}                                                                                                   \
+	void sendToObservers(Channel *c, const MumbleProto::name &msg, Version::full_t v = Version::UNKNOWN,\
+						 Version::CompareMode mode = Version::CompareMode::AtLeast) {                             \
+		MumbleProto::envelope wrapper;                                                                    \
+		*wrapper.mutable_##arm() = msg;                                                                   \
+		sendProtoToChannelObservers(c, wrapper, Mumble::Protocol::TCPMessageType::envelope, v, mode);     \
+	}                                                                                                   \
+	void sendToObserversExcept(ServerUser *u, Channel *c, const MumbleProto::name &msg,                 \
+							   Version::full_t v = Version::UNKNOWN,                                                \
+							   Version::CompareMode mode = Version::CompareMode::AtLeast) {                         \
+		MumbleProto::envelope wrapper;                                                                    \
+		*wrapper.mutable_##arm() = msg;                                                                   \
+		sendProtoToChannelObserversExcept(u, c, wrapper, Mumble::Protocol::TCPMessageType::envelope, v,   \
+										  mode);                                                                          \
+	}
+	MUMBLE_FANCY_ENVELOPE_MAP
+#undef PROCESS_FANCY_ENVELOPE
 
 	static void hashAssign(QString &destination, QByteArray &hash, const QString &str);
 	static void hashAssign(QByteArray &destination, QByteArray &hash, const QByteArray &source);
