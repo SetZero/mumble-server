@@ -24,7 +24,7 @@ message Version {
     // version: it answers "which features exist", and a peer can infer from it
     // that some message was implemented. It cannot express "I renumbered the
     // wire", so a client that trusts it will happily send a type the peer can
-    // route nowhere — which is exactly what happened when Starling kept the
+    // route nowhere - which is exactly what happened when Starling kept the
     // upstream types and moved every Fancy message to a new range.
     //
     //   absent / 0  epoch 0: the historical interleaved 100-999 layout, which
@@ -35,11 +35,11 @@ message Version {
     //
     // A peer speaks exactly one epoch. When the other side does not know it,
     // the Fancy extensions are off and the connection degrades to plain Mumble
-    // — plus anything relayable through PluginDataTransmission, which works
+    // - plus anything relayable through PluginDataTransmission, which works
     // through any Mumble server and is therefore epoch-independent.
     // 1000, not the next free number: Fancy fields start at 1000 so upstream can
     // keep growing into 1-999 (see the same note in Starling's copy). And it
-    // must be *this* number in every copy of this file — it is read before any
+    // must be *this* number in every copy of this file - it is read before any
     // epoch is known, so the two sides cannot negotiate where to find it. That
     // is also why moving it off 100 is a hard break rather than a soft one: a
     // peer built before this change looks at 100, finds nothing, and correctly

@@ -225,6 +225,11 @@ set(PREV_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 add_subdirectory("${3RDPARTY_DIR}/tracy" "tracy" EXCLUDE_FROM_ALL)
 disable_warnings_for_all_targets_in("${3RDPARTY_DIR}/tracy")
+# Tracy >= 0.10 defines TracyClient in a way the directory scan above misses,
+# so its sources would otherwise compile with our -Werror flags.
+if(TARGET TracyClient)
+	target_disable_warnings(TracyClient)
+endif()
 message(STATUS "Tracy: ${TRACY_ENABLE}")
 
 # Restore whatever BUILD_SHARED_LIBS was set to before
