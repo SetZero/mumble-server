@@ -63,7 +63,7 @@ impl AuditRuntime {
     }
 
     /// Ingest one bridge event delivered at `offset` (§7.10). Idempotent,
-    /// toggle-gated, retention-stamped — see [`ingest::record_event`].
+    /// toggle-gated, retention-stamped - see [`ingest::record_event`].
     ///
     /// # Errors
     /// Fails on a store error.
@@ -217,7 +217,7 @@ mod tests {
             IngestOutcome::SkippedDisabled
         );
 
-        // The chain — two bans + the config entry — still verifies end to end.
+        // The chain - two bans + the config entry - still verifies end to end.
         assert!(rt.verify(1).unwrap().is_intact());
 
         // The disabling is visible in the log.

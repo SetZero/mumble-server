@@ -36,13 +36,13 @@ serde_json = "1"
 thiserror = "2"
 # CSPRNG for the auto-generated file-server admin token that bridges the
 # live-doc persistence (see `provision_live_doc_bridge`).
-rand = "0.8"
+rand = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Marketplace install: blocking HTTP, integrity check, archive extraction.
-ureq = { version = "2", default-features = false, features = ["tls", "json"] }
-sha2 = "0.10"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+sha2 = "0.11"
+zip = { version = "8", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
 
@@ -54,7 +54,7 @@ tar = "0.4"
 # not and is affected by RUSTSEC advisories including two sandbox escapes -
 # aarch64 Cranelift miscompilation and a Winch memory access), while avoiding
 # the monthly-major treadmill of the latest release.
-wasmtime = { version = "36", default-features = false, features = [
+wasmtime = { version = "47", default-features = false, features = [
     "runtime",
     "component-model",
     "cranelift",
@@ -64,13 +64,13 @@ wasmtime = { version = "36", default-features = false, features = [
 # components that embed a WASI-dependent runtime (e.g. the JavaScript engine
 # produced by ComponentizeJS) can instantiate. The provided context grants no
 # filesystem, network, environment or argument access.
-wasmtime-wasi = { version = "36", optional = true }
+wasmtime-wasi = { version = "47", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # ELF pre-validation: parse the binary without dlopen so a corrupt or
 # wrong-arch cdylib is rejected before its .init_array can run and
 # SIGSEGV the server.
-goblin = { version = "0.9", default-features = false, features = ["elf64", "elf32", "endian_fd", "std"] }
+goblin = { version = "0.10", default-features = false, features = ["elf64", "elf32", "endian_fd", "std"] }
 
 [build-dependencies]
 cbindgen = "0.29"

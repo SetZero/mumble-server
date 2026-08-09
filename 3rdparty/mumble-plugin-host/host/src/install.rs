@@ -137,10 +137,12 @@ pub(crate) fn current_platform() -> (&'static str, &'static str) {
 /// Download `url` into memory, enforcing `cap` bytes.
 fn http_get(url: &str, cap: u64) -> Result<Vec<u8>, InstallError> {
     let resp = ureq::get(url)
-        .timeout(std::time::Duration::from_secs(30))
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .build()
         .call()
         .map_err(|e| InstallError::Http(e.to_string()))?;
-    let mut reader = resp.into_reader().take(cap + 1);
+    let mut reader = resp.into_body().into_reader().take(cap + 1);
     let mut body = Vec::new();
     let _ = reader
         .read_to_end(&mut body)

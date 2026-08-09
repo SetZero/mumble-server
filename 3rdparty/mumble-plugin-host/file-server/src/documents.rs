@@ -357,9 +357,9 @@ fn unix_millis_now() -> i64 {
 }
 
 fn random_id() -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut buf = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     hex::encode(buf)
 }
 

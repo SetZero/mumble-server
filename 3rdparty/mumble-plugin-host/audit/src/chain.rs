@@ -95,9 +95,9 @@ impl VerifyOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BreakKind {
     /// The entry's stored `prev_hash` does not match the previous entry's
-    /// `entry_hash` — the signature of a **deleted** (or reordered) row.
+    /// `entry_hash` - the signature of a **deleted** (or reordered) row.
     ParentMismatch,
-    /// The entry's stored `entry_hash` does not reproduce from its content —
+    /// The entry's stored `entry_hash` does not reproduce from its content -
     /// the signature of an **edited** row.
     ContentMismatch,
 }

@@ -57,7 +57,7 @@ pub(crate) fn expand(args: TokenStream, item: TokenStream) -> syn::Result<TokenS
     // legacy `impl MumblePlugin for X { ... }` shape early gives a
     // clearer migration error than the trait-impl method conflicts
     // that would otherwise surface.
-    if let Some((_, ref path, _)) = input.trait_ {
+    if let Some((ref path, _)) = input.trait_ {
         return Err(syn::Error::new_spanned(
             path,
             "#[fancy_plugin] now wraps an *inherent* `impl YourPlugin { ... }` block; \
@@ -548,7 +548,7 @@ fn parse_command(attr: &Attribute, method: &ImplItemFn) -> syn::Result<Command> 
 /// any qualified form (`mumble_plugin_api::Host<'_>`).  The lifetime
 /// argument is not checked - any lifetime/elided lifetime is accepted.
 fn is_host_param_type(ty: &Type) -> bool {
-    let Type::Path(TypePath { qself: None, path }) = ty else {
+    let Type::Path(TypePath { qself: None, path, .. }) = ty else {
         return false;
     };
     path.segments
@@ -582,7 +582,7 @@ fn parse_command_param(pt: &syn::PatType) -> syn::Result<CommandParam> {
 /// maps to, plus whether it's `Option<T>` (manifest required=false),
 /// plus the token stream to use as `extract_option::<TY>(...)`.
 fn classify_param_type(ty: &Type) -> syn::Result<(OptionTypeKind, bool, TokenStream)> {
-    let Type::Path(TypePath { qself: None, path }) = ty else {
+    let Type::Path(TypePath { qself: None, path, .. }) = ty else {
         return Err(unsupported_type_error(ty));
     };
     let last = path
@@ -1363,7 +1363,7 @@ fn auto_custom_id_for(method: &ImplItemFn) -> String {
 }
 
 fn type_is_vec_string(ty: &Type) -> bool {
-    let Type::Path(TypePath { qself: None, path }) = ty else {
+    let Type::Path(TypePath { qself: None, path, .. }) = ty else {
         return false;
     };
     let Some(last) = path.segments.last() else {
@@ -1381,6 +1381,7 @@ fn type_is_vec_string(ty: &Type) -> bool {
     let Type::Path(TypePath {
         qself: None,
         path: ip,
+        ..
     }) = inner
     else {
         return false;
@@ -1392,7 +1393,7 @@ fn type_is_vec_string(ty: &Type) -> bool {
 }
 
 fn extract_self_ty_ident(ty: &Type) -> syn::Result<Ident> {
-    if let Type::Path(TypePath { qself: None, path }) = ty {
+    if let Type::Path(TypePath { qself: None, path, .. }) = ty {
         if let Some(last) = path.segments.last() {
             return Ok(last.ident.clone());
         }

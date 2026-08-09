@@ -1,13 +1,13 @@
 //! Permission seam (§9.1).
 //!
-//! The two audit permissions — `ViewAudit` and `ConfigureAudit` — ride on
+//! The two audit permissions - `ViewAudit` and `ConfigureAudit` - ride on
 //! Mumble ACL today, but ACL is channel-scoped and coarse, and a future model
 //! (roles, per-scope grants, time-boxed audit access) may fit better. So the
 //! audit plugin never calls the ACL API directly; it resolves permissions
 //! through this narrow interface and one swappable implementation.
 //!
 //! `can_view_raw_signals` is deliberately separate: viewing raw who→whom edges
-//! — the most privacy-sensitive data — requires `ViewAudit` **plus** the raw
+//! - the most privacy-sensitive data - requires `ViewAudit` **plus** the raw
 //! part being enabled (§9.2), and is never implied by a plain audit view.
 
 /// Virtual-server id, mirroring the host's `ServerId`.
@@ -24,7 +24,7 @@ pub trait AuditAuthz: std::fmt::Debug + Send + Sync {
     /// aggregate signal counts? (The `ViewAudit` grant.)
     fn can_view(&self, server: ServerId, session: SessionId) -> bool;
 
-    /// May this session change what is collected and exported — toggles, OTLP,
+    /// May this session change what is collected and exported - toggles, OTLP,
     /// retention, rules, disclosure? (The `ConfigureAudit` grant; strictly
     /// higher than `ViewAudit`.)
     fn can_configure(&self, server: ServerId, session: SessionId) -> bool;
@@ -42,7 +42,7 @@ pub trait AuditAuthz: std::fmt::Debug + Send + Sync {
     }
 }
 
-/// Whether a session holds a given permission on the root channel — the exact
+/// Whether a session holds a given permission on the root channel - the exact
 /// shape of the host's `PluginContext::has_permission` for channel 0. Kept as a
 /// trait so the ACL-backed authz can be unit-tested without the FFI host.
 pub trait RootPermissionOracle: std::fmt::Debug + Send + Sync {
@@ -55,7 +55,7 @@ pub trait RootPermissionOracle: std::fmt::Debug + Send + Sync {
     ) -> bool;
 }
 
-/// Mumble ACL `Write` permission bit — the gate `msgFancyPluginAdminListRequest`
+/// Mumble ACL `Write` permission bit - the gate `msgFancyPluginAdminListRequest`
 /// already uses for privileged admin surfaces (§5). `ConfigureAudit` maps to
 /// `Write` on root; `ViewAudit` maps to `Write`-or-a-dedicated-bit. Until a
 /// dedicated bit exists, both resolve through `Write` on root, which is the

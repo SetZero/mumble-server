@@ -1,4 +1,4 @@
-//! `mumble-audit` — the server audit log & moderation-signals plugin
+//! `mumble-audit` - the server audit log & moderation-signals plugin
 //! (`docs/audit-log.md`).
 //!
 //! This crate is the plugin side of the design: it owns storage, the git-style
@@ -8,17 +8,17 @@
 //!
 //! ## Module map
 //!
-//! - [`model`] — the `server_audit` data model (§4).
-//! - [`chain`] — the tamper-evident hash chain and `verify` (§7.1).
-//! - [`event_log`] — the durable, Kafka-like host event stream (§7.10). In the
+//! - [`model`] - the `server_audit` data model (§4).
+//! - [`chain`] - the tamper-evident hash chain and `verify` (§7.1).
+//! - [`event_log`] - the durable, Kafka-like host event stream (§7.10). In the
 //!   shipped architecture this lifts into the `host` crate so every plugin can
 //!   subscribe; the semantics and tests live here.
-//! - [`toggles`] — the fine-grained collect/export switches (§9.2).
-//! - [`retention`] — write-time expiry and the 30-day accountability floor (§7.9).
-//! - [`authz`] — the `AuditAuthz` permission seam (§9.1).
-//! - [`store`] — `SQLite` persistence, queries and chain verification (§4, §5).
-//! - [`ingest`] — idempotent event → chained entry mapping (§7.10).
-//! - [`runtime`] — the live subsystem that ties it together.
+//! - [`toggles`] - the fine-grained collect/export switches (§9.2).
+//! - [`retention`] - write-time expiry and the 30-day accountability floor (§7.9).
+//! - [`authz`] - the `AuditAuthz` permission seam (§9.1).
+//! - [`store`] - `SQLite` persistence, queries and chain verification (§4, §5).
+//! - [`ingest`] - idempotent event → chained entry mapping (§7.10).
+//! - [`runtime`] - the live subsystem that ties it together.
 //!
 //! ## Integration seam (not wired in this build)
 //!
@@ -84,7 +84,7 @@ const MSG_CONFIG_SET: &str = "audit.config.set";
 /// Plugin → bridge: the config snapshot (packed into `FancyAuditConfig`).
 const MSG_CONFIG: &str = "audit.config";
 
-/// Root channel id — the scope the audit permissions are checked against (§5).
+/// Root channel id - the scope the audit permissions are checked against (§5).
 const ROOT_CHANNEL: u32 = 0;
 
 /// The audit plugin. Holds the live [`AuditRuntime`], or `None` if the store

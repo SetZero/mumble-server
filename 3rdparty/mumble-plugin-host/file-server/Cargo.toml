@@ -25,21 +25,22 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros",
 axum = { version = "0.8", features = ["multipart"] }
 
 # Crypto
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 argon2 = "0.5"
-rand = "0.8"
+rand = "0.10"
 subtle = "2"
 hex = "0.4"
 # AEAD encryption-at-rest for password-protected files (XChaCha20-Poly1305 STREAM)
-chacha20poly1305 = { version = "0.10", features = ["stream"] }
+chacha20poly1305 = "0.11"
+aead-stream = { version = "0.6", features = ["alloc"] }
 zeroize = "1"
 
 # JWT for session auth
-jsonwebtoken = "9"
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
 # Storage
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -52,17 +53,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # IDs (URL-safe random tokens)
 bs58 = "0.5"
-base64 = "0.22"
+base64 = "0.23"
 
 # Streaming bodies for downloads
 tokio-util = { version = "0.7", features = ["io"] }
 futures-core = "0.3"
 
 # CORS headers
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 
 # MIME-type detection from magic bytes (never trust client-supplied Content-Type)
-infer = { version = "0.16", default-features = false }
+infer = { version = "0.22", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

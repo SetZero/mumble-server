@@ -4,7 +4,7 @@
 //! Three rules from the design hold here:
 //!
 //! 1. **Hard 30-day floor on `audit.*`.** Accountability categories cannot be
-//!    configured below it — a request to go lower is refused *and* recorded.
+//!    configured below it - a request to go lower is refused *and* recorded.
 //! 2. **Lowering is never retroactive.** Each row's `expires_at` is stamped at
 //!    write time from the policy then in force ([`RetentionPolicy::stamp_expiry`]),
 //!    so reducing a setting only affects records written afterwards.
@@ -57,7 +57,7 @@ impl RetentionPolicy {
     #[must_use]
     pub const fn reference_window(part: Part) -> Retention {
         match part {
-            // The record most needed later — ban evasion, appeals.
+            // The record most needed later - ban evasion, appeals.
             Part::AuditBan | Part::AuditKick => None,
             // Who changed permissions / disabled logging; account lifecycle.
             Part::AuditAcl
@@ -105,7 +105,7 @@ impl RetentionPolicy {
     ///
     /// Enforces the 30-day floor on accountability parts (§7.9 rule 1): a
     /// request below the floor is refused. Either way the attempt is recorded
-    /// (§7.9 rule 3) — the returned [`RetentionChange`] always carries the
+    /// (§7.9 rule 3) - the returned [`RetentionChange`] always carries the
     /// `audit.config` entry to write, and `applied` says whether the value
     /// actually changed.
     pub fn set_window(
@@ -235,7 +235,7 @@ mod tests {
         let mut policy = RetentionPolicy::reference();
         let outcome = policy.set_window(
             Part::AuditConfig,
-            Some(MS_PER_DAY), // 1 day — well under the 30-day floor
+            Some(MS_PER_DAY), // 1 day - well under the 30-day floor
             1,
             42,
             Identity {

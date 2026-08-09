@@ -4,7 +4,7 @@
 //! independent switch owned by `ConfigureAudit`, so two operators can run very
 //! different policies on the same software. This module owns the set of parts,
 //! their defaults, and the toggle semantics: **stop the future, never rewrite
-//! the past** — flipping a switch changes what is recorded from now on, deletes
+//! the past** - flipping a switch changes what is recorded from now on, deletes
 //! nothing, and the flip is itself an audit entry.
 
 use std::collections::BTreeMap;

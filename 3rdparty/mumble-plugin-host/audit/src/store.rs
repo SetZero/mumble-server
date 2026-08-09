@@ -1,5 +1,5 @@
 //! Persistent storage for the audit log (§4), backed by the plugin's own
-//! `SQLite` database via `rusqlite` — the `file-server` storage pattern.
+//! `SQLite` database via `rusqlite` - the `file-server` storage pattern.
 //!
 //! The store owns three responsibilities that must stay together for the hash
 //! chain (§7.1) to be sound:
@@ -24,7 +24,7 @@ pub enum StoreError {
     /// A database error from the underlying `SQLite` engine.
     #[error("audit store database error: {0}")]
     Database(#[from] rusqlite::Error),
-    /// A persisted hash column was not exactly 32 bytes — a corrupt row.
+    /// A persisted hash column was not exactly 32 bytes - a corrupt row.
     #[error("audit store: malformed {column} hash (expected 32 bytes, got {len})")]
     MalformedHash {
         /// Which column was malformed.
@@ -189,7 +189,7 @@ impl AuditStore {
 
     /// Delete rows whose stamped `expires_at_ms` is at or before `now_ms`, then
     /// append one audited summary entry recording the sweep (§7.9). Deleting a
-    /// chained entry intentionally leaves a verifiable gap (§7.1) — the visible
+    /// chained entry intentionally leaves a verifiable gap (§7.1) - the visible
     /// hole is the point.
     ///
     /// Returns the number of rows removed.

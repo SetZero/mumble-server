@@ -20,16 +20,16 @@ axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 
 # CRDT - Rust port of Yjs.  Wire-compatible with browser Yjs.
-yrs = "0.21"
+yrs = "0.27"
 
 # JWT minted via PluginContext::send_plugin_data, verified at WS handshake
-jsonwebtoken = "9"
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
 # HTTP client for file-server bridge persistence
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 
 # Crypto / random
-rand = "0.8"
+rand = "0.10"
 
 # Serialisation
 serde = { version = "1", features = ["derive"] }
@@ -41,11 +41,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Base64 for persistence payloads
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 
 [lints]
 workspace = true

@@ -244,6 +244,6 @@ pub struct AuditEntry {
     /// Hash of the previous entry (32 bytes); the genesis entry uses
     /// [`crate::chain::GENESIS_PARENT`].
     pub prev_hash: [u8; 32],
-    /// `H(prev_hash || canonical(record))` — see [`crate::chain::hash_entry`].
+    /// `H(prev_hash || canonical(record))` - see [`crate::chain::hash_entry`].
     pub entry_hash: [u8; 32],
 }

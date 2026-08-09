@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(session.broadcaster_session, 42);
         assert!(session.inbound.is_none());
         assert!(session.outbound.is_empty());
-        assert!(session.inbound_mid.is_none());
+        assert!(session.inbound_mids.is_empty());
         assert!(!session.needs_initial_keyframe);
     }
 }

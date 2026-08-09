@@ -3,7 +3,7 @@
 //! In the shipped architecture this log is owned by the host so *every* plugin
 //! can subscribe (a moderation bot, calendar cleanup, the audit plugin). It is
 //! implemented here, with its full semantics and tests, as the consumable core;
-//! lifting it into the `host` crate is a move, not a rewrite — "the semantics
+//! lifting it into the `host` crate is a move, not a rewrite - "the semantics
 //! are what matter, not the machinery" (§7.10).
 //!
 //! Semantics:
@@ -13,7 +13,7 @@
 //!   plugin;
 //! - each consumer has its **own committed offset**; delivery is
 //!   **at-least-once** and resumes from the last commit;
-//! - consumers are **independent** — a stalled one cannot block another — and a
+//! - consumers are **independent** - a stalled one cannot block another - and a
 //!   new consumer can **replay** from offset 0 (or the floor) to backfill;
 //! - the log is **bounded**; a consumer that lags past the floor gets an
 //!   explicit [`Gap`] rather than silently missing events.
@@ -201,7 +201,7 @@ impl EventLog {
 
     /// Register (or re-register) a consumer named `name`, starting delivery at
     /// `start`, wanting `filter`. Re-registering with a known name preserves
-    /// nothing — the caller supplies the resume point, which in production is
+    /// nothing - the caller supplies the resume point, which in production is
     /// the consumer's persisted committed offset.
     pub fn register_consumer(
         &mut self,

@@ -16,11 +16,10 @@
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
+use aead_stream::{DecryptorBE32, EncryptorBE32};
 use argon2::Argon2;
-use chacha20poly1305::aead::generic_array::GenericArray;
-use chacha20poly1305::aead::stream::{DecryptorBE32, EncryptorBE32};
 use chacha20poly1305::XChaCha20Poly1305;
-use rand::RngCore;
+use rand::Rng;
 use zeroize::Zeroizing;
 
 /// Length of the per-file Argon2id key-derivation salt (bytes).
@@ -60,7 +59,7 @@ pub enum CryptoError {
 #[must_use]
 pub fn generate_enc_salt() -> [u8; ENC_SALT_BYTES] {
     let mut salt = [0u8; ENC_SALT_BYTES];
-    rand::thread_rng().fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     salt
 }
 
@@ -68,7 +67,7 @@ pub fn generate_enc_salt() -> [u8; ENC_SALT_BYTES] {
 #[must_use]
 pub fn generate_nonce_prefix() -> [u8; ENC_NONCE_PREFIX_BYTES] {
     let mut prefix = [0u8; ENC_NONCE_PREFIX_BYTES];
-    rand::thread_rng().fill_bytes(&mut prefix);
+    rand::rng().fill_bytes(&mut prefix);
     prefix
 }
 
@@ -109,9 +108,10 @@ pub fn encrypt_file(
     key: &[u8; 32],
     nonce_prefix: &[u8; ENC_NONCE_PREFIX_BYTES],
 ) -> Result<(), CryptoError> {
-    let key_ga = GenericArray::from_slice(key);
-    let nonce_ga = GenericArray::from_slice(nonce_prefix);
-    let mut enc = Some(EncryptorBE32::<XChaCha20Poly1305>::new(key_ga, nonce_ga));
+    let mut enc = Some(EncryptorBE32::<XChaCha20Poly1305>::new(
+        key.into(),
+        nonce_prefix.into(),
+    ));
 
     let mut reader = BufReader::new(std::fs::File::open(src_plain).map_err(|_| CryptoError::Io)?);
     let mut writer =
@@ -152,9 +152,10 @@ pub fn decrypt_file(
     nonce_prefix: &[u8; ENC_NONCE_PREFIX_BYTES],
     mut on_chunk: impl FnMut(Vec<u8>) -> Result<(), CryptoError>,
 ) -> Result<(), CryptoError> {
-    let key_ga = GenericArray::from_slice(key);
-    let nonce_ga = GenericArray::from_slice(nonce_prefix);
-    let mut dec = Some(DecryptorBE32::<XChaCha20Poly1305>::new(key_ga, nonce_ga));
+    let mut dec = Some(DecryptorBE32::<XChaCha20Poly1305>::new(
+        key.into(),
+        nonce_prefix.into(),
+    ));
 
     let mut reader = BufReader::new(std::fs::File::open(src_cipher).map_err(|_| CryptoError::Io)?);
     let cipher_chunk = CHUNK_SIZE + TAG_BYTES;

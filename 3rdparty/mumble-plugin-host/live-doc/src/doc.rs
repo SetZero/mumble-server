@@ -285,7 +285,7 @@ impl DocRoom {
                 }
                 Message::Awareness(update) => {
                     for (&cid, entry) in &update.clients {
-                        let slot = awareness_seen.entry(cid).or_insert(0);
+                        let slot = awareness_seen.entry(cid.get()).or_insert(0);
                         *slot = (*slot).max(entry.clock);
                     }
                     self.apply_awareness(update, connection_id).await?;
@@ -316,7 +316,7 @@ impl DocRoom {
                 .iter()
                 .map(|(&cid, &clock)| {
                     (
-                        cid,
+                        yrs::ClientID::new(cid),
                         AwarenessUpdateEntry {
                             clock: clock.saturating_add(1),
                             json: "null".to_string().into(),

@@ -5,10 +5,11 @@
 //! GET parameters, URL history, or access logs.
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{PasswordHasher, PasswordVerifier, Salt, SaltString},
     Argon2, PasswordHash,
 };
 use jsonwebtoken::{decode, DecodingKey, Validation};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 /// JWT payload issued by the file server to clients on connect. Allows
@@ -63,7 +64,9 @@ pub enum AuthError {
 
 /// Hash a password using Argon2id with a random salt.
 pub fn hash_password(plaintext: &str) -> Result<String, AuthError> {
-    let salt = SaltString::generate(&mut OsRng);
+    let mut salt_bytes = [0u8; Salt::RECOMMENDED_LENGTH];
+    rand::rng().fill_bytes(&mut salt_bytes);
+    let salt = SaltString::encode_b64(&salt_bytes).map_err(|_| AuthError::Hashing)?;
     Argon2::default()
         .hash_password(plaintext.as_bytes(), &salt)
         .map(|h| h.to_string())

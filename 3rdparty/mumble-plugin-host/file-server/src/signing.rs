@@ -14,7 +14,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
@@ -113,7 +113,7 @@ fn compute_hmac(secret: &[u8], file_id: &str, ex: &str, is: &str) -> String {
     // `expect`/`unwrap` so any future refactor that breaks the invariant
     // is caught at the panic site instead of silently returning an empty
     // signature.
-    let Ok(mut mac) = <HmacSha256 as Mac>::new_from_slice(secret) else {
+    let Ok(mut mac) = <HmacSha256 as KeyInit>::new_from_slice(secret) else {
         unreachable!("Hmac<Sha256> accepts keys of any length");
     };
     mac.update(file_id.as_bytes());

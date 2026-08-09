@@ -13,7 +13,7 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "1"
 quote = "1"
-syn = { version = "2", features = ["full", "extra-traits"] }
+syn = { version = "3", features = ["full", "extra-traits"] }
 
 # Lints relaxed vs the workspace baseline: proc-macro crates use #[allow]
 # in generated code that the workspace's allow_attributes_without_reason

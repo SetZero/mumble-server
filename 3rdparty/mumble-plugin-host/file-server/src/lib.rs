@@ -15,7 +15,7 @@ use mumble_plugin_api::{
     plugin_info, ClientInfo, DebugRow, MumblePlugin, Permissions, PluginContext_TO, PluginError,
     PluginResult, ServerId, SessionId,
 };
-use rand::RngCore;
+use rand::Rng;
 
 pub mod auth;
 pub mod config;
@@ -428,7 +428,7 @@ fn cleanup_session_files(state: &AppState, session: SessionId) {
 
 fn generate_token_hex() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
