@@ -17,57 +17,86 @@
 #include <vector>
 
 /**
- * "X-macro" for all Mumble Protobuf TCP messages types.
+ * "X-macro" for all Mumble Protobuf TCP message types.
  *
- * Warning: Only append to the end. Never insert in between or remove an existing entry.
+ * Upstream types. Flat, frozen, and shared with every Mumble implementation.
+ *
+ * Warning: Only append to the end. Never insert in between or remove an entry.
  */
-#define MUMBLE_ALL_TCP_MESSAGES                         \
-	PROCESS_MUMBLE_TCP_MESSAGE(Version, 0)              \
-	PROCESS_MUMBLE_TCP_MESSAGE(UDPTunnel, 1)            \
-	PROCESS_MUMBLE_TCP_MESSAGE(Authenticate, 2)         \
-	PROCESS_MUMBLE_TCP_MESSAGE(Ping, 3)                 \
-	PROCESS_MUMBLE_TCP_MESSAGE(Reject, 4)               \
-	PROCESS_MUMBLE_TCP_MESSAGE(ServerSync, 5)           \
-	PROCESS_MUMBLE_TCP_MESSAGE(ChannelRemove, 6)        \
-	PROCESS_MUMBLE_TCP_MESSAGE(ChannelState, 7)         \
-	PROCESS_MUMBLE_TCP_MESSAGE(UserRemove, 8)           \
-	PROCESS_MUMBLE_TCP_MESSAGE(UserState, 9)            \
-	PROCESS_MUMBLE_TCP_MESSAGE(BanList, 10)             \
-	PROCESS_MUMBLE_TCP_MESSAGE(TextMessage, 11)         \
-	PROCESS_MUMBLE_TCP_MESSAGE(PermissionDenied, 12)    \
-	PROCESS_MUMBLE_TCP_MESSAGE(ACL, 13)                 \
-	PROCESS_MUMBLE_TCP_MESSAGE(QueryUsers, 14)          \
-	PROCESS_MUMBLE_TCP_MESSAGE(CryptSetup, 15)          \
+#define MUMBLE_UPSTREAM_TCP_MESSAGES \
+	PROCESS_MUMBLE_TCP_MESSAGE(Version, 0) \
+	PROCESS_MUMBLE_TCP_MESSAGE(UDPTunnel, 1) \
+	PROCESS_MUMBLE_TCP_MESSAGE(Authenticate, 2) \
+	PROCESS_MUMBLE_TCP_MESSAGE(Ping, 3) \
+	PROCESS_MUMBLE_TCP_MESSAGE(Reject, 4) \
+	PROCESS_MUMBLE_TCP_MESSAGE(ServerSync, 5) \
+	PROCESS_MUMBLE_TCP_MESSAGE(ChannelRemove, 6) \
+	PROCESS_MUMBLE_TCP_MESSAGE(ChannelState, 7) \
+	PROCESS_MUMBLE_TCP_MESSAGE(UserRemove, 8) \
+	PROCESS_MUMBLE_TCP_MESSAGE(UserState, 9) \
+	PROCESS_MUMBLE_TCP_MESSAGE(BanList, 10) \
+	PROCESS_MUMBLE_TCP_MESSAGE(TextMessage, 11) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PermissionDenied, 12) \
+	PROCESS_MUMBLE_TCP_MESSAGE(ACL, 13) \
+	PROCESS_MUMBLE_TCP_MESSAGE(QueryUsers, 14) \
+	PROCESS_MUMBLE_TCP_MESSAGE(CryptSetup, 15) \
 	PROCESS_MUMBLE_TCP_MESSAGE(ContextActionModify, 16) \
-	PROCESS_MUMBLE_TCP_MESSAGE(ContextAction, 17)       \
-	PROCESS_MUMBLE_TCP_MESSAGE(UserList, 18)            \
-	PROCESS_MUMBLE_TCP_MESSAGE(VoiceTarget, 19)         \
-	PROCESS_MUMBLE_TCP_MESSAGE(PermissionQuery, 20)     \
-	PROCESS_MUMBLE_TCP_MESSAGE(CodecVersion, 21)        \
-	PROCESS_MUMBLE_TCP_MESSAGE(UserStats, 22)           \
-	PROCESS_MUMBLE_TCP_MESSAGE(RequestBlob, 23)         \
-	PROCESS_MUMBLE_TCP_MESSAGE(ServerConfig, 24)        \
-	PROCESS_MUMBLE_TCP_MESSAGE(SuggestConfig, 25)       \
-	PROCESS_MUMBLE_TCP_MESSAGE(PluginDataTransmission, 26) \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatMessage, 100)         \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatFetch, 101)           \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatFetchResponse, 102)   \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatMessageDeliver, 103)  \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyAnnounce, 104)     \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyExchange, 105)     \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyRequest, 106)      \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatAck, 107)             \
+	PROCESS_MUMBLE_TCP_MESSAGE(ContextAction, 17) \
+	PROCESS_MUMBLE_TCP_MESSAGE(UserList, 18) \
+	PROCESS_MUMBLE_TCP_MESSAGE(VoiceTarget, 19) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PermissionQuery, 20) \
+	PROCESS_MUMBLE_TCP_MESSAGE(CodecVersion, 21) \
+	PROCESS_MUMBLE_TCP_MESSAGE(UserStats, 22) \
+	PROCESS_MUMBLE_TCP_MESSAGE(RequestBlob, 23) \
+	PROCESS_MUMBLE_TCP_MESSAGE(ServerConfig, 24) \
+	PROCESS_MUMBLE_TCP_MESSAGE(SuggestConfig, 25) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PluginDataTransmission, 26)
+
+/**
+ * Fancy wire epoch 1: one outer type per service, each carrying that service's
+ * envelope. These are the only Fancy types that appear on the wire as an outer
+ * type; MUMBLE_FANCY_MESSAGES is what travels inside them.
+ */
+#define MUMBLE_FANCY_SERVICE_MESSAGES \
+	PROCESS_MUMBLE_TCP_MESSAGE(UserdataEnvelope, 1003) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatEnvelope, 1006) \
+	PROCESS_MUMBLE_TCP_MESSAGE(ScreenshareEnvelope, 1008) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PluginsEnvelope, 1010) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PushEnvelope, 1011) \
+	PROCESS_MUMBLE_TCP_MESSAGE(AuditEnvelope, 1012) \
+	PROCESS_MUMBLE_TCP_MESSAGE(ServerConfigEnvelope, 1013) \
+	PROCESS_MUMBLE_TCP_MESSAGE(OnboardingEnvelope, 1014) \
+	PROCESS_MUMBLE_TCP_MESSAGE(SocialEnvelope, 1015) \
+	PROCESS_MUMBLE_TCP_MESSAGE(LinkPreviewEnvelope, 1016)
+
+/**
+ * The Fancy messages themselves.
+ *
+ * These numbers were outer types under epoch 0 and are no longer sent as such.
+ * They survive as the identity of a message: the enum entry names it, and a
+ * PluginDataTransmission relay tags a tunnelled message with the number, which
+ * is how relayable Fancy features still work through a vanilla Mumble server.
+ */
+#define MUMBLE_FANCY_MESSAGES \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatMessage, 100) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatFetch, 101) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatFetchResponse, 102) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatMessageDeliver, 103) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyAnnounce, 104) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyExchange, 105) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyRequest, 106) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatAck, 107) \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatEpochCountersig, 108) \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyHolderReport, 109) \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyHoldersQuery, 110) \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyHoldersList, 111)  \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallenge, 112)    \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyHoldersList, 111) \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallenge, 112) \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallengeResponse, 113) \
-	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallengeResult, 114)  \
+	PROCESS_MUMBLE_TCP_MESSAGE(PchatKeyChallengeResult, 114) \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatDeleteMessages, 115) \
 	PROCESS_MUMBLE_TCP_MESSAGE(PchatOfflineQueueDrain, 116) \
-    PROCESS_MUMBLE_TCP_MESSAGE(PchatReaction, 117)            \
-    PROCESS_MUMBLE_TCP_MESSAGE(PchatReactionDeliver, 118)     \
+    PROCESS_MUMBLE_TCP_MESSAGE(PchatReaction, 117) \
+    PROCESS_MUMBLE_TCP_MESSAGE(PchatReactionDeliver, 118) \
     PROCESS_MUMBLE_TCP_MESSAGE(PchatReactionFetchResponse, 119) \
     PROCESS_MUMBLE_TCP_MESSAGE(WebRtcSignal, 120) \
     PROCESS_MUMBLE_TCP_MESSAGE(PchatSenderKeyDistribution, 121) \
@@ -111,6 +140,82 @@
     PROCESS_MUMBLE_TCP_MESSAGE(PluginMessage, 200) \
     PROCESS_MUMBLE_TCP_MESSAGE(PluginRegistry, 201)
 
+/** Every TCP message type, for the enum and anything that must name them all. */
+#define MUMBLE_ALL_TCP_MESSAGES \
+	MUMBLE_UPSTREAM_TCP_MESSAGES \
+	MUMBLE_FANCY_SERVICE_MESSAGES \
+	MUMBLE_FANCY_MESSAGES
+
+/**
+ * Which service envelope carries each Fancy message, and under which arm.
+ *
+ * The single source of truth for epoch-1 framing on this side: the outbound
+ * wrappers and the inbound unwrappers are both generated from it, so a
+ * message cannot be sendable under one arm and read back under another.
+ */
+#define MUMBLE_FANCY_ENVELOPE_MAP \
+	PROCESS_FANCY_ENVELOPE(PchatMessage, PchatEnvelope, message) \
+	PROCESS_FANCY_ENVELOPE(PchatFetch, PchatEnvelope, fetch) \
+	PROCESS_FANCY_ENVELOPE(PchatFetchResponse, PchatEnvelope, fetch_response) \
+	PROCESS_FANCY_ENVELOPE(PchatMessageDeliver, PchatEnvelope, deliver) \
+	PROCESS_FANCY_ENVELOPE(PchatKeyAnnounce, PchatEnvelope, key_announce) \
+	PROCESS_FANCY_ENVELOPE(PchatKeyExchange, PchatEnvelope, key_exchange) \
+	PROCESS_FANCY_ENVELOPE(PchatKeyRequest, PchatEnvelope, key_request) \
+	PROCESS_FANCY_ENVELOPE(PchatAck, PchatEnvelope, ack) \
+	PROCESS_FANCY_ENVELOPE(PchatEpochCountersig, PchatEnvelope, epoch_countersig) \
+	PROCESS_FANCY_ENVELOPE(PchatKeyHolderReport, PchatEnvelope, key_holder_report) \
+	PROCESS_FANCY_ENVELOPE(PchatKeyHoldersQuery, PchatEnvelope, key_holders_query) \
+	PROCESS_FANCY_ENVELOPE(PchatKeyHoldersList, PchatEnvelope, key_holders_list) \
+	PROCESS_FANCY_ENVELOPE(PchatKeyChallenge, PchatEnvelope, key_challenge) \
+	PROCESS_FANCY_ENVELOPE(PchatKeyChallengeResponse, PchatEnvelope, key_challenge_response) \
+	PROCESS_FANCY_ENVELOPE(PchatKeyChallengeResult, PchatEnvelope, key_challenge_result) \
+	PROCESS_FANCY_ENVELOPE(PchatDeleteMessages, PchatEnvelope, delete_messages) \
+	PROCESS_FANCY_ENVELOPE(PchatOfflineQueueDrain, PchatEnvelope, offline_queue_drain) \
+	PROCESS_FANCY_ENVELOPE(PchatSenderKeyDistribution, PchatEnvelope, sender_key_distribution) \
+	PROCESS_FANCY_ENVELOPE(PchatPin, PchatEnvelope, pin) \
+	PROCESS_FANCY_ENVELOPE(PchatPinDeliver, PchatEnvelope, pin_deliver) \
+	PROCESS_FANCY_ENVELOPE(PchatPinFetchResponse, PchatEnvelope, pin_fetch_response) \
+	PROCESS_FANCY_ENVELOPE(PchatReaction, SocialEnvelope, reaction) \
+	PROCESS_FANCY_ENVELOPE(PchatReactionDeliver, SocialEnvelope, reaction_deliver) \
+	PROCESS_FANCY_ENVELOPE(PchatReactionFetchResponse, SocialEnvelope, reaction_fetch_response) \
+	PROCESS_FANCY_ENVELOPE(FancyCustomReactionsConfig, SocialEnvelope, custom_reactions) \
+	PROCESS_FANCY_ENVELOPE(FancyReadReceipt, SocialEnvelope, read_receipt) \
+	PROCESS_FANCY_ENVELOPE(FancyReadReceiptDeliver, SocialEnvelope, read_receipt_deliver) \
+	PROCESS_FANCY_ENVELOPE(FancyTypingIndicator, SocialEnvelope, typing) \
+	PROCESS_FANCY_ENVELOPE(FancyWatchSync, SocialEnvelope, watch_sync) \
+	PROCESS_FANCY_ENVELOPE(FancyDrawStroke, SocialEnvelope, draw_stroke) \
+	PROCESS_FANCY_ENVELOPE(FancyPoll, SocialEnvelope, poll) \
+	PROCESS_FANCY_ENVELOPE(FancyPollVote, SocialEnvelope, poll_vote) \
+	PROCESS_FANCY_ENVELOPE(FancyPushRegister, PushEnvelope, push_register) \
+	PROCESS_FANCY_ENVELOPE(FancyPushUpdate, PushEnvelope, update) \
+	PROCESS_FANCY_ENVELOPE(FancySubscribePush, PushEnvelope, subscribe) \
+	PROCESS_FANCY_ENVELOPE(WebRtcSignal, ScreenshareEnvelope, signal) \
+	PROCESS_FANCY_ENVELOPE(FancyLinkPreviewRequest, LinkPreviewEnvelope, request) \
+	PROCESS_FANCY_ENVELOPE(FancyLinkPreviewResponse, LinkPreviewEnvelope, response) \
+	PROCESS_FANCY_ENVELOPE(FancyOnboardingConfig, OnboardingEnvelope, config) \
+	PROCESS_FANCY_ENVELOPE(FancyOnboardingConfigUpdate, OnboardingEnvelope, config_update) \
+	PROCESS_FANCY_ENVELOPE(FancyOnboardingResponse, OnboardingEnvelope, response) \
+	PROCESS_FANCY_ENVELOPE(FancyOnboardingResponseQuery, OnboardingEnvelope, response_query) \
+	PROCESS_FANCY_ENVELOPE(FancyOnboardingResponseDeliver, OnboardingEnvelope, response_deliver) \
+	PROCESS_FANCY_ENVELOPE(FancyPluginAdminListRequest, PluginsEnvelope, list_request) \
+	PROCESS_FANCY_ENVELOPE(FancyPluginAdminList, PluginsEnvelope, list) \
+	PROCESS_FANCY_ENVELOPE(FancyPluginAdminSetEnabled, PluginsEnvelope, set_enabled) \
+	PROCESS_FANCY_ENVELOPE(FancyPluginAdminInstall, PluginsEnvelope, install) \
+	PROCESS_FANCY_ENVELOPE(FancyPluginAdminUninstall, PluginsEnvelope, uninstall) \
+	PROCESS_FANCY_ENVELOPE(FancyPluginAdminAck, PluginsEnvelope, ack) \
+	PROCESS_FANCY_ENVELOPE(PluginMessage, PluginsEnvelope, plugin_message) \
+	PROCESS_FANCY_ENVELOPE(PluginRegistry, PluginsEnvelope, registry) \
+	PROCESS_FANCY_ENVELOPE(FancyServerSettings, ServerConfigEnvelope, settings) \
+	PROCESS_FANCY_ENVELOPE(FancyServerSettingsUpdate, ServerConfigEnvelope, settings_update) \
+	PROCESS_FANCY_ENVELOPE(FancyAccountSettings, UserdataEnvelope, account_settings) \
+	PROCESS_FANCY_ENVELOPE(FancyAccountSettingsUpdate, UserdataEnvelope, account_settings_update) \
+	PROCESS_FANCY_ENVELOPE(FancyAccountAck, UserdataEnvelope, account_ack) \
+	PROCESS_FANCY_ENVELOPE(FancyAuditQuery, AuditEnvelope, query) \
+	PROCESS_FANCY_ENVELOPE(FancyAuditResponse, AuditEnvelope, response) \
+	PROCESS_FANCY_ENVELOPE(FancyAuditEvent, AuditEnvelope, event) \
+	PROCESS_FANCY_ENVELOPE(FancyAuditConfig, AuditEnvelope, config) \
+	PROCESS_FANCY_ENVELOPE(FancyAuditConfigUpdate, AuditEnvelope, config_update)
+
 /**
  * "X-macro" for all Mumble Protobuf UDP messages types.
  *
@@ -131,8 +236,14 @@ namespace Protocol {
 #define PROCESS_MUMBLE_TCP_MESSAGE(name, value) name = value,
 	/**
 	 * Enum holding all possible TCP message types
+	 *
+	 * The underlying type is a local storage choice, not the wire format: the
+	 * frame header carries the type as a big-endian `quint16` and both ends
+	 * cast at that boundary. It is wider than 16 bits only so that arithmetic
+	 * and comparisons never wrap silently; a value still has to fit in 16 bits
+	 * to survive the header, so service types stay far below 65535.
 	 */
-	enum class TCPMessageType : byte { MUMBLE_ALL_TCP_MESSAGES };
+	enum class TCPMessageType : std::uint32_t { MUMBLE_ALL_TCP_MESSAGES };
 #undef PROCESS_MUMBLE_TCP_MESSAGE
 
 	std::string messageTypeName(TCPMessageType type);

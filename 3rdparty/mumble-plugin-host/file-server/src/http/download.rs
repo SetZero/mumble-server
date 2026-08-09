@@ -14,7 +14,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Response, StatusCode};
 use futures_core::Stream;
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use tokio_util::io::ReaderStream;
 use zeroize::Zeroizing;
@@ -310,7 +310,7 @@ fn accepts_html(headers: &HeaderMap) -> bool {
 /// signed params from `window.location`), keeping it fully decoupled.
 fn password_page_response() -> Result<Response<Body>, ApiError> {
     let mut nonce_bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = hex::encode(nonce_bytes);
     let html = PASSWORD_PAGE.replace("__CSP_NONCE__", &nonce);
     let csp = format!(

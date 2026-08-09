@@ -26,6 +26,9 @@ namespace server {
 			ExpiryMode,
 			ExpiryDuration,
 			CreatedAt,
+			// Structural: the channel only organises the tree. It cannot be
+			// entered and holds no users; clients draw it as a heading.
+			Structural,
 		};
 
 	} // namespace db

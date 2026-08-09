@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use rand::RngCore;
+use rand::Rng;
 use zeroize::Zeroizing;
 
 /// Default ticket lifetime.
@@ -88,7 +88,7 @@ impl TicketStore {
         enc_key: Option<Zeroizing<[u8; 32]>>,
     ) -> String {
         let mut bytes = [0u8; TICKET_BYTES];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         let token = hex::encode(bytes);
         let entry = TicketEntry {
             file_id: file_id.to_owned(),

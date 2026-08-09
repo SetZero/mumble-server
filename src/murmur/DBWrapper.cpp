@@ -478,6 +478,10 @@ void DBWrapper::initializeChannelDetails(Server &server) {
 		currentChannel->setAttribute(ChannelAttribute::Hidden, m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
 									  server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::Hidden)
 								  != 0);
+		currentChannel->setAttribute(ChannelAttribute::Structural,
+									 m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
+										 server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::Structural)
+										 != 0);
 		currentChannel->uiExpiryMode = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
 			server.iServerNum, currentChannel->iId, ::msdb::ChannelProperty::ExpiryMode);
 		currentChannel->uiExpiryDuration = m_serverDB.getChannelPropertyTable().getProperty< unsigned int, false >(
@@ -740,6 +744,9 @@ void DBWrapper::updateChannelData(unsigned int serverID, const Channel &channel)
 	// Update hidden-channel + expiry properties
 	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::Hidden,
 													 std::to_string(channel.hasAttribute(ChannelAttribute::Hidden) ? 1 : 0));
+	m_serverDB.getChannelPropertyTable().setProperty(
+		serverID, channel.iId, ::msdb::ChannelProperty::Structural,
+		std::to_string(channel.hasAttribute(ChannelAttribute::Structural) ? 1 : 0));
 	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::ExpiryMode,
 													 std::to_string(channel.uiExpiryMode));
 	m_serverDB.getChannelPropertyTable().setProperty(serverID, channel.iId, ::msdb::ChannelProperty::ExpiryDuration,

@@ -16,4 +16,4 @@ license = "MIT"
 [dependencies]
 # Keep the major aligned with the host's `wasmtime` so the component-model /
 # WIT encodings match between guest (`wit-bindgen`) and host (`wasmtime`).
-wit-bindgen = "0.34"
+wit-bindgen = "0.60"

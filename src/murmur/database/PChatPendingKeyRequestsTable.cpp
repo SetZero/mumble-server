@@ -20,6 +20,7 @@
 #include <soci/soci.h>
 
 #include <cassert>
+#include <chrono>
 
 namespace mdb = ::mumble::db;
 

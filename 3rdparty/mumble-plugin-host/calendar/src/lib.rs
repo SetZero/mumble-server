@@ -40,7 +40,7 @@ use abi_stable::std_types::ROption::RNone;
 use abi_stable::std_types::RResult::{RErr, ROk};
 use abi_stable::std_types::{RArc, RSlice, RStr, RString, RVec};
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use mumble_plugin_api::{
     ClientInfo, MumblePlugin, PluginContext_TO, PluginInfo, PluginMessageIn, PluginMessageOut,
     PluginResult, ServerId, SessionId,
@@ -127,9 +127,9 @@ struct Shared {
 
 impl Shared {
     fn new() -> Self {
-        use rand::RngCore;
+        use rand::Rng;
         let mut secret = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut secret);
+        rand::rng().fill_bytes(&mut secret);
         Self {
             state: Mutex::new(State::default()),
             sched_cv: Condvar::new(),

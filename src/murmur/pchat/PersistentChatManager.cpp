@@ -72,6 +72,18 @@ PersistentChatManager::PersistentChatManager(msdb::PChatMessageTable &msgTable,
 	m_handlers[Protocol::SignalV1] = std::make_unique< SignalV1ProtocolHandler >(m_bridge);
 }
 
+// ---- Rate-limit keying ----
+
+std::string PersistentChatManager::rateLimitKey(unsigned int sessionId, const std::string &certHash) {
+	// The prefixes keep the two key spaces apart, so a certificate hash that
+	// happens to read as a number cannot collide with a session id.
+	return certHash.empty() ? ("s:" + std::to_string(sessionId)) : ("c:" + certHash);
+}
+
+std::string PersistentChatManager::rateLimitKey(unsigned int sessionId) const {
+	return rateLimitKey(sessionId, m_bridge.getCertHash(sessionId));
+}
+
 // ---- Legacy PluginData dispatch (kept for backward compat) ----
 
 bool PersistentChatManager::handlePluginData(unsigned int /*senderSession*/, const std::string &dataId,
@@ -115,7 +127,7 @@ void PersistentChatManager::handlePchatMessage(unsigned int senderSession, const
 		sendAck(senderSession, msg.message_id(), MumbleProto::PCHAT_ACK_REJECTED, "registration_required");
 		return;
 	}
-	if (!m_rateLimiter.allow(std::to_string(senderSession), "msg")) {
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "msg")) {
 		qWarning("pchat: rate-limited msg from session=%u", senderSession);
 		sendAck(senderSession, msg.message_id(), MumbleProto::PCHAT_ACK_REJECTED, "rate_limited");
 		return;
@@ -254,7 +266,7 @@ void PersistentChatManager::handlePchatFetch(unsigned int senderSession, const M
 	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
 		return;
 	}
-	if (!m_rateLimiter.allow(std::to_string(senderSession), "fetch")) {
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "fetch")) {
 		qWarning("pchat: rate-limited fetch from session=%u", senderSession);
 		return;
 	}
@@ -344,7 +356,7 @@ void PersistentChatManager::handlePchatKeyAnnounce(unsigned int senderSession, c
 	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
 		return;
 	}
-	if (!m_rateLimiter.allow(std::to_string(senderSession), "key_announce")) {
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "key_announce")) {
 		return;
 	}
 
@@ -413,7 +425,7 @@ void PersistentChatManager::handlePchatKeyExchange(unsigned int senderSession, c
 	if (m_config.requireRegistration && !m_bridge.isUserRegistered(senderSession)) {
 		return;
 	}
-	if (!m_rateLimiter.allow(std::to_string(senderSession), "key_exchange")) {
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "key_exchange")) {
 		return;
 	}
 
@@ -460,6 +472,11 @@ void PersistentChatManager::handlePchatEpochCountersig(unsigned int senderSessio
 	}
 
 	const unsigned int channelId = msg.channel_id();
+
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "epoch_countersig")) {
+		qWarning("pchat: rate-limited epoch countersig from session=%u channel=%u", senderSession, channelId);
+		return;
+	}
 
 	// Validate sender is a key custodian
 	if (msg.signer_hash() != sessionCertHash) {
@@ -614,21 +631,39 @@ void PersistentChatManager::onFancyClientJoinedChannel(unsigned int sessionId, u
 // ---- Channel removal / user disconnect ----
 
 void PersistentChatManager::onUserDisconnected(unsigned int sessionId, const std::string &certHash) {
-	if (!m_config.enabled || certHash.empty())
+	if (!m_config.enabled)
 		return;
-
-	const auto serverNum = m_bridge.serverNum();
-	m_pendingTable.clearForRequester(serverNum, certHash);
 
 	// Remove the disconnected session from all channel verified-sessions sets
 	// so the session ID cannot be reused by a different user to bypass the challenge.
+	//
+	// This must run for *every* disconnect, including clients that presented no
+	// certificate.  Verified status is keyed on the session id alone, and the
+	// server puts the id straight back in the reuse pool on disconnect, so a
+	// stale entry here is inherited -- fully verified -- by whoever draws that id
+	// next.  Skipping the whole function when the hash was empty left exactly the
+	// anonymous sessions behind, and on a server that allows anonymous
+	// connections those are most of them.
 	for (auto &[chId, state] : m_challengeState) {
 		state.verifiedSessions.erase(sessionId);
 		state.pendingChallenges.erase(sessionId);
 	}
 
-	qDebug("pchat: cleared pending key requests and verified sessions for disconnected user session=%u cert_hash=%s",
-		   sessionId, certHash.c_str());
+	// Release the rate-limiter buckets. Nothing else ever evicts them, so
+	// without this they accumulate one entry per (session, operation) for the
+	// lifetime of the process.
+	m_rateLimiter.reset(rateLimitKey(sessionId, certHash));
+
+	// Pending key requests are stored against a certificate hash, so they exist
+	// only for clients that had one. This is the part that genuinely needs the
+	// hash -- and the only part.
+	if (!certHash.empty()) {
+		m_pendingTable.clearForRequester(m_bridge.serverNum(), certHash);
+	}
+
+	qDebug("pchat: cleared verified sessions, rate-limit buckets and pending key requests for "
+		   "disconnected session=%u cert_hash=%s",
+		   sessionId, certHash.empty() ? "<none>" : certHash.c_str());
 }
 
 void PersistentChatManager::onPersistentChannelCreated(unsigned int channelId, unsigned int creatorSession) {
@@ -904,6 +939,10 @@ void PersistentChatManager::handleKeyOwnerTakeover(unsigned int senderSession, u
 			 fullWipe ? "FULL_WIPE" : "KEY_ONLY",
 			 channelId, senderSession, certHash.c_str());
 
+	m_bridge.emitAuditEvent("pchat.key_takeover", senderSession, channelId,
+							{ { "mode", fullWipe ? "FULL_WIPE" : "KEY_ONLY" },
+							  { "cert_hash", certHash } });
+
 	if (fullWipe) {
 		m_msgTable.clearChannel(serverNum, channelId);
 	}
@@ -950,8 +989,35 @@ void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSessio
 		return;
 
 	unsigned int channelId = msg.channel_id();
-	const std::string &certHash = msg.cert_hash();
 	unsigned int serverNum = m_bridge.serverNum();
+
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "key_holder_report")) {
+		qWarning("pchat: rate-limited key holder report from session=%u channel=%u", senderSession, channelId);
+		return;
+	}
+
+	// A holder report is a claim about who holds the channel key, so it may only
+	// ever be a claim about oneself.  Taking cert_hash off the wire let any
+	// client write a holder row naming anybody -- or nobody -- for any channel.
+	// handlePchatMessage validates sender_hash exactly this way.
+	const std::string certHash = m_bridge.getCertHash(senderSession);
+	if (certHash.empty()) {
+		qWarning("pchat: key holder report REJECTED - session=%u has no certificate (channel=%u)",
+				 senderSession, channelId);
+		return;
+	}
+	if (msg.cert_hash() != certHash) {
+		qWarning("pchat: key holder report REJECTED - cert_hash mismatch session=%u channel=%u "
+				 "claimed=%s actual=%s",
+				 senderSession, channelId, msg.cert_hash().c_str(), certHash.c_str());
+		// Worth a record even though it was refused: a client claiming somebody
+		// else's hash is not something a correct client ever does.
+		m_bridge.emitAuditEvent("pchat.key_holder_rejected", senderSession, channelId,
+								{ { "reason", "cert_hash_mismatch" },
+								  { "claimed_hash", msg.cert_hash() },
+								  { "actual_hash", certHash } });
+		return;
+	}
 
 	if (msg.has_takeover_mode()) {
 		handleKeyOwnerTakeover(senderSession, channelId, certHash, msg.takeover_mode());
@@ -959,6 +1025,18 @@ void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSessio
 	}
 
 	// ---- Normal key holder report path ----
+
+	// The holder table is per channel and drives both the client's "who can read
+	// this" list and, on the auto-verify path below, delivery of stored sender
+	// keys.  Writing to it therefore needs the same channel access that reading
+	// the channel's history does (handlePchatFetch).  Checked after the takeover
+	// dispatch because takeover carries its own, stronger, KeyOwner check.
+	if (!m_bridge.hasEnterPermission(senderSession, channelId)) {
+		qWarning("pchat: key holder report REJECTED - no Enter permission session=%u channel=%u",
+				 senderSession, channelId);
+		m_bridge.sendPermissionDenied(senderSession, channelId, static_cast< unsigned int >(ChanACL::Enter));
+		return;
+	}
 
 	// Look up the name for this cert hash from online users, or fall back to cert hash.
 	unsigned int holderSession = m_bridge.getSessionForCertHash(certHash);
@@ -977,6 +1055,9 @@ void PersistentChatManager::handlePchatKeyHolderReport(unsigned int senderSessio
 	holder.reportedAt    = m_bridge.serverTimeMs();
 
 	m_holdersTable.recordHolder(holder);
+
+	m_bridge.emitAuditEvent("pchat.key_holder_report", senderSession, channelId,
+							{ { "cert_hash", certHash } });
 
 	// Fulfill the pending key request for this holder since they now have the key.
 	m_pendingTable.fulfillForRequester(serverNum, channelId, certHash);
@@ -1053,6 +1134,11 @@ void PersistentChatManager::handlePchatKeyHoldersQuery(unsigned int senderSessio
 	unsigned int channelId = msg.channel_id();
 	unsigned int serverNum = m_bridge.serverNum();
 
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "key_holders_query")) {
+		qWarning("pchat: rate-limited key holders query from session=%u channel=%u", senderSession, channelId);
+		return;
+	}
+
 	auto holders = m_holdersTable.getChannelHolders(serverNum, channelId);
 
 	MumbleProto::PchatKeyHoldersList response;
@@ -1090,6 +1176,11 @@ void PersistentChatManager::handlePchatKeyChallengeResponse(unsigned int senderS
 
 	unsigned int channelId = msg.channel_id();
 	const std::string &proof = msg.proof();
+
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "key_challenge_response")) {
+		qWarning("pchat: rate-limited challenge response from session=%u channel=%u", senderSession, channelId);
+		return;
+	}
 
 	// Look up the pending challenge for this session.
 	auto channelIt = m_challengeState.find(channelId);
@@ -1142,18 +1233,30 @@ void PersistentChatManager::handlePchatKeyChallengeResponse(unsigned int senderS
 		std::string certHash = m_bridge.getCertHash(senderSession);
 		unsigned int serverNum = m_bridge.serverNum();
 
+		// "Sole holder" has to mean *is* the holder, not merely that nobody else
+		// is. Testing only for the absence of others handed the reset to anyone
+		// who asked first on a channel with no recorded holders at all -- which
+		// is the state right after a takeover, and after every channel wipe.
+		bool selfIsHolder      = false;
 		bool otherHolderExists = false;
 		for (const auto &h : m_holdersTable.getChannelHolders(serverNum, channelId)) {
-			if (h.certHash != certHash) {
+			if (h.certHash == certHash) {
+				selfIsHolder = true;
+			} else {
 				otherHolderExists = true;
-				break;
 			}
 		}
 
-		if (!otherHolderExists) {
+		if (selfIsHolder && !otherHolderExists) {
 			qWarning("pchat: challenge for channel %u - session %u mismatched but is the sole "
 					 "recorded holder; resetting stale challenge state and re-challenging",
 					 channelId, senderSession);
+			// A reset discards the reference HMAC, so the next proof to arrive
+			// defines it. That is the single most security-relevant transition
+			// in this subsystem and it must leave a trace.
+			m_bridge.emitAuditEvent("pchat.challenge_reset", senderSession, channelId,
+									{ { "reason", "sole_holder_key_mismatch" },
+									  { "cert_hash", certHash } });
 			m_challengeState.erase(channelId);
 			auto &fresh = m_challengeState[channelId];
 			fresh.sharedChallenge.resize(32);
@@ -1221,6 +1324,11 @@ void PersistentChatManager::handlePchatDeleteMessages(unsigned int senderSession
 	const unsigned int channelId = msg.channel_id();
 	const auto serverNum = m_bridge.serverNum();
 
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "delete_messages")) {
+		qWarning("pchat: rate-limited deleteMessages from session=%u channel=%u", senderSession, channelId);
+		return;
+	}
+
 	// Permission check: DeleteMessage
 	if (!m_bridge.hasDeleteMessagePermission(senderSession, channelId)) {
 		qWarning("pchat: deleteMessages rejected - no permission session=%u channel=%u", senderSession, channelId);
@@ -1278,7 +1386,7 @@ void PersistentChatManager::handlePchatReaction(unsigned int senderSession, cons
         if (!msg.has_channel_id() || !msg.has_message_id() || !msg.has_action()) {
                 return;
         }
-        if (!m_rateLimiter.allow(std::to_string(senderSession), "reaction")) {
+        if (!m_rateLimiter.allow(rateLimitKey(senderSession), "reaction")) {
                 qWarning("pchat: rate-limited reaction from session=%u", senderSession);
                 return;
         }
@@ -1399,7 +1507,7 @@ void PersistentChatManager::handlePchatPin(unsigned int senderSession, const Mum
 	if (!msg.has_channel_id() || !msg.has_message_id()) {
 		return;
 	}
-	if (!m_rateLimiter.allow(std::to_string(senderSession), "pin")) {
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "pin")) {
 		qWarning("pchat: rate-limited pin from session=%u", senderSession);
 		return;
 	}
@@ -1471,6 +1579,16 @@ std::string PersistentChatManager::skdmKey(unsigned int channelId, const std::st
 
 void PersistentChatManager::sendStoredSenderKeyDistributions(unsigned int sessionId, unsigned int channelId,
 															 const std::string &recipientCertHash) {
+	// This hands out every stored sender key for the channel, so it carries its
+	// own access check rather than trusting each caller to have made one.  Its
+	// callers reach it from the auto-verify path, where "verified" is granted on
+	// the strength of a self-report.
+	if (!m_bridge.hasEnterPermission(sessionId, channelId)) {
+		qWarning("pchat: stored SKDM delivery REFUSED - no Enter permission session=%u channel=%u",
+				 sessionId, channelId);
+		return;
+	}
+
 	const std::string prefix = std::to_string(channelId) + ":";
 	for (const auto &[key, distribution] : m_senderKeyDistributions) {
 		if (key.compare(0, prefix.size(), prefix) != 0) {
@@ -1504,6 +1622,11 @@ void PersistentChatManager::handlePchatSenderKeyDistribution(unsigned int sender
 	}
 
 	const unsigned int channelId = msg.channel_id();
+
+	if (!m_rateLimiter.allow(rateLimitKey(senderSession), "sender_key_distribution")) {
+		qWarning("pchat: rate-limited SKDM from session=%u channel=%u", senderSession, channelId);
+		return;
+	}
 
 	// Validate channel is persistent
 	if (m_bridge.getChannelPChatProtocol(channelId) == Protocol::None) {

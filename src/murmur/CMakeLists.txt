@@ -58,6 +58,8 @@ add_library(mumble_server_object_lib OBJECT
 	"PluginHostManager.h"
 	"LinkPreviewBridge.cpp"
 	"LinkPreviewBridge.h"
+	"AuditLogBridge.cpp"
+	"AuditLogBridge.h"
 
 	"ServerEventDistributor.cpp"
 	"ServerEventDistributor.h"

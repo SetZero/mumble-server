@@ -23,6 +23,7 @@
 #include "QtUtils.h"
 #include "ServerUser.h"
 #include "PluginHostManager.h"
+#include "AuditLogBridge.h"
 #include "LinkPreviewBridge.h"
 #include "User.h"
 #include "Version.h"
@@ -275,6 +276,17 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	m_pchatRateLimiter->defineLimit("key_exchange", 20, 1.0);
 	m_pchatRateLimiter->defineLimit("reaction", 15, 2.0);
 	m_pchatRateLimiter->defineLimit("pin", 5, 0.5);
+	// Key management was entirely unlimited, which is the half of the message
+	// set that writes holder rows and drives the key-possession challenge -- the
+	// part worth attempting at line speed. Budgets are deliberately small: these
+	// are all setup-time operations a well-behaved client performs once or twice
+	// per channel it joins, not per message.
+	m_pchatRateLimiter->defineLimit("key_holder_report", 10, 0.5);
+	m_pchatRateLimiter->defineLimit("key_challenge_response", 10, 0.5);
+	m_pchatRateLimiter->defineLimit("key_holders_query", 10, 1.0);
+	m_pchatRateLimiter->defineLimit("sender_key_distribution", 20, 1.0);
+	m_pchatRateLimiter->defineLimit("epoch_countersig", 10, 0.5);
+	m_pchatRateLimiter->defineLimit("delete_messages", 10, 0.5);
 
 	m_pchatBridge = std::make_unique< pchat::ServerBridge >(*this);
 
@@ -317,6 +329,10 @@ Server::Server(unsigned int snum, const ::mumble::db::ConnectionParameter &conne
 	// Link-preview bridge: registers a response handler with the (generic)
 	// plugin host and forwards client link-preview requests to the plugin.
 	m_linkPreviewBridge = std::make_unique< LinkPreviewBridge >(this, m_pluginHost.get());
+
+	// Audit-log bridge: translates FancyAudit* wire messages to/from the
+	// fancy-audit plugin and feeds it core moderation events.
+	m_auditBridge = std::make_unique< AuditLogBridge >(this, m_pluginHost.get());
 
 
 	// Initialize WebRTC SFU manager
@@ -867,12 +883,12 @@ void Server::udpActivated(int socket) {
 	msg.msg_controllen = sizeof(controldata);
 
 	int &sock = socket;
-	len       = static_cast< qint32 >(::recvmsg(sock, &msg, MSG_TRUNC));
+	len       = static_cast< qint32 >(::recvmsg(sock, &msg, 0));
 #	else
 	socklen_t fromlen = sizeof(from);
 	int &sock         = socket;
-	len = static_cast< qint32 >(::recvfrom(sock, m_udpDecoder.getBuffer().data(), m_udpDecoder.getBuffer().size(),
-										   MSG_TRUNC, reinterpret_cast< struct sockaddr * >(&from), &fromlen));
+	len = static_cast< qint32 >(::recvfrom(sock, m_udpDecoder.getBuffer().data(), m_udpDecoder.getBuffer().size(), 0,
+										   reinterpret_cast< struct sockaddr * >(&from), &fromlen));
 #	endif
 #else
 	int fromlen = static_cast< int >(sizeof(from));
@@ -881,6 +897,11 @@ void Server::udpActivated(int socket) {
                      static_cast< int >(m_udpDecoder.getBuffer().size()), 0,
                      reinterpret_cast< struct sockaddr * >(&from), &fromlen);
 #endif
+
+	if (len < 0) {
+		// Socket error
+		return;
+	}
 
 	std::span< Mumble::Protocol::byte > inputData(&m_udpDecoder.getBuffer()[0], static_cast< std::size_t >(len));
 
@@ -1021,10 +1042,10 @@ void Server::run() {
 				msg.msg_control    = controldata;
 				msg.msg_controllen = sizeof(controldata);
 
-				len = static_cast< qint32 >(::recvmsg(sock, &msg, MSG_TRUNC));
+				len = static_cast< qint32 >(::recvmsg(sock, &msg, 0));
 				Q_UNUSED(fromlen);
 #	else
-				len = static_cast< qint32 >(::recvfrom(sock, encrypt, Mumble::Protocol::MAX_UDP_PACKET_SIZE, MSG_TRUNC,
+				len = static_cast< qint32 >(::recvfrom(sock, encrypt, Mumble::Protocol::MAX_UDP_PACKET_SIZE, 0,
 													   reinterpret_cast< struct sockaddr * >(&from), &fromlen));
 #	endif
 #endif
@@ -1666,6 +1687,12 @@ void Server::encrypted() {
 		mpv.set_os_version(u8(meta->qsOSVersion));
 	}
 	mpv.set_fancy_version(::Version::fromComponents(FANCY_VERSION_MAJOR, FANCY_VERSION_MINOR, FANCY_VERSION_PATCH));
+	// Stated rather than left to default, even though 0 is what an absent field
+	// means. This server speaks the interleaved 100-999 layout and always has;
+	// saying so out loud is what lets a client tell "an old Fancy server" from
+	// "a server that has not been taught about epochs yet", and the two need
+	// different handling the moment a second epoch exists.
+	mpv.set_fancy_protocol(FANCY_PROTOCOL_EPOCH);
 	sendMessage(uSource, mpv);
 
 	QList< QSslCertificate > certs = uSource->peerCertificateChain();
@@ -1836,8 +1863,15 @@ void Server::connectionClosed(QAbstractSocket::SocketError err, const QString &r
 			m_botCount--;
 		}
 
-		// Notify pchat manager so stale pending key requests are cleaned up.
-		if (m_pchatManager && !u->qsHash.isEmpty()) {
+		// Notify pchat manager so stale pending key requests, verified sessions
+		// and rate-limit buckets are cleaned up.
+		//
+		// Deliberately not conditional on the certificate hash: the session id is
+		// reinserted into the reuse pool below, and pchat keys verified status on
+		// that id, so an anonymous client's verified state would otherwise be
+		// inherited by whoever draws the id next. The manager decides for itself
+		// which parts of the cleanup need a hash.
+		if (m_pchatManager) {
 			m_pchatManager->onUserDisconnected(u->uiSession, u->qsHash.toStdString());
 		}
 
@@ -1997,7 +2031,18 @@ void Server::message(Mumble::Protocol::TCPMessageType type, const QByteArray &qb
 		}
 #endif
 
-	switch (type) { MUMBLE_ALL_TCP_MESSAGES }
+	// Only upstream types and service envelopes are routed. The Fancy message
+	// numbers are deliberately absent: under wire epoch 1 they never arrive as
+	// an outer type, and accepting them anyway would be epoch-0 support by the
+	// back door. They reach their handlers by being unwrapped from an envelope.
+	switch (type) {
+		MUMBLE_UPSTREAM_TCP_MESSAGES
+		MUMBLE_FANCY_SERVICE_MESSAGES
+		default:
+			// An outer type this server does not route. Dropping the frame is
+			// correct: the length prefix already told us how much to skip.
+			break;
+	}
 
 #undef PROCESS_MUMBLE_TCP_MESSAGE
 }

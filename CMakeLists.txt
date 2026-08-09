@@ -26,7 +26,14 @@ project(mumble
 
 set(FANCY_VERSION_MAJOR 0)
 set(FANCY_VERSION_MINOR 4)
-set(FANCY_VERSION_PATCH 1)
+set(FANCY_VERSION_PATCH 2)
+
+# The Fancy *wire* epoch, which is not the product version above: it names the
+# message numbering, and only changes when that numbering does. 1 gives every
+# Fancy service one outer type at 1000+ and nests its messages in that
+# service's envelope; 0 was the interleaved 100-999 layout, and is no longer
+# spoken. See Mumble.proto's `Version.fancy_protocol`.
+set(FANCY_PROTOCOL_EPOCH 1)
 
 set(3RDPARTY_DIR "${CMAKE_SOURCE_DIR}/3rdparty")
 set(PLUGINS_DIR "${CMAKE_SOURCE_DIR}/plugins")

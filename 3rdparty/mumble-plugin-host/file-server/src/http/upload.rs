@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use axum::extract::{Multipart, Query, State};
 use axum::Json;
 use mumble_plugin_api::Permissions;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use zeroize::Zeroizing;
@@ -361,7 +361,7 @@ async fn insert_record(
 ) -> Result<Json<UploadResponse>, ApiError> {
     let file_id = parsed.file_id;
     let mut nonce = [0u8; NONCE_BYTES];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     let now_s = signing::now_unix_seconds();
     let expiry_s = compute_expiry(
         now_s,
@@ -448,7 +448,7 @@ fn map_storage_error(e: crate::storage::StorageError) -> ApiError {
 
 fn generate_file_id() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bs58::encode(bytes).into_string()
 }
 

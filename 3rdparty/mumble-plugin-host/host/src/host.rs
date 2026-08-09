@@ -847,9 +847,9 @@ const DEFAULT_FILE_SERVER_PORT: u16 = 64739;
 
 /// Generate a 256-bit random bearer token, hex-encoded (64 chars).
 fn generate_admin_token() -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut buf = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     let mut out = String::with_capacity(buf.len() * 2);
     for b in buf {
         use std::fmt::Write as _;

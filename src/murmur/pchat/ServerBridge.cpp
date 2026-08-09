@@ -5,11 +5,14 @@
 
 #include "ServerBridge.h"
 
+#include "AuditLogBridge.h"
 #include "Channel.h"
 #include "Server.h"
 #include "ServerUser.h"
 
 #include "Mumble.pb.h"
+
+#include <QJsonObject>
 
 #include <chrono>
 
@@ -341,6 +344,25 @@ void ServerBridge::sendPermissionDenied(unsigned int sessionId, unsigned int cha
 	mppd.set_session(sessionId);
 	mppd.set_type(MumbleProto::PermissionDenied_DenyType_Permission);
 	m_server.sendMessage(user, mppd);
+}
+
+void ServerBridge::emitAuditEvent(const std::string &kind, unsigned int actorSession, unsigned int channelId,
+								  const std::vector< std::pair< std::string, std::string > > &detail) {
+	if (!m_server.m_auditBridge) {
+		return;
+	}
+
+	// A null actor is fine and expected: the session may already be gone by the
+	// time a cleanup path reports, and emitEvent simply omits the field.
+	ServerUser *actor = m_server.qhUsers.value(actorSession);
+
+	QJsonObject detailObj;
+	for (const auto &[key, value] : detail) {
+		detailObj.insert(QString::fromStdString(key), QString::fromStdString(value));
+	}
+
+	m_server.m_auditBridge->emitEvent(QString::fromStdString(kind), actor, nullptr,
+									  static_cast< int64_t >(channelId), detailObj);
 }
 
 } // namespace pchat

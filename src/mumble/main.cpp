@@ -226,6 +226,7 @@ struct CLIOptions {
 	bool dumpInputStreams         = false;
 	bool printEchoCancelQueue     = false;
 	bool skipSettingsBackupPrompt = false;
+	bool noWindowStates           = false;
 
 	std::optional< std::string > configFile;
 	std::optional< std::string > jackClientName;
@@ -293,6 +294,10 @@ CLIOptions parseCLI(int argc, char **argv) {
 
 	app.add_flag("--skip-settings-backup-prompt", options.skipSettingsBackupPrompt,
 				 "Don't show the settings recovery dialog on startup after a crash.")
+		->group(CLIOptions::CLI_GENERAL_SECTION);
+
+	app.add_flag("--no-window-states", options.noWindowStates,
+				 "Disable restoring and saving window state and geometry.")
 		->group(CLIOptions::CLI_GENERAL_SECTION);
 
 
@@ -432,6 +437,8 @@ int main(int argc, char **argv) {
 	initLog(logBox);
 	Global::get().c = new DeveloperConsole(logBox);
 
+	qInfo("This is Mumble v%s", qUtf8Printable(Version::getRelease()));
+
 	os_init();
 
 	QUrl url;
@@ -470,6 +477,9 @@ int main(int argc, char **argv) {
 	}
 	if (options.printEchoCancelQueue) {
 		Global::get().bDebugPrintQueue = true;
+	}
+	if (options.noWindowStates) {
+		Global::get().preventWindowStatesCLI = true;
 	}
 	if (options.defaultCertDir) {
 		qdCert = QDir(QString::fromStdString(*options.defaultCertDir));
@@ -588,11 +598,19 @@ int main(int argc, char **argv) {
 #endif
 			bool sent = false;
 #ifdef USE_DBUS
-			QDBusInterface qdbi(QLatin1String("net.sourceforge.mumble.mumble"), QLatin1String("/"),
-								QLatin1String("net.sourceforge.mumble.Mumble"));
+			QDBusInterface qdbi(QLatin1String("info.mumble.mumble"), QLatin1String("/"),
+								QLatin1String("info.mumble.Mumble"));
 
 			QDBusMessage reply = qdbi.call(QLatin1String("openUrl"), QLatin1String(url.toEncoded()));
 			sent               = (reply.type() == QDBusMessage::ReplyMessage);
+
+			if (!sent) {
+				QDBusInterface qdbiLegacy(QLatin1String("net.sourceforge.mumble.mumble"), QLatin1String("/"),
+										  QLatin1String("net.sourceforge.mumble.Mumble"));
+
+				reply = qdbiLegacy.call(QLatin1String("openUrl"), QLatin1String(url.toEncoded()));
+				sent  = (reply.type() == QDBusMessage::ReplyMessage);
+			}
 #else
 			sent = SocketRPC::send(QLatin1String("Mumble"), QLatin1String("url"), param);
 #endif
@@ -601,11 +619,19 @@ int main(int argc, char **argv) {
 		} else {
 			bool sent = false;
 #ifdef USE_DBUS
-			QDBusInterface qdbi(QLatin1String("net.sourceforge.mumble.mumble"), QLatin1String("/"),
-								QLatin1String("net.sourceforge.mumble.Mumble"));
+			QDBusInterface qdbi(QLatin1String("info.mumble.mumble"), QLatin1String("/"),
+								QLatin1String("info.mumble.Mumble"));
 
 			QDBusMessage reply = qdbi.call(QLatin1String("focus"));
 			sent               = (reply.type() == QDBusMessage::ReplyMessage);
+
+			if (!sent) {
+				QDBusInterface qdbiLegacy(QLatin1String("net.sourceforge.mumble.mumble"), QLatin1String("/"),
+										  QLatin1String("net.sourceforge.mumble.Mumble"));
+
+				reply = qdbiLegacy.call(QLatin1String("focus"));
+				sent  = (reply.type() == QDBusMessage::ReplyMessage);
+			}
 #else
 			sent = SocketRPC::send(QLatin1String("Mumble"), QLatin1String("focus"));
 #endif
@@ -636,9 +662,9 @@ int main(int argc, char **argv) {
 
 	// Load preferences
 	if (settingsFile.isEmpty()) {
-		Global::get().s.load();
+		Global::get().s.load(options.skipSettingsBackupPrompt);
 	} else {
-		Global::get().s.load(settingsFile);
+		Global::get().s.load(settingsFile, options.skipSettingsBackupPrompt);
 	}
 	if (!Global::get().migratedDBPath.isEmpty()) {
 		// We have migrated the DB to a new location. Make sure that the settings hold the correct (new) path and that
@@ -801,7 +827,9 @@ int main(int argc, char **argv) {
 
 #ifdef USE_DBUS
 	new MumbleDBus(Global::get().mw);
+	new MumbleDBusLegacy(Global::get().mw);
 	QDBusConnection::sessionBus().registerObject(QLatin1String("/"), Global::get().mw);
+	QDBusConnection::sessionBus().registerService(QLatin1String("info.mumble.mumble"));
 	QDBusConnection::sessionBus().registerService(QLatin1String("net.sourceforge.mumble.mumble"));
 #endif
 

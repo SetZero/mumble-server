@@ -23,10 +23,12 @@
 #include "Mumble.pb.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace msdb = ::mumble::server::db;
@@ -57,6 +59,22 @@ public:
 	std::vector< std::pair< unsigned int, MumbleProto::PchatPinFetchResponse > > sentPinFetchResponses;
 	std::vector< std::pair< unsigned int, MumbleProto::PchatPinDeliver > > broadcastedPinDelivers;
 	std::vector< std::tuple< unsigned int, unsigned int, unsigned int > > sentPermissionDenied;
+
+	/// Audit events, as (kind, actorSession, channelId, detail).
+	struct AuditEvent {
+		std::string kind;
+		unsigned int actorSession;
+		unsigned int channelId;
+		std::vector< std::pair< std::string, std::string > > detail;
+	};
+	std::vector< AuditEvent > auditEvents;
+
+	/// Count audit events of a given kind.
+	std::size_t auditCount(const std::string &kind) const {
+		return static_cast< std::size_t >(
+			std::count_if(auditEvents.begin(), auditEvents.end(),
+						  [&kind](const AuditEvent &e) { return e.kind == kind; }));
+	}
 
 	// Configurable return values
 	std::unordered_map< unsigned int, std::string > certHashes;
@@ -194,6 +212,10 @@ public:
 		auto it = hashToSession.find(certHash);
 		return (it != hashToSession.end()) ? it->second : 0;
 	}
+	void emitAuditEvent(const std::string &kind, unsigned int actorSession, unsigned int channelId,
+						const std::vector< std::pair< std::string, std::string > > &detail) override {
+		auditEvents.push_back({ kind, actorSession, channelId, detail });
+	}
 
 	void reset() {
 		sentAcks.clear();
@@ -217,6 +239,7 @@ public:
 		sentPinFetchResponses.clear();
 		broadcastedPinDelivers.clear();
 		sentPermissionDenied.clear();
+		auditEvents.clear();
 	}
 };
 
@@ -240,7 +263,12 @@ public:
 		}
 		return allowAll;
 	}
-	void reset(const std::string & /*key*/) override {}
+
+	/// Keys the manager released, in call order. Nothing called reset() at all
+	/// before the disconnect path was wired up, so buckets simply accumulated.
+	std::vector< std::string > resetKeys;
+
+	void reset(const std::string &key) override { resetKeys.push_back(key); }
 };
 
 // ---- Test helper: ServerDatabase subclass for in-memory SQLite ----
@@ -461,6 +489,27 @@ private slots:
 	// ---- Rate-limit buckets ----
 
 	void reactionAndPin_useDedicatedRateLimitBuckets();
+
+	// ---- Key-holder report authorization (security audit 2026-07-31) ----
+
+	void keyHolderReport_rejectsForeignCertHash();
+	void keyHolderReport_rejectsSessionWithoutCertificate();
+	void keyHolderReport_deniedWithoutEnterPermission();
+	void keyHolderReport_usesDedicatedRateLimitBucket();
+	void keyHolderReport_recordsAuditEvent();
+
+	// ---- Verified-session lifetime ----
+
+	void disconnect_clearsVerifiedSessionWithoutCertHash();
+	void disconnect_releasesRateLimiterBucket();
+
+	// ---- Challenge reset ----
+
+	void challengeReset_deniedWhenNotARecordedHolder();
+
+	// ---- Stored sender-key delivery ----
+
+	void senderKeyDistribution_notDeliveredWithoutEnterPermission();
 };
 
 // ---- handlePchatMessage tests ----
@@ -1509,6 +1558,216 @@ void TestPersistentChatManager::reactionAndPin_useDedicatedRateLimitBuckets() {
 	QVERIFY(std::find(seen.begin(), seen.end(), std::string("reaction")) != seen.end());
 	QVERIFY(std::find(seen.begin(), seen.end(), std::string("pin")) != seen.end());
 	QVERIFY(std::find(seen.begin(), seen.end(), std::string("msg")) == seen.end());
+}
+
+// ---- Key-holder report authorization (security audit 2026-07-31) ----
+
+void TestPersistentChatManager::keyHolderReport_rejectsForeignCertHash() {
+	setupManager();
+	setupDefaultSession();
+
+	// Session 20 exists and reports session 10's hash as a key holder. Nothing
+	// bound cert_hash to the session, so this wrote a holder row naming somebody
+	// else -- for any channel, including ones the reporter cannot see.
+	m_bridge->certHashes[20]          = "def456";
+	m_bridge->hashToSession["def456"] = 20;
+
+	MumbleProto::PchatKeyHolderReport report;
+	report.set_channel_id(42);
+	report.set_cert_hash("abc123"); // not session 20's hash
+	m_mgr->handlePchatKeyHolderReport(20, report);
+
+	// No challenge issued, and the impersonation is on the record.
+	QVERIFY(m_bridge->sentChallenges.empty());
+	QCOMPARE(m_bridge->auditCount("pchat.key_holder_rejected"), static_cast< std::size_t >(1));
+	QCOMPARE(m_bridge->auditCount("pchat.key_holder_report"), static_cast< std::size_t >(0));
+
+	// The holder row was never written: session 20 stays unverified, so a fetch
+	// finds no verified session to serve.
+	MumbleProto::PchatFetch fetch;
+	fetch.set_channel_id(42);
+	m_mgr->handlePchatFetch(20, fetch);
+	QVERIFY(m_bridge->sentFetchResponses.empty());
+}
+
+void TestPersistentChatManager::keyHolderReport_rejectsSessionWithoutCertificate() {
+	setupManager();
+	setupDefaultSession();
+
+	// Session 99 has no certificate at all. Every identity in this subsystem is
+	// a certificate hash, so it has nothing to report.
+	MumbleProto::PchatKeyHolderReport report;
+	report.set_channel_id(42);
+	report.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(99, report);
+
+	QVERIFY(m_bridge->sentChallenges.empty());
+	QCOMPARE(m_bridge->auditCount("pchat.key_holder_report"), static_cast< std::size_t >(0));
+}
+
+void TestPersistentChatManager::keyHolderReport_deniedWithoutEnterPermission() {
+	setupManager();
+	setupDefaultSession();
+
+	m_bridge->enterPerms[10] = false;
+
+	MumbleProto::PchatKeyHolderReport report;
+	report.set_channel_id(42);
+	report.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(10, report);
+
+	QCOMPARE(m_bridge->sentPermissionDenied.size(), static_cast< size_t >(1));
+	QCOMPARE(std::get< 1 >(m_bridge->sentPermissionDenied[0]), 42u);
+	QVERIFY(m_bridge->sentChallenges.empty());
+	QCOMPARE(m_bridge->auditCount("pchat.key_holder_report"), static_cast< std::size_t >(0));
+}
+
+void TestPersistentChatManager::keyHolderReport_usesDedicatedRateLimitBucket() {
+	setupManager();
+	setupDefaultSession();
+	m_limiter->seenOperations.clear();
+	m_limiter->deniedOperations.insert("key_holder_report");
+
+	MumbleProto::PchatKeyHolderReport report;
+	report.set_channel_id(42);
+	report.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(10, report);
+
+	QVERIFY(m_bridge->sentChallenges.empty());
+	const auto &seen = m_limiter->seenOperations;
+	QVERIFY(std::find(seen.begin(), seen.end(), std::string("key_holder_report")) != seen.end());
+}
+
+void TestPersistentChatManager::keyHolderReport_recordsAuditEvent() {
+	setupManager();
+	setupDefaultSession();
+
+	MumbleProto::PchatKeyHolderReport report;
+	report.set_channel_id(42);
+	report.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(10, report);
+
+	QCOMPARE(m_bridge->auditCount("pchat.key_holder_report"), static_cast< std::size_t >(1));
+	const auto &event = m_bridge->auditEvents.back();
+	QCOMPARE(event.actorSession, 10u);
+	QCOMPARE(event.channelId, 42u);
+	QCOMPARE(event.detail.size(), static_cast< std::size_t >(1));
+	QCOMPARE(event.detail[0].first, std::string("cert_hash"));
+	QCOMPARE(event.detail[0].second, std::string("abc123"));
+}
+
+// ---- Verified-session lifetime ----
+
+void TestPersistentChatManager::disconnect_clearsVerifiedSessionWithoutCertHash() {
+	setupManager();
+	setupDefaultSession();
+	passChallenge(10, 42);
+
+	// Session ids are recycled, so a verified entry that outlives its session is
+	// inherited by whoever draws the id next. The cleanup used to return early
+	// whenever the hash was empty -- which is every client that presented no
+	// certificate -- leaving exactly those sessions verified forever.
+	m_mgr->onUserDisconnected(10, "");
+
+	m_mgr->handlePchatMessage(10, makeValidMessage("after-disconnect"));
+	QCOMPARE(m_bridge->sentAcks.size(), static_cast< size_t >(1));
+	QCOMPARE(m_bridge->sentAcks[0].second.reason(), std::string("key_challenge_not_passed"));
+}
+
+void TestPersistentChatManager::disconnect_releasesRateLimiterBucket() {
+	setupManager();
+	setupDefaultSession();
+	m_limiter->resetKeys.clear();
+
+	// The limiter has always had a reset(); nothing ever called it, so buckets
+	// accumulated one per (session, operation) for the life of the process.
+	m_mgr->onUserDisconnected(10, "abc123");
+	QCOMPARE(m_limiter->resetKeys.size(), static_cast< size_t >(1));
+	QCOMPARE(m_limiter->resetKeys[0], std::string("c:abc123"));
+
+	// A client with no certificate still gets its bucket released, keyed on the
+	// session id since that is the only identity it has.
+	m_limiter->resetKeys.clear();
+	m_mgr->onUserDisconnected(77, "");
+	QCOMPARE(m_limiter->resetKeys.size(), static_cast< size_t >(1));
+	QCOMPARE(m_limiter->resetKeys[0], std::string("s:77"));
+}
+
+// ---- Challenge reset ----
+
+void TestPersistentChatManager::challengeReset_deniedWhenNotARecordedHolder() {
+	setupManager();
+	setupDefaultSession();
+
+	// Establish a reference HMAC for channel 42 via session 10.
+	passChallenge(10, 42);
+
+	// Wipe the holder table so the channel has no recorded holders at all -- the
+	// state right after a KeyOwner takeover. Session 20 then answers with a
+	// wrong proof. Testing only "no *other* holder exists" handed the reset to
+	// whoever asked first here, letting them redefine the reference.
+	m_db->getPChatKeyHoldersTable().clearChannel(1, 42);
+
+	m_bridge->certHashes[20]          = "def456";
+	m_bridge->hashToSession["def456"] = 20;
+	m_bridge->fancyClients[20]        = true;
+
+	MumbleProto::PchatKeyHolderReport report;
+	report.set_channel_id(42);
+	report.set_cert_hash("def456");
+	m_mgr->handlePchatKeyHolderReport(20, report);
+	// That report re-recorded session 20 as a holder, so clear it again to get
+	// the "no recorded holders" state the reset path must refuse.
+	m_db->getPChatKeyHoldersTable().clearChannel(1, 42);
+	m_bridge->reset();
+
+	MumbleProto::PchatKeyChallengeResponse resp;
+	resp.set_channel_id(42);
+	resp.set_proof("attacker-chosen-proof");
+	m_mgr->handlePchatKeyChallengeResponse(20, resp);
+
+	// Refused outright, not re-challenged, and no reset was recorded.
+	QCOMPARE(m_bridge->sentChallengeResults.size(), static_cast< size_t >(1));
+	QVERIFY(!m_bridge->sentChallengeResults.back().second.passed());
+	QVERIFY(m_bridge->sentChallenges.empty());
+	QCOMPARE(m_bridge->auditCount("pchat.challenge_reset"), static_cast< std::size_t >(0));
+}
+
+// ---- Stored sender-key delivery ----
+
+void TestPersistentChatManager::senderKeyDistribution_notDeliveredWithoutEnterPermission() {
+	setupManager();
+	m_bridge->channelModes[42] = 4; // SignalV1: auto-verifies on report
+
+	m_bridge->certHashes[10]          = "abc123";
+	m_bridge->hashToSession["abc123"] = 10;
+	m_bridge->fancyClients[10]        = true;
+
+	MumbleProto::PchatKeyHolderReport bobReport;
+	bobReport.set_channel_id(42);
+	bobReport.set_cert_hash("abc123");
+	m_mgr->handlePchatKeyHolderReport(10, bobReport);
+
+	MumbleProto::PchatSenderKeyDistribution bobSkdm;
+	bobSkdm.set_channel_id(42);
+	bobSkdm.set_distribution("bob-sender-key");
+	m_mgr->handlePchatSenderKeyDistribution(10, bobSkdm);
+	m_bridge->reset();
+
+	// Session 20 cannot enter the channel. On the auto-verify protocol a
+	// self-report alone used to be enough to be handed every stored sender key
+	// for it, because neither the delivery nor its caller checked anything.
+	m_bridge->certHashes[20]          = "def456";
+	m_bridge->hashToSession["def456"] = 20;
+	m_bridge->fancyClients[20]        = true;
+	m_bridge->enterPerms[20]          = false;
+
+	MumbleProto::PchatKeyHolderReport carolReport;
+	carolReport.set_channel_id(42);
+	carolReport.set_cert_hash("def456");
+	m_mgr->handlePchatKeyHolderReport(20, carolReport);
+
+	QVERIFY(m_bridge->sentSenderKeyDistributions.empty());
 }
 
 QTEST_MAIN(TestPersistentChatManager)

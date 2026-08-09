@@ -20,7 +20,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"
 # HTTP client. rustls (no OpenSSL/system TLS) keeps the server free of native
 # media/image system dependencies. Manual redirect handling + a custom DNS
 # resolver provide the SSRF gate.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip", "stream"] }
 
 # OpenGraph / HTML metadata extraction. default-features=false drops the
 # crate's built-in libcurl fetcher - we parse HTML we fetched ourselves through
@@ -41,7 +41,7 @@ futures-util = { version = "0.3", default-features = false }
 url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

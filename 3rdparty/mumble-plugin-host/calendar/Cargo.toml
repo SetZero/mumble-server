@@ -28,11 +28,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Invite-link tokens: HMAC-SHA256 over the event id, base64url-encoded,
 # verified in constant time. Secret is a random per-process key.
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 subtle = "2"
-base64 = "0.22"
-rand = "0.8"
+base64 = "0.23"
+rand = "0.10"
 
 [lints]
 workspace = true

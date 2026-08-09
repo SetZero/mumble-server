@@ -15,6 +15,7 @@
 #include "QtUtils.h"
 #include "Server.h"
 #include "PluginHostManager.h"
+#include "AuditLogBridge.h"
 #include "LinkPreviewBridge.h"
 #include "MumbleDeprecation.h"
 #include "ServerUser.h"
@@ -195,7 +196,10 @@ bool isChannelEnterRestricted(Channel *c) {
 /// temporary booleans, and adds the detached marker. The legacy booleans are
 /// still set by callers for non-Fancy clients.
 static void serializeChannelAttributes(MumbleProto::ChannelState &mpcs, Channel *c, ServerUser *recipient) {
-	if (recipient->hasPermission(c, ChanACL::Enter))
+	// A structural channel is a heading, never a destination, so it is never
+	// advertised as enterable however permissive its ACLs are. This keeps the
+	// client's affordances in step with what the server will actually allow.
+	if (!c->hasAttribute(ChannelAttribute::Structural) && recipient->hasPermission(c, ChanACL::Enter))
 		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_CAN_ENTER);
 	if (isChannelEnterRestricted(c))
 		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_ENTER_RESTRICTED);
@@ -205,6 +209,67 @@ static void serializeChannelAttributes(MumbleProto::ChannelState &mpcs, Channel 
 		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_TEMPORARY);
 	if (c->hasAttribute(ChannelAttribute::Detached))
 		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_DETACHED);
+	if (c->hasAttribute(ChannelAttribute::Structural))
+		mpcs.add_attributes(MumbleProto::CHANNEL_ATTRIBUTE_STRUCTURAL);
+}
+
+/// Attributes a client may assign via ChannelState. Everything else in
+/// ChannelAttribute is either server-computed per recipient (CanEnter,
+/// EnterRestricted, Hidden, Temporary) or create-only (Detached).
+///
+/// Extend this table to make a new attribute settable - `applyChannelAttributes`
+/// below stays untouched.
+static const struct {
+	MumbleProto::ChannelAttribute wire;
+	ChannelAttribute attribute;
+} SETTABLE_CHANNEL_ATTRIBUTES[] = {
+	{ MumbleProto::CHANNEL_ATTRIBUTE_STRUCTURAL, ChannelAttribute::Structural },
+};
+
+/// Apply the settable attributes carried by @p msg to @p c, honouring the
+/// generic `attribute_mask` write-mask: an attribute named in the mask is set
+/// when it also appears in `attributes` and cleared otherwise, while attributes
+/// absent from the mask are left alone. A message with no mask changes nothing,
+/// so partial updates (a rename, say) never disturb unrelated traits.
+///
+/// @returns true when any attribute actually changed.
+static bool applyChannelAttributes(Channel *c, const MumbleProto::ChannelState &msg) {
+	bool changed = false;
+	for (const auto &entry : SETTABLE_CHANNEL_ATTRIBUTES) {
+		// The root is every user's last-resort landing channel, so making it
+		// structural would leave nowhere to log in to. Refuse it outright.
+		if (entry.attribute == ChannelAttribute::Structural && c->iId == 0)
+			continue;
+
+		bool masked = false;
+		for (int i = 0; i < msg.attribute_mask_size(); ++i) {
+			if (msg.attribute_mask(i) == entry.wire) {
+				masked = true;
+				break;
+			}
+		}
+		if (!masked)
+			continue;
+
+		bool desired = false;
+		for (int i = 0; i < msg.attributes_size(); ++i) {
+			if (msg.attributes(i) == entry.wire) {
+				desired = true;
+				break;
+			}
+		}
+		if (c->hasAttribute(entry.attribute) != desired) {
+			c->setAttribute(entry.attribute, desired);
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+/// Whether @p c refuses entry because it is structural: such a channel exists
+/// only to organise the tree and never holds users.
+static bool isChannelStructural(const Channel *c) {
+	return c && c->hasAttribute(ChannelAttribute::Structural);
 }
 
 /// Build the ChannelState for @p c as seen by @p recipient, for the channel
@@ -477,9 +542,13 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 		lc                         = qhChannels.value(lastChannelID);
 	}
 
-	if (!lc || !uSource->hasPermission(lc, ChanACL::Enter) || isChannelFull(lc, uSource)) {
+	// Structural channels hold no users, so a remembered or configured landing
+	// channel that has become structural falls through to the next candidate.
+	if (!lc || isChannelStructural(lc) || !uSource->hasPermission(lc, ChanACL::Enter)
+		|| isChannelFull(lc, uSource)) {
 		lc = qhChannels.value(iDefaultChan);
-		if (!lc || !uSource->hasPermission(lc, ChanACL::Enter) || isChannelFull(lc, uSource)) {
+		if (!lc || isChannelStructural(lc) || !uSource->hasPermission(lc, ChanACL::Enter)
+			|| isChannelFull(lc, uSource)) {
 			lc = root;
 			if (isChannelFull(lc, uSource)) {
 				reason = QString::fromLatin1("Server channels are full");
@@ -870,19 +939,21 @@ void Server::msgAuthenticate(ServerUser *uSource, MumbleProto::Authenticate &msg
 			break;
 	}
 
-	// Send the active onboarding config to Fancy 0.3.1+ clients so the
-	// onboarding modal can render immediately after connect without an
-	// extra round-trip.
-	if (uSource->m_FancyVersion.has_value()
-		&& uSource->m_FancyVersion.value() >= Version::fromComponents(0, 3, 1)
-		&& m_onboardingConfig.has_enabled()) {
-		sendMessage(uSource, m_onboardingConfig);
-	}
+	// Send the onboarding state (this user's stored answers, then the active
+	// config) to Fancy 0.3.1+ clients so the modal can decide whether to
+	// render immediately after connect, without an extra round-trip.
+	sendFancyOnboardingState(uSource);
 
 	// Advertise the editable server-settings schema to root-Write admins so the
 	// Admin > Server Settings panel populates immediately (the helper enforces
 	// the permission + Fancy-version gate).
 	sendFancyServerSettings(uSource);
+
+	// Same pattern for the audit-log config snapshot (Audit tab, fancy 0.4.2+
+	// root-Write admins; the bridge enforces both gates).
+	if (m_auditBridge) {
+		m_auditBridge->pushConfig(uSource);
+	}
 
 	log(uSource, "Authenticated");
 
@@ -991,6 +1062,39 @@ void Server::msgUDPTunnel(ServerUser *, MumbleProto::UDPTunnel &) {
 	qWarning("Messages: Reached theoretically unreachable function msgUDPTunnel");
 }
 
+/// Emit one audit event per speak-state attribute a moderator actually
+/// changed. Each attribute is its own event kind; the audit plugin folds
+/// mute/deafen/suppress/priority_speaker into the single
+/// `audit.mute_deafen_suppress` part. Attributes whose value is unchanged are
+/// skipped so a UserState carrying the current state is not logged as an
+/// action.
+static void emitSpeakStateAudit(AuditLogBridge *bridge, const ServerUser *actor,
+								const ServerUser *target, bool prevMute, bool prevDeaf,
+								bool prevSuppress, bool prevPriority) {
+	const struct {
+		const char *kind;
+		bool before;
+		bool after;
+	} changes[] = {
+		{ "mute", prevMute, target->bMute },
+		{ "deafen", prevDeaf, target->bDeaf },
+		{ "suppress", prevSuppress, target->bSuppress },
+		{ "priority_speaker", prevPriority, target->bPrioritySpeaker },
+	};
+
+	const int64_t channelId =
+		target->cChannel ? static_cast< int64_t >(target->cChannel->iId) : -1;
+
+	for (const auto &change : changes) {
+		if (change.before == change.after) {
+			continue;
+		}
+		QJsonObject detail;
+		detail.insert(QStringLiteral("enabled"), change.after);
+		bridge->emitEvent(QLatin1String(change.kind), actor, target, channelId, detail);
+	}
+}
+
 void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 	ZoneScoped;
 
@@ -1038,6 +1142,12 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 		}
 
 		if (!uSource->hasPermission(c, ChanACL::Move) && !pDstServerUser->hasPermission(c, ChanACL::Enter)) {
+			PERM_DENIED(pDstServerUser, c, ChanACL::Enter);
+			return;
+		}
+		// Structural channels only organise the tree; nobody may be moved into
+		// one, not even by an operator holding Move.
+		if (isChannelStructural(c)) {
 			PERM_DENIED(pDstServerUser, c, ChanACL::Enter);
 			return;
 		}
@@ -1244,10 +1354,21 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 
 
 
+	// Speak-state before this message, captured for the audit trail; the events
+	// are emitted after the write lock is released.
+	bool speakStateTouched = false;
+	bool prevMute = false, prevDeaf = false, prevSuppress = false, prevPriority = false;
+
 	if (msg.has_mute() || msg.has_deaf() || msg.has_suppress() || msg.has_priority_speaker()) {
 		// Writing to bDeaf, bMute and bSuppress requires
 		// holding a write lock on qrwlVoiceThread.
 		QWriteLocker wl(&qrwlVoiceThread);
+
+		speakStateTouched = true;
+		prevMute          = pDstServerUser->bMute;
+		prevDeaf          = pDstServerUser->bDeaf;
+		prevSuppress      = pDstServerUser->bSuppress;
+		prevPriority      = pDstServerUser->bPrioritySpeaker;
 
 		if (msg.has_deaf()) {
 			pDstServerUser->bDeaf = msg.deaf();
@@ -1273,6 +1394,12 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 							  QString::number(pDstServerUser->bPrioritySpeaker)));
 
 		bBroadcast = true;
+	}
+
+	// Outside the voice-thread write lock: publishing an event can do I/O.
+	if (speakStateTouched && m_auditBridge) {
+		emitSpeakStateAudit(m_auditBridge.get(), uSource, pDstServerUser, prevMute, prevDeaf,
+							prevSuppress, prevPriority);
 	}
 
 	if (msg.has_recording() && (pDstServerUser->bRecording != msg.recording())) {
@@ -1319,6 +1446,21 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 		presenceChannelMoved = (c != pDstServerUser->cChannel);
 		userEnterChannel(pDstServerUser, c, msg);
 		log(uSource, QString("Moved %1 to %2").arg(QString(*pDstServerUser), QString(*c)));
+
+		// Only an actual channel change is an auditable move; a UserState that
+		// merely restates the current channel is not.
+		if (m_auditBridge && c && presenceChannelMoved) {
+			QJsonObject detail;
+			if (presencePrevChannel) {
+				detail.insert(QStringLiteral("from_channel_id"),
+							  static_cast< qint64 >(presencePrevChannel->iId));
+				detail.insert(QStringLiteral("from_channel_name"), presencePrevChannel->qsName);
+			}
+			detail.insert(QStringLiteral("to_channel_name"), c->qsName);
+			m_auditBridge->emitEvent(QStringLiteral("move"), uSource, pDstServerUser,
+									 static_cast< int64_t >(c->iId), detail);
+		}
+
 		bBroadcast = true;
 	}
 
@@ -1405,6 +1547,16 @@ void Server::msgUserState(ServerUser *uSource, MumbleProto::UserState &msg) {
 			assert(pDstServerUser->iId >= 0);
 			msg.set_user_id(static_cast< unsigned int >(pDstServerUser->iId));
 			bDstAclChanged = true;
+
+			if (m_auditBridge) {
+				QJsonObject detail;
+				detail.insert(QStringLiteral("user_id"), static_cast< qint64 >(pDstServerUser->iId));
+				// Self-registration and an admin registering someone else are
+				// the same wire message; the actor/target pair distinguishes them.
+				detail.insert(QStringLiteral("self"), uSource == pDstServerUser);
+				m_auditBridge->emitEvent(QStringLiteral("register"), uSource, pDstServerUser, -1,
+										 detail);
+			}
 		} else {
 			// Registration failed
 			msg.clear_user_id();
@@ -1565,6 +1717,17 @@ void Server::msgUserRemove(ServerUser *uSource, MumbleProto::UserRemove &msg) {
 		log(uSource, QString("Kickbanned %1 (%2)").arg(QString(*pDstServerUser), u8(msg.reason())));
 	else
 		log(uSource, QString("Kicked %1 (%2)").arg(QString(*pDstServerUser), u8(msg.reason())));
+
+	if (m_auditBridge) {
+		QJsonObject detail;
+		const QString reason = u8(msg.reason());
+		if (!reason.isEmpty()) {
+			detail.insert(QStringLiteral("reason"), reason);
+		}
+		m_auditBridge->emitEvent(ban ? QStringLiteral("ban") : QStringLiteral("kick"), uSource,
+								 pDstServerUser, -1, detail);
+	}
+
 	pDstServerUser->disconnectSocket();
 }
 
@@ -1700,6 +1863,17 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			c->setAttribute(ChannelAttribute::Hidden, msg.hidden());
 		}
 
+		// A new channel has nothing to clear, so the listed attributes are taken
+		// as-is rather than through the write-mask.
+		for (const auto &entry : SETTABLE_CHANNEL_ATTRIBUTES) {
+			for (int i = 0; i < msg.attributes_size(); ++i) {
+				if (msg.attributes(i) == entry.wire) {
+					c->setAttribute(entry.attribute);
+					break;
+				}
+			}
+		}
+
 		// Stamp creation time (anchor for absolute expiry) and read expiry config.
 		c->uiCreatedAt   = static_cast< uint32_t >(QDateTime::currentSecsSinceEpoch());
 		c->iLastActivity = c->uiCreatedAt;
@@ -1758,6 +1932,15 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		msg.set_channel_id(c->iId);
 		log(uSource, QString("Added channel %1 under %2").arg(QString(*c), QString(*p)));
 		m_events.channelCreated(c);
+
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("name"), c->qsName);
+			detail.insert(QStringLiteral("parent_id"), static_cast< qint64 >(p->iId));
+			detail.insert(QStringLiteral("temporary"), c->hasAttribute(ChannelAttribute::Temporary));
+			m_auditBridge->emitEvent(QStringLiteral("channel.create"), uSource, nullptr,
+									 static_cast< int64_t >(c->iId), detail);
+		}
 
 		if (c->isPersistentChat() && m_pchatManager) {
 			m_pchatManager->onPersistentChannelCreated(
@@ -1978,6 +2161,8 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			c->setAttribute(ChannelAttribute::Hidden, msg.hidden());
 		}
 
+		const bool attributesChanged = applyChannelAttributes(c, msg);
+
 		if (msg.has_expiry_mode())
 			c->uiExpiryMode = msg.expiry_mode();
 		if (msg.has_expiry_duration_secs())
@@ -1986,6 +2171,42 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 		if (!c->hasAttribute(ChannelAttribute::Temporary)) {
 			m_dbWrapper.updateChannelData(iServerNum, *c);
 		}
+
+		// One event for the whole edit (a single ChannelState can rename, move
+		// and re-describe at once); `fields` says what the operator touched.
+		if (m_auditBridge) {
+			QJsonArray fields;
+			if (p) {
+				fields.append(QStringLiteral("parent"));
+			}
+			if (msg.has_name()) {
+				fields.append(QStringLiteral("name"));
+			}
+			if (msg.has_description()) {
+				fields.append(QStringLiteral("description"));
+			}
+			if (msg.has_position()) {
+				fields.append(QStringLiteral("position"));
+			}
+			if (msg.has_max_users()) {
+				fields.append(QStringLiteral("max_users"));
+			}
+			if (msg.has_hidden()) {
+				fields.append(QStringLiteral("hidden"));
+			}
+			if (msg.has_expiry_mode() || msg.has_expiry_duration_secs()) {
+				fields.append(QStringLiteral("expiry"));
+			}
+
+			if (!fields.isEmpty()) {
+				QJsonObject detail;
+				detail.insert(QStringLiteral("channel_name"), c->qsName);
+				detail.insert(QStringLiteral("fields"), fields);
+				m_auditBridge->emitEvent(QStringLiteral("channel.update"), uSource, nullptr,
+										 static_cast< int64_t >(c->iId), detail);
+			}
+		}
+
 		m_events.channelStateChanged(c);
 
 		sendToObservers(c, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::LessThan);
@@ -1993,7 +2214,41 @@ void Server::msgChannelState(ServerUser *uSource, MumbleProto::ChannelState &msg
 			msg.clear_description();
 			msg.set_description_hash(blob(c->qbaDescHash));
 		}
+		// `attributes` / `attribute_mask` are input-only, and unlike the plain
+		// booleans the attribute set is computed per recipient (CAN_ENTER differs
+		// per user), so relaying the sender's copy verbatim would overwrite every
+		// other client's view of this channel with the editor's request. Strip
+		// them and, when a trait actually changed, follow up with a per-recipient
+		// refresh.
+		msg.clear_attributes();
+		msg.clear_attribute_mask();
 		sendToObservers(c, msg, Version::fromComponents(1, 2, 2), Version::CompareMode::AtLeast);
+
+		if (attributesChanged) {
+			MumbleProto::ChannelState refresh;
+			refresh.set_channel_id(c->iId);
+			// Mark the message authoritative for every attribute the server
+			// computes. Without the mask a recipient who ends up with an empty
+			// set (no CAN_ENTER, nothing else) could not tell "cleared" from
+			// "omitted", and would keep a stale trait until reconnect.
+			for (int attribute = MumbleProto::ChannelAttribute_MIN; attribute <= MumbleProto::ChannelAttribute_MAX;
+				 ++attribute) {
+				if (MumbleProto::ChannelAttribute_IsValid(attribute)
+					&& attribute != MumbleProto::CHANNEL_ATTRIBUTE_UNSPECIFIED) {
+					refresh.add_attribute_mask(static_cast< MumbleProto::ChannelAttribute >(attribute));
+				}
+			}
+			for (ServerUser *user : qhUsers) {
+				if (c->iId != 0 && !user->canSee(c)) {
+					continue;
+				}
+				// Repeated field: empty it per recipient, or each user inherits
+				// the previous one's attribute set.
+				refresh.clear_attributes();
+				serializeChannelAttributes(refresh, c, user);
+				sendMessage(user, refresh);
+			}
+		}
 
 		// Expiry config may have changed (or been added/removed) -> re-arm.
 		rescheduleChannelExpiry();
@@ -2015,6 +2270,13 @@ void Server::msgChannelRemove(ServerUser *uSource, MumbleProto::ChannelRemove &m
 	}
 
 	log(uSource, QString("Removed channel %1").arg(*c));
+
+	if (m_auditBridge) {
+		QJsonObject detail;
+		detail.insert(QStringLiteral("name"), c->qsName);
+		m_auditBridge->emitEvent(QStringLiteral("channel.remove"), uSource, nullptr,
+								 static_cast< int64_t >(c->iId), detail);
+	}
 
 	removeChannel(c);
 }
@@ -2687,6 +2949,13 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 		}
 		log(uSource, QString("Updated ACL in channel %1").arg(*c));
 
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("channel_name"), c->qsName);
+			m_auditBridge->emitEvent(QStringLiteral("acl"), uSource, nullptr,
+									 static_cast< int64_t >(c->iId), detail);
+		}
+
 		// Send refreshed enter states of this channel to all clients who may see
 		// it. Skipping users who can't see a hidden channel avoids leaking its id
 		// (and would also wrongly surface it after an unrelated ACL edit).
@@ -2697,6 +2966,11 @@ void Server::msgACL(ServerUser *uSource, MumbleProto::ACL &msg) {
 			if (c->iId != 0 && !user->canSee(c)) {
 				continue;
 			}
+			// `attributes` is a repeated field and serializeChannelAttributes
+			// appends, so it must be emptied per recipient - otherwise each user
+			// inherits the previous one's set and e.g. CAN_ENTER leaks to users
+			// who do not have it.
+			mpcs.clear_attributes();
 			// Proto-deprecated legacy booleans, still sent for legacy clients.
 			MUMBLE_DEPRECATED_PUSH
 			mpcs.set_is_enter_restricted(isChannelEnterRestricted(c));
@@ -2932,6 +3206,15 @@ void Server::msgUserList(ServerUser *uSource, MumbleProto::UserList &msg) {
 			if (!user.has_name()) {
 				log(uSource, QString::fromLatin1("Unregistered user %1").arg(id));
 				unregisterUser(static_cast< int >(id));
+
+				if (m_auditBridge) {
+					// The account is gone by now, so the id is all we can record
+					// as the target; there is no ServerUser to attribute it to.
+					QJsonObject detail;
+					detail.insert(QStringLiteral("user_id"), static_cast< qint64 >(id));
+					m_auditBridge->emitEvent(QStringLiteral("deregister"), uSource, nullptr, -1,
+											 detail);
+				}
 			} else {
 				const QString &name = u8(user.name()).trimmed();
 				if (validateUserName(name)) {
@@ -3515,6 +3798,35 @@ void Server::msgPchatDeleteMessages(ServerUser *uSource, MumbleProto::PchatDelet
 	if (m_pchatManager) {
 		m_pchatManager->handlePchatDeleteMessages(uSource->uiSession, msg);
 	}
+
+	// Deleting someone else's messages is a moderation action (gated on
+	// DeleteMessage above), so it belongs in the audit trail.
+	if (m_auditBridge) {
+		// Deletion has three scopes (explicit ids, a time window, or every
+		// message from one sender); record which was used, not just a count -
+		// a range delete carries no ids and would otherwise look like a no-op.
+		QJsonObject detail;
+		detail.insert(QStringLiteral("channel_name"), c->qsName);
+		if (msg.message_ids_size() > 0) {
+			detail.insert(QStringLiteral("message_count"),
+						  static_cast< qint64 >(msg.message_ids_size()));
+		}
+		if (msg.has_time_range()) {
+			QJsonObject range;
+			if (msg.time_range().has_from()) {
+				range.insert(QStringLiteral("from"), static_cast< qint64 >(msg.time_range().from()));
+			}
+			if (msg.time_range().has_to()) {
+				range.insert(QStringLiteral("to"), static_cast< qint64 >(msg.time_range().to()));
+			}
+			detail.insert(QStringLiteral("time_range"), range);
+		}
+		if (msg.has_sender_hash()) {
+			detail.insert(QStringLiteral("sender_hash"), u8(msg.sender_hash()));
+		}
+		m_auditBridge->emitEvent(QStringLiteral("pchat.delete_messages"), uSource, nullptr,
+								 static_cast< int64_t >(c->iId), detail);
+	}
 }
 
 // Server -> Client only; ignore if received from client
@@ -3934,6 +4246,105 @@ void Server::msgFancyDrawStroke(ServerUser *uSource, MumbleProto::FancyDrawStrok
 // Fancy Mumble: onboarding workflow (IDs 136-140) - introduced in 0.3.1
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Per-server config key the onboarding flow is persisted under.
+const char *ONBOARDING_CONFIG_KEY = "fancy_onboarding_config";
+
+/// Per-server config key one user's onboarding answers are persisted under.
+/// Identities are certificate hashes (40 hex chars) or `uid:<n>`, so the key
+/// stays well inside the 255-character column.
+std::string onboardingResponseConfigKey(const QString &identity) {
+	return std::string("fancy_onboarding_response/") + identity.toStdString();
+}
+
+/// The config table stores text, so protobufs travel base64-encoded.
+template< typename Msg > std::string encodeOnboardingBlob(const Msg &msg) {
+	return QByteArray::fromStdString(msg.SerializeAsString()).toBase64().toStdString();
+}
+
+/// Inverse of `encodeOnboardingBlob`; false when the row is missing or junk.
+template< typename Msg > bool decodeOnboardingBlob(const QByteArray &encoded, Msg &out) {
+	if (encoded.isEmpty()) {
+		return false;
+	}
+	const QByteArray blob = QByteArray::fromBase64(encoded);
+	return out.ParseFromArray(blob.constData(), static_cast< int >(blob.size()));
+}
+
+} // namespace
+
+QString Server::onboardingIdentity(const ServerUser *u) {
+	if (!u) {
+		return QString();
+	}
+	if (!u->qsHash.isEmpty()) {
+		return u->qsHash;
+	}
+	// Password-authenticated users have no certificate hash. Their account is
+	// the only stable key left; without one there is nothing to remember them
+	// by, and storing the answers would only strand them.
+	if (u->iId >= 0) {
+		return QStringLiteral("uid:%1").arg(u->iId);
+	}
+	return QString();
+}
+
+const MumbleProto::FancyOnboardingResponse *Server::onboardingResponseFor(const QString &identity) {
+	if (identity.isEmpty()) {
+		return nullptr;
+	}
+	const auto cached = m_onboardingResponses.constFind(identity);
+	if (cached != m_onboardingResponses.constEnd()) {
+		return &cached.value();
+	}
+
+	QByteArray encoded;
+	m_dbWrapper.getConfigurationTo(iServerNum, onboardingResponseConfigKey(identity), encoded);
+	MumbleProto::FancyOnboardingResponse stored;
+	if (!decodeOnboardingBlob(encoded, stored)) {
+		return nullptr;
+	}
+	return &(m_onboardingResponses[identity] = stored);
+}
+
+void Server::ensureOnboardingConfigLoaded() {
+	if (m_onboardingConfigLoaded) {
+		return;
+	}
+	m_onboardingConfigLoaded = true;
+
+	QByteArray encoded;
+	m_dbWrapper.getConfigurationTo(iServerNum, ONBOARDING_CONFIG_KEY, encoded);
+	MumbleProto::FancyOnboardingConfig stored;
+	if (decodeOnboardingBlob(encoded, stored)) {
+		m_onboardingConfig = stored;
+	}
+}
+
+void Server::sendFancyOnboardingState(ServerUser *u) {
+	if (!u || u->sState != ServerUser::Authenticated) {
+		return;
+	}
+	if (!u->m_FancyVersion.has_value() || u->m_FancyVersion.value() < Version::fromComponents(0, 3, 1)) {
+		return;
+	}
+	ensureOnboardingConfigLoaded();
+
+	// Unconditional, and ahead of the config: an absent deliver is
+	// indistinguishable from one still in flight, so a client that never
+	// gets one has to assume the user has never answered.
+	MumbleProto::FancyOnboardingResponseDeliver deliver;
+	if (const MumbleProto::FancyOnboardingResponse *stored = onboardingResponseFor(onboardingIdentity(u))) {
+		*deliver.mutable_response() = *stored;
+	}
+	sendMessage(u, deliver);
+
+	if (m_onboardingConfig.has_enabled()) {
+		sendMessage(u, m_onboardingConfig);
+	}
+}
+
 void Server::msgFancyOnboardingConfig(ServerUser *, MumbleProto::FancyOnboardingConfig &) {
 	// Server -> Client only; ignore inbound.
 }
@@ -3960,6 +4371,10 @@ void Server::msgFancyOnboardingConfigUpdate(ServerUser *uSource,
 	}
 
 	MumbleProto::FancyOnboardingConfig config = msg.config();
+	// Load first: revisions must keep climbing across a restart, or answers
+	// stored against an older, higher revision would look like answers to a
+	// config from the future and never be re-asked.
+	ensureOnboardingConfigLoaded();
 	// Server-side metadata stamping; clients leave these empty.
 	const uint64_t prevRevision = m_onboardingConfig.has_revision() ? m_onboardingConfig.revision() : 0;
 	config.set_revision(prevRevision + 1);
@@ -3967,6 +4382,7 @@ void Server::msgFancyOnboardingConfigUpdate(ServerUser *uSource,
 	config.set_updated_at(static_cast< uint64_t >(QDateTime::currentMSecsSinceEpoch()));
 
 	m_onboardingConfig = config;
+	m_dbWrapper.setConfiguration(iServerNum, ONBOARDING_CONFIG_KEY, encodeOnboardingBlob(m_onboardingConfig));
 
 	// Broadcast to every Fancy 0.3.1+ client.
 	const Version::full_t minVersion = Version::fromComponents(0, 3, 1);
@@ -3990,17 +4406,19 @@ void Server::msgFancyOnboardingResponse(ServerUser *uSource,
 	MSG_SETUP(ServerUser::Authenticated);
 	RATELIMIT(uSource);
 
-	if (uSource->qsHash.isEmpty()) {
-		// Without a TLS certificate hash we cannot key the response
-		// stably across reconnects.
+	const QString identity = onboardingIdentity(uSource);
+	if (identity.isEmpty()) {
+		// Neither a certificate hash nor an account: nothing keys the
+		// response stably across reconnects, so it cannot be stored.
 		return;
 	}
 
 	// Stamp the sender's identity & timestamp; clients leave these empty.
-	msg.set_user_hash(uSource->qsHash.toStdString());
+	msg.set_user_hash(identity.toStdString());
 	msg.set_submitted_at(static_cast< uint64_t >(QDateTime::currentMSecsSinceEpoch()));
 
-	m_onboardingResponses[uSource->qsHash] = msg;
+	m_onboardingResponses[identity] = msg;
+	m_dbWrapper.setConfiguration(iServerNum, onboardingResponseConfigKey(identity), encodeOnboardingBlob(msg));
 
 	log(uSource, QString("onboarding response stored (%1 selections, revision %2)")
 					 .arg(msg.selections_size())
@@ -4013,8 +4431,8 @@ void Server::msgFancyOnboardingResponseQuery(ServerUser *uSource,
 	RATELIMIT(uSource);
 
 	MumbleProto::FancyOnboardingResponseDeliver reply;
-	if (!uSource->qsHash.isEmpty() && m_onboardingResponses.contains(uSource->qsHash)) {
-		*reply.mutable_response() = m_onboardingResponses.value(uSource->qsHash);
+	if (const MumbleProto::FancyOnboardingResponse *stored = onboardingResponseFor(onboardingIdentity(uSource))) {
+		*reply.mutable_response() = *stored;
 	}
 	sendMessage(uSource, reply);
 }
@@ -4255,6 +4673,10 @@ void Server::msgFancyServerSettingsUpdate(ServerUser *uSource,
 	}
 
 	QSet< QString > pluginsToReload;
+	// Keys that were actually applied, for the audit trail. Values are
+	// deliberately never recorded: server settings carry secrets (passwords,
+	// tokens) that must not be persisted into the audit log.
+	QJsonArray auditedKeys;
 	int applied = 0;
 	for (int i = 0; i < msg.settings_size(); ++i) {
 		const QString key   = u8(msg.settings(i).key());
@@ -4274,10 +4696,12 @@ void Server::msgFancyServerSettingsUpdate(ServerUser *uSource,
 			if (!pluginName.isEmpty()) {
 				pluginsToReload.insert(pluginName);
 			}
+			auditedKeys.append(key);
 			++applied;
 		} else if (isCoreSettingKey(key)) {
 			m_dbWrapper.setConfiguration(iServerNum, key.toStdString(), value.toStdString());
 			setLiveConf(key, value);
+			auditedKeys.append(key);
 			++applied;
 		}
 		// Unknown keys are ignored.
@@ -4302,6 +4726,14 @@ void Server::msgFancyServerSettingsUpdate(ServerUser *uSource,
 	log(uSource, QString("server settings updated (%1 change(s), revision %2)")
 					 .arg(applied)
 					 .arg(m_serverSettingsRevision));
+
+	if (m_auditBridge && applied > 0) {
+		QJsonObject detail;
+		detail.insert(QStringLiteral("revision"), static_cast< qint64 >(m_serverSettingsRevision));
+		detail.insert(QStringLiteral("changed"), static_cast< qint64 >(applied));
+		detail.insert(QStringLiteral("keys"), auditedKeys);
+		m_auditBridge->emitEvent(QStringLiteral("config"), uSource, nullptr, -1, detail);
+	}
 }
 
 
@@ -4800,6 +5232,15 @@ void Server::msgFancyPluginAdminSetEnabled(ServerUser *uSource,
 	if (result.ok) {
 		log(uSource, QString("plugin %1 %2")
 						 .arg(name, QLatin1String(enabled ? "enabled" : "disabled")));
+
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("plugin"), name);
+			m_auditBridge->emitEvent(enabled ? QStringLiteral("plugin.enable")
+											 : QStringLiteral("plugin.disable"),
+									 uSource, nullptr, -1, detail);
+		}
+
 		broadcastPluginAdminList(this);
 		broadcastPluginRegistry(this);
 		// A plugin enabling/disabling changes the editable settings list, so
@@ -4845,6 +5286,15 @@ void Server::msgFancyPluginAdminInstall(ServerUser *uSource,
 	if (result.ok) {
 		log(uSource,
 			QString("plugin %1 installed (%2)").arg(result.pluginName, marketplaceId));
+
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("plugin"), result.pluginName);
+			detail.insert(QStringLiteral("marketplace_id"), marketplaceId);
+			detail.insert(QStringLiteral("version"), version);
+			m_auditBridge->emitEvent(QStringLiteral("plugin.install"), uSource, nullptr, -1, detail);
+		}
+
 		broadcastPluginAdminList(this);
 		broadcastPluginRegistry(this);
 	} else {
@@ -4879,6 +5329,14 @@ void Server::msgFancyPluginAdminUninstall(ServerUser *uSource,
 	sendPluginAdminAck(this, uSource, MumbleProto::FancyPluginAdminAck_Verb_UNINSTALL, result);
 	if (result.ok) {
 		log(uSource, QString("plugin %1 uninstalled").arg(name));
+
+		if (m_auditBridge) {
+			QJsonObject detail;
+			detail.insert(QStringLiteral("plugin"), name);
+			m_auditBridge->emitEvent(QStringLiteral("plugin.uninstall"), uSource, nullptr, -1,
+									 detail);
+		}
+
 		broadcastPluginAdminList(this);
 		broadcastPluginRegistry(this);
 	}
@@ -5024,6 +5482,46 @@ void Server::msgFancyPollVote(ServerUser *uSource, MumbleProto::FancyPollVote &m
 }
 
 
+// Audit log (docs/audit-log.md section 5): the AuditLogBridge translates the
+// wire messages to/from the fancy-audit plugin over the generic plugin-host
+// request/response seam.
+
+void Server::msgFancyAuditQuery(ServerUser *uSource, MumbleProto::FancyAuditQuery &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	// ViewAudit resolves to Write on root today (§9.1). The plugin re-checks
+	// through the host permission callback; this is the fail-fast gate.
+	Channel *root = qhChannels.value(0);
+	if (!root || !uSource->hasPermission(root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (m_auditBridge) {
+		m_auditBridge->handleQuery(uSource, msg);
+	}
+}
+
+void Server::msgFancyAuditConfigUpdate(ServerUser *uSource, MumbleProto::FancyAuditConfigUpdate &msg) {
+	MSG_SETUP(ServerUser::Authenticated);
+	RATELIMIT(uSource);
+
+	// ConfigureAudit resolves to Write on root today (§9.2).
+	Channel *root = qhChannels.value(0);
+	if (!root || !uSource->hasPermission(root, ChanACL::Write)) {
+		PERM_DENIED(uSource, root, ChanACL::Write);
+		return;
+	}
+	if (m_auditBridge) {
+		m_auditBridge->handleConfigUpdate(uSource, msg);
+	}
+}
+
+// Server -> Client only; ignore inbound.
+void Server::msgFancyAuditResponse(ServerUser *, MumbleProto::FancyAuditResponse &) {}
+void Server::msgFancyAuditEvent(ServerUser *, MumbleProto::FancyAuditEvent &) {}
+void Server::msgFancyAuditConfig(ServerUser *, MumbleProto::FancyAuditConfig &) {}
+
 #undef RATELIMIT
 #undef MSG_SETUP
 #undef MSG_SETUP_NO_UNIDLE
@@ -5032,3 +5530,282 @@ void Server::msgFancyPollVote(ServerUser *uSource, MumbleProto::FancyPollVote &m
 #undef PERM_DENIED_TYPE
 #undef PERM_DENIED_FALLBACK
 #undef PERM_DENIED_HASH
+
+// ---------------------------------------------------------------------------
+// Fancy wire epoch 1: unwrap a service envelope and hand the message to the
+// handler that already knows it. The per-message handlers below are untouched
+// by the epoch - only how the message arrived has changed.
+// ---------------------------------------------------------------------------
+
+void Server::msgPchatEnvelope(ServerUser *uSource, MumbleProto::PchatEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::PchatEnvelope::kMessage:
+			msgPchatMessage(uSource, *msg.mutable_message());
+			break;
+		case MumbleProto::PchatEnvelope::kFetch:
+			msgPchatFetch(uSource, *msg.mutable_fetch());
+			break;
+		case MumbleProto::PchatEnvelope::kFetchResponse:
+			msgPchatFetchResponse(uSource, *msg.mutable_fetch_response());
+			break;
+		case MumbleProto::PchatEnvelope::kDeliver:
+			msgPchatMessageDeliver(uSource, *msg.mutable_deliver());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyAnnounce:
+			msgPchatKeyAnnounce(uSource, *msg.mutable_key_announce());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyExchange:
+			msgPchatKeyExchange(uSource, *msg.mutable_key_exchange());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyRequest:
+			msgPchatKeyRequest(uSource, *msg.mutable_key_request());
+			break;
+		case MumbleProto::PchatEnvelope::kAck:
+			msgPchatAck(uSource, *msg.mutable_ack());
+			break;
+		case MumbleProto::PchatEnvelope::kEpochCountersig:
+			msgPchatEpochCountersig(uSource, *msg.mutable_epoch_countersig());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyHolderReport:
+			msgPchatKeyHolderReport(uSource, *msg.mutable_key_holder_report());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyHoldersQuery:
+			msgPchatKeyHoldersQuery(uSource, *msg.mutable_key_holders_query());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyHoldersList:
+			msgPchatKeyHoldersList(uSource, *msg.mutable_key_holders_list());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyChallenge:
+			msgPchatKeyChallenge(uSource, *msg.mutable_key_challenge());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyChallengeResponse:
+			msgPchatKeyChallengeResponse(uSource, *msg.mutable_key_challenge_response());
+			break;
+		case MumbleProto::PchatEnvelope::kKeyChallengeResult:
+			msgPchatKeyChallengeResult(uSource, *msg.mutable_key_challenge_result());
+			break;
+		case MumbleProto::PchatEnvelope::kDeleteMessages:
+			msgPchatDeleteMessages(uSource, *msg.mutable_delete_messages());
+			break;
+		case MumbleProto::PchatEnvelope::kOfflineQueueDrain:
+			msgPchatOfflineQueueDrain(uSource, *msg.mutable_offline_queue_drain());
+			break;
+		case MumbleProto::PchatEnvelope::kSenderKeyDistribution:
+			msgPchatSenderKeyDistribution(uSource, *msg.mutable_sender_key_distribution());
+			break;
+		case MumbleProto::PchatEnvelope::kPin:
+			msgPchatPin(uSource, *msg.mutable_pin());
+			break;
+		case MumbleProto::PchatEnvelope::kPinDeliver:
+			msgPchatPinDeliver(uSource, *msg.mutable_pin_deliver());
+			break;
+		case MumbleProto::PchatEnvelope::kPinFetchResponse:
+			msgPchatPinFetchResponse(uSource, *msg.mutable_pin_fetch_response());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgSocialEnvelope(ServerUser *uSource, MumbleProto::SocialEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::SocialEnvelope::kReaction:
+			msgPchatReaction(uSource, *msg.mutable_reaction());
+			break;
+		case MumbleProto::SocialEnvelope::kReactionDeliver:
+			msgPchatReactionDeliver(uSource, *msg.mutable_reaction_deliver());
+			break;
+		case MumbleProto::SocialEnvelope::kReactionFetchResponse:
+			msgPchatReactionFetchResponse(uSource, *msg.mutable_reaction_fetch_response());
+			break;
+		case MumbleProto::SocialEnvelope::kCustomReactions:
+			msgFancyCustomReactionsConfig(uSource, *msg.mutable_custom_reactions());
+			break;
+		case MumbleProto::SocialEnvelope::kReadReceipt:
+			msgFancyReadReceipt(uSource, *msg.mutable_read_receipt());
+			break;
+		case MumbleProto::SocialEnvelope::kReadReceiptDeliver:
+			msgFancyReadReceiptDeliver(uSource, *msg.mutable_read_receipt_deliver());
+			break;
+		case MumbleProto::SocialEnvelope::kTyping:
+			msgFancyTypingIndicator(uSource, *msg.mutable_typing());
+			break;
+		case MumbleProto::SocialEnvelope::kWatchSync:
+			msgFancyWatchSync(uSource, *msg.mutable_watch_sync());
+			break;
+		case MumbleProto::SocialEnvelope::kDrawStroke:
+			msgFancyDrawStroke(uSource, *msg.mutable_draw_stroke());
+			break;
+		case MumbleProto::SocialEnvelope::kPoll:
+			msgFancyPoll(uSource, *msg.mutable_poll());
+			break;
+		case MumbleProto::SocialEnvelope::kPollVote:
+			msgFancyPollVote(uSource, *msg.mutable_poll_vote());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgPushEnvelope(ServerUser *uSource, MumbleProto::PushEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::PushEnvelope::kPushRegister:
+			msgFancyPushRegister(uSource, *msg.mutable_push_register());
+			break;
+		case MumbleProto::PushEnvelope::kUpdate:
+			msgFancyPushUpdate(uSource, *msg.mutable_update());
+			break;
+		case MumbleProto::PushEnvelope::kSubscribe:
+			msgFancySubscribePush(uSource, *msg.mutable_subscribe());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgScreenshareEnvelope(ServerUser *uSource, MumbleProto::ScreenshareEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::ScreenshareEnvelope::kSignal:
+			msgWebRtcSignal(uSource, *msg.mutable_signal());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgLinkPreviewEnvelope(ServerUser *uSource, MumbleProto::LinkPreviewEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::LinkPreviewEnvelope::kRequest:
+			msgFancyLinkPreviewRequest(uSource, *msg.mutable_request());
+			break;
+		case MumbleProto::LinkPreviewEnvelope::kResponse:
+			msgFancyLinkPreviewResponse(uSource, *msg.mutable_response());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgOnboardingEnvelope(ServerUser *uSource, MumbleProto::OnboardingEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::OnboardingEnvelope::kConfig:
+			msgFancyOnboardingConfig(uSource, *msg.mutable_config());
+			break;
+		case MumbleProto::OnboardingEnvelope::kConfigUpdate:
+			msgFancyOnboardingConfigUpdate(uSource, *msg.mutable_config_update());
+			break;
+		case MumbleProto::OnboardingEnvelope::kResponse:
+			msgFancyOnboardingResponse(uSource, *msg.mutable_response());
+			break;
+		case MumbleProto::OnboardingEnvelope::kResponseQuery:
+			msgFancyOnboardingResponseQuery(uSource, *msg.mutable_response_query());
+			break;
+		case MumbleProto::OnboardingEnvelope::kResponseDeliver:
+			msgFancyOnboardingResponseDeliver(uSource, *msg.mutable_response_deliver());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgPluginsEnvelope(ServerUser *uSource, MumbleProto::PluginsEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::PluginsEnvelope::kListRequest:
+			msgFancyPluginAdminListRequest(uSource, *msg.mutable_list_request());
+			break;
+		case MumbleProto::PluginsEnvelope::kList:
+			msgFancyPluginAdminList(uSource, *msg.mutable_list());
+			break;
+		case MumbleProto::PluginsEnvelope::kSetEnabled:
+			msgFancyPluginAdminSetEnabled(uSource, *msg.mutable_set_enabled());
+			break;
+		case MumbleProto::PluginsEnvelope::kInstall:
+			msgFancyPluginAdminInstall(uSource, *msg.mutable_install());
+			break;
+		case MumbleProto::PluginsEnvelope::kUninstall:
+			msgFancyPluginAdminUninstall(uSource, *msg.mutable_uninstall());
+			break;
+		case MumbleProto::PluginsEnvelope::kAck:
+			msgFancyPluginAdminAck(uSource, *msg.mutable_ack());
+			break;
+		case MumbleProto::PluginsEnvelope::kPluginMessage:
+			msgPluginMessage(uSource, *msg.mutable_plugin_message());
+			break;
+		case MumbleProto::PluginsEnvelope::kRegistry:
+			msgPluginRegistry(uSource, *msg.mutable_registry());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgServerConfigEnvelope(ServerUser *uSource, MumbleProto::ServerConfigEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::ServerConfigEnvelope::kSettings:
+			msgFancyServerSettings(uSource, *msg.mutable_settings());
+			break;
+		case MumbleProto::ServerConfigEnvelope::kSettingsUpdate:
+			msgFancyServerSettingsUpdate(uSource, *msg.mutable_settings_update());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgUserdataEnvelope(ServerUser *uSource, MumbleProto::UserdataEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::UserdataEnvelope::kAccountSettings:
+			msgFancyAccountSettings(uSource, *msg.mutable_account_settings());
+			break;
+		case MumbleProto::UserdataEnvelope::kAccountSettingsUpdate:
+			msgFancyAccountSettingsUpdate(uSource, *msg.mutable_account_settings_update());
+			break;
+		case MumbleProto::UserdataEnvelope::kAccountAck:
+			msgFancyAccountAck(uSource, *msg.mutable_account_ack());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}
+
+void Server::msgAuditEnvelope(ServerUser *uSource, MumbleProto::AuditEnvelope &msg) {
+	switch (msg.body_case()) {
+		case MumbleProto::AuditEnvelope::kQuery:
+			msgFancyAuditQuery(uSource, *msg.mutable_query());
+			break;
+		case MumbleProto::AuditEnvelope::kResponse:
+			msgFancyAuditResponse(uSource, *msg.mutable_response());
+			break;
+		case MumbleProto::AuditEnvelope::kEvent:
+			msgFancyAuditEvent(uSource, *msg.mutable_event());
+			break;
+		case MumbleProto::AuditEnvelope::kConfig:
+			msgFancyAuditConfig(uSource, *msg.mutable_config());
+			break;
+		case MumbleProto::AuditEnvelope::kConfigUpdate:
+			msgFancyAuditConfigUpdate(uSource, *msg.mutable_config_update());
+			break;
+		default:
+			// An arm this build does not know, or an empty envelope. Ignoring it
+			// is the point of the nesting: a newer peer costs us nothing.
+			break;
+	}
+}

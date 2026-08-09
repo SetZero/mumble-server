@@ -27,8 +27,8 @@ different trust and privacy properties.
   the bridge, *every* plugin can subscribe to them, not just the audit plugin.
 - **This is an admin/operator audit.** No end-user disclosure is required;
   there is an *optional* switch for admins who want to tell their users (§6.4).
-- **Git-style hash chain** for the record (§7.1) — decided, not a "maybe".
-- **Telemetry is OpenTelemetry (OTLP)** — the single chosen export path, and it
+- **Git-style hash chain** for the record (§7.1) - decided, not a "maybe".
+- **Telemetry is OpenTelemetry (OTLP)** - the single chosen export path, and it
   is enable/disable-able (§8).
 - **Two new permissions: `ViewAudit` and `ConfigureAudit`** (§9).
 - **Fine-grained, per-part toggles.** Every audit category, every signal, and
@@ -37,28 +37,28 @@ different trust and privacy properties.
   (§9.2). Plugin-initiated destructive/invasive actions are captured too (§7.10).
 - **Admin page with dual-mode search** (§10): a config half and a dashboard/
   viewer half, searchable both by point-and-click filters and by a SQL-like
-  query language — parsed with **`sqlparser`** behind a deny-by-default AST
+  query language - parsed with **`sqlparser`** behind a deny-by-default AST
   whitelist that lowers to the same gated query as the filter builder (§10.3).
 - **The event stream is a durable, Kafka-like log** (§7.10): append-only,
-  offset-addressed, per-consumer offsets, at-least-once with replay — so no
+  offset-addressed, per-consumer offsets, at-least-once with replay - so no
   event is lost because a plugin was busy or restarting.
 - **Every privileged plugin callback emits**; what gets *recorded* is a toggle,
   not an emit-time filter (§7.10, §9.2).
 - **Toggles stop the future, never rewrite the past** (§9.2): switching a part
   off halts new entries but deletes nothing, deletion is a separate audited
-  action, and the toggle change is itself an audit entry — so disabling the
+  action, and the toggle change is itself an audit entry - so disabling the
   watcher is the first thing the log shows.
 - **Permissions ride on ACL today, behind an `AuditAuthz` seam** (§9.1) so the
   model can be replaced later without touching call sites.
 - **Retention is configurable per part** with a 30-day default and a shipped
-  reference policy (§7.9) — and it is constrained, because it is the one
+  reference policy (§7.9) - and it is constrained, because it is the one
   legitimate deletion path: a hard 30-day floor on `audit.*`, lowering is never
   retroactive (expiry is stamped at write time), and every retention change is
   itself audited. An admin cannot shorten their way out of the record.
 - **Full-text search goes through a per-backend strategy** (§4): FTS5 / tsvector
   / `FULLTEXT`, with a `LIKE` fallback, chosen from live capabilities.
-- **Advanced SQL mode gets the full surface** — joins, unions, CTEs, aggregates
-  — made safe by moving the boundary into the database: read-only,
+- **Advanced SQL mode gets the full surface** - joins, unions, CTEs, aggregates
+  - made safe by moving the boundary into the database: read-only,
   view-scoped, engine-enforced (grants on PG/MySQL, an authorizer on SQLite),
   with resource guards and every query audited. **On by default**, but it
   self-tests the sandbox at startup and refuses to enable if the boundary
@@ -193,7 +193,7 @@ Notes:
   `(server_id, actor_user_id, ts)`, `(server_id, category, ts)`. Text search on
   `reason` / `detail_json` goes through a **search-strategy seam** rather than a
   lowest-common-denominator `LIKE`: a `TextSearch` trait with one implementation
-  per backend, each using the best that backend offers —
+  per backend, each using the best that backend offers -
 
   | Backend | Strategy |
   |---|---|
@@ -329,8 +329,8 @@ signal-view permission (§9).
   deletable per user (right-to-erasure) and covered by the retention policy.
 - **Reversibility.** Turning a part off stops *new* collection; it does not
   delete what was already gathered (§9.2). Removing existing data is a separate,
-  explicit and audited action — the retention policy or a right-to-erasure
-  request (§7.9) — so "stop collecting this" and "destroy what we collected"
+  explicit and audited action - the retention policy or a right-to-erasure
+  request (§7.9) - so "stop collecting this" and "destroy what we collected"
   stay distinct decisions.
 
 ### 6.5 Wire
@@ -368,7 +368,7 @@ entry_hash = SHA-256( parent_hash || canonical_encode(entry_without_hashes) )
   (fixed field order, no map ambiguity) so the hash is reproducible.
 - The chain is per virtual server; the genesis entry uses an all-zero parent.
 - **Signed checkpoints.** Periodically (every N entries / T minutes) the plugin
-  writes a checkpoint entry — `{ height, entry_hash, ts }` signed with the
+  writes a checkpoint entry - `{ height, entry_hash, ts }` signed with the
   server key. A checkpoint is a lightweight "tag": verifying it proves every
   entry up to that height is intact, without re-hashing the whole chain.
 - **Verification tool.** A `verify` path walks the chain and reports the first
@@ -380,7 +380,7 @@ This matters precisely because the people with DB write access *are* the people
 being audited: a rogue admin who deletes or edits a row breaks the chain
 visibly, and cannot forge a later signed checkpoint without the server key.
 (Optional next step: per-action moderator signatures, §7.11, prove *which*
-operator — the chain proves *nothing was tampered with*.)
+operator - the chain proves *nothing was tampered with*.)
 
 ### 7.2 Audit the auditors
 Viewing/searching/exporting/clearing the audit log is itself an `AuditEvent`
@@ -423,15 +423,15 @@ Loki, OTLP, Kibana, InfluxDB), see §8.
 
 ### 7.9 Retention & privacy policy surface
 
-Retention is the **only** thing that deletes on a schedule — toggles never do
-(§9.2) — and expiry runs as a documented, audited sweep. It is configurable per
+Retention is the **only** thing that deletes on a schedule - toggles never do
+(§9.2) - and expiry runs as a documented, audited sweep. It is configurable per
 part, with a 30-day global default for anything unlisted, and ships with this
 reference policy: privacy-sensitive data stays short, the accountability record
 lives long.
 
 | Part | Retention | Why |
 |---|---|---|
-| `audit.ban`, `audit.kick` | **indefinite** | the record most needed later — ban evasion, appeals |
+| `audit.ban`, `audit.kick` | **indefinite** | the record most needed later - ban evasion, appeals |
 | `audit.acl`, `audit.config`, `audit.plugin_admin`, `audit.access` | **2 years** | who changed permissions or disabled logging; slow-burn abuse |
 | `audit.register` | **2 years** | account lifecycle |
 | `audit.mute_deafen_suppress`, `audit.move`, `audit.channel`, `audit.pchat_moderation`, `audit.plugin_action` | **180 days** | routine and high-volume; useful for patterns, not forever |
@@ -450,22 +450,22 @@ otherwise set `audit.*` to one day and let their own actions expire. Three rules
 close that:
 
 1. **Hard floor of 30 days on `audit.*`.** The accountability categories cannot
-   be configured below it — not by an admin, not by config file, not by API. A
+   be configured below it - not by an admin, not by config file, not by API. A
    request to go lower is refused *and* recorded. (Signal parts have no floor;
    shortening those is a privacy improvement, not a cover-up.)
 2. **Lowering retention is never retroactive.** Each row's `expires_at` is
    stamped **at write time** from the policy then in force. Reducing a retention
-   setting therefore affects only records written afterwards — it cannot shorten
+   setting therefore affects only records written afterwards - it cannot shorten
    the life of anything that already exists. Raising retention may extend
    existing rows, since that direction is safe. This is the same principle as
    the toggle rule (§9.2): change the future, never rewrite the past.
 3. **Every retention change is an audit entry** (`category='config'`) recording
-   actor, part, old value and new value — and it lands in `audit.config`, which
+   actor, part, old value and new value - and it lands in `audit.config`, which
    is itself floored at 30 days and, under the reference policy, kept for two
    years. So the act of shortening retention outlives the shortening.
 
 Together these mean the fastest possible cover-up is "wait 30 days, in a log
-that already recorded you trying" — and expiring a chained entry leaves a
+that already recorded you trying" - and expiring a chained entry leaves a
 verifiable gap (§7.1) rather than a silent hole, so the chain still shows that
 *something* aged out.
 
@@ -518,11 +518,11 @@ stream is a **durable, append-only, offset-addressed log** owned by the host:
 - each subscribed plugin is a **consumer with its own committed offset**;
   delivery is **at-least-once** and resumes from the last commit after a plugin
   reload or a server restart;
-- consumers are **independent** — a stalled calendar plugin cannot block the
+- consumers are **independent** - a stalled calendar plugin cannot block the
   audit plugin, and a new plugin can **replay** history from offset 0 (or from
   the retention floor) to backfill;
 - the log is **bounded** by size/age. A consumer that lags past the floor gets
-  an explicit "gap" signal rather than silently missing events — the audit
+  an explicit "gap" signal rather than silently missing events - the audit
   plugin records that gap as an entry, so a hole in the record is itself
   visible.
 
@@ -540,7 +540,7 @@ calendar plugin isn't woken for every mute), applied as a server-side filter on
 the log read.
 
 **Auditing plugin actions themselves.** Plugins hold privileged
-`PluginContext` calls — `create_channel`, `grant_channel_access`,
+`PluginContext` calls - `create_channel`, `grant_channel_access`,
 `revoke_channel_access`, pchat message deletion, config writes. **Every
 privileged callback emits a `plugin.action` event**, not just a
 "destructive" subset: deciding up front which calls are interesting bakes a
@@ -548,9 +548,9 @@ judgement into the emit path, and the cheap, reversible place to make that
 choice is the *logging* toggle (§9.2), not the event source. Emission is
 uniform; what gets recorded is policy.
 
-The event is emitted **from inside the host's privileged callback** — never
+The event is emitted **from inside the host's privileged callback** - never
 self-reported by the calling plugin, which can't be trusted to report its own
-actions — and is tagged with the plugin name/slot, the operation and its
+actions - and is tagged with the plugin name/slot, the operation and its
 arguments. A plugin deleting a channel or revoking access therefore lands in
 the same hash-chained trail as a human admin doing it, with `source='plugin'`.
 Destructive callbacks can additionally be gated by policy (e.g. "channel
@@ -559,7 +559,7 @@ deletion by a plugin requires capability X"), enforced host-side.
 **Trust boundary.** Core still *owns* emitting the authoritative events (a
 plugin can't fabricate a "ban" it didn't cause, because the event originates in
 the core handler or the host's own privileged callback). The plugin owns
-*storage, chaining, policy, rules, export* — all the opinionated, swappable
+*storage, chaining, policy, rules, export* - all the opinionated, swappable
 parts. The trusted record stays sourced from trusted code.
 
 ### 7.11 Signed moderator actions (later)
@@ -572,8 +572,8 @@ which session) acted. Optional; layers on top of the chain in §7.1.
 ## 8. Telemetry & visualization integrations
 
 Operators running communities want dashboards, trend lines and alerts, not just
-a search box. Everything below ships over **one transport — OpenTelemetry
-(§8.1)** — to a collector that fans out to whatever backend the operator runs.
+a search box. Everything below ships over **one transport - OpenTelemetry
+(§8.1)** - to a collector that fans out to whatever backend the operator runs.
 Audit/signal data still has **two shapes**, and keeping them apart is the one
 thing that matters:
 
@@ -586,18 +586,18 @@ thing that matters:
 
 **Where it lives.** Not in the C++ core. The telemetry exporter is part of the
 audit **plugin**, which already subscribes to the server-event stream (§7.10)
-and holds the aggregates — so it exports what it already has. This keeps an
+and holds the aggregates - so it exports what it already has. This keeps an
 optional, vendor-touching integration out of the trusted server binary.
 
-### 8.1 OpenTelemetry (OTLP) — the export path (decided)
+### 8.1 OpenTelemetry (OTLP) - the export path (decided)
 
 Telemetry export is **OpenTelemetry, and only OpenTelemetry.** The plugin emits
 OTLP over gRPC/HTTP to an OpenTelemetry Collector; the collector fans out to
-whatever the operator runs — Prometheus, Loki, Tempo, Grafana / Grafana Cloud,
+whatever the operator runs - Prometheus, Loki, Tempo, Grafana / Grafana Cloud,
 Elastic/OpenSearch, InfluxDB, Datadog, Honeycomb, … One exporter in our code,
 any backend downstream, no vendor lock-in, nothing bespoke to maintain per
 target. We do **not** ship a Prometheus scrape endpoint, a Loki client, an
-InfluxDB writer, etc. — the collector already speaks all of those, so pushing
+InfluxDB writer, etc. - the collector already speaks all of those, so pushing
 them into the server would be redundant surface with its own failure modes.
 
 - **Enable/disable.** OTLP export is **off by default**, turned on per server by
@@ -607,7 +607,7 @@ them into the server would be redundant surface with its own failure modes.
 - **Signals of what.** Metrics and logs now; traces are available later for free
   (spans around slow queries / rule evaluation) since we're already on OTLP.
 
-### 8.2 What is exported — and cardinality discipline
+### 8.2 What is exported - and cardinality discipline
 
 OTLP carries the same two shapes (§ intro), and the metrics-vs-logs split is
 where the one classic mistake lives.
@@ -627,7 +627,7 @@ fancymumble.channels            gauge
 ```
 
 **Logs** (OTLP logs → Loki/Elastic/… via the collector): the individual audit
-entries as structured records. This is where **per-user drill-down** lives —
+entries as structured records. This is where **per-user drill-down** lives -
 filter by target in the log query, never as a metric attribute. The moderator's
 workflow is: a metrics panel shows the trend, click through to the log backend
 for the specific events. This is also where the "who could be a problematic
@@ -638,7 +638,7 @@ person" view resolves (see the rap sheet, §7.5).
 Ship a **starter dashboard** (JSON, committed under `docs/dashboards/`) built
 against the OTLP metrics above: moderation actions over time, top categories,
 flag rate, reports by category, connected users. Alerting (Grafana or
-Alertmanager) fires on the aggregates — e.g. "report rate > N / 5 min" pages a
+Alertmanager) fires on the aggregates - e.g. "report rate > N / 5 min" pages a
 moderator. Grafana is named because it's the likely default, but nothing here is
 Grafana-specific: any OTLP-fed backend can drive the same panels.
 
@@ -677,22 +677,22 @@ export_logs    = false                       # per-entry logs carry identities
 Two dedicated, grantable Fancy ACL bits (so communities can appoint auditors and
 audit-admins who aren't full server admins):
 
-- **`ViewAudit`** — read/search the audit log, run the chain `verify` (§7.1),
+- **`ViewAudit`** - read/search the audit log, run the chain `verify` (§7.1),
   view the per-user rap sheet (§7.5), and see aggregate signal counts. This is
   the "moderator/auditor" grant.
-- **`ConfigureAudit`** — change *what is collected and exported*: the per-part
+- **`ConfigureAudit`** - change *what is collected and exported*: the per-part
   toggles (§9.2), OTLP settings (§8), retention (§7.9), rules (§7.6), and the
   optional user-disclosure switch (§6.4). This is the "audit-admin" grant and is
   strictly higher than `ViewAudit`.
 
 Both are checked host-side, and every use of `ConfigureAudit` (and every
-clear/export) is itself an audit entry (§7.2). Viewing **raw signal edges** — the
-most privacy-sensitive data — requires `ViewAudit` **plus** the raw-signal part
+clear/export) is itself an audit entry (§7.2). Viewing **raw signal edges** - the
+most privacy-sensitive data - requires `ViewAudit` **plus** the raw-signal part
 being enabled (§9.2); it is not implied by a plain audit view. **Targets** never
 get access to signals about themselves (§6.3).
 
 **Backed by ACL for now, behind a seam.** Both permissions are implemented as
-Mumble ACL bits — that is what exists, what admins already understand, and what
+Mumble ACL bits - that is what exists, what admins already understand, and what
 the client permission editor can already display. But ACL is channel-scoped and
 coarse, and a future model (roles, per-scope grants, time-boxed audit access)
 may fit an audit system better. So the audit plugin does **not** call the ACL
@@ -707,14 +707,14 @@ trait AuditAuthz {
 ```
 
 with an ACL-backed implementation today. Swapping in a different model later is
-then one implementation, not a hunt through call sites — and the DB grants in
+then one implementation, not a hunt through call sites - and the DB grants in
 §10.4 key off the same three answers.
 
 ### 9.2 Fine-grained, per-part toggles
 
 There is no single on/off. Every collectable/exportable part is an independent
 switch owned by `ConfigureAudit`, so two operators can run very different
-policies on the same software — one collects mute telemetry, the next takes
+policies on the same software - one collects mute telemetry, the next takes
 explicit reports only. Conceptually a matrix of `{ part → collect?, export?,
 retention }`:
 
@@ -750,11 +750,11 @@ A toggle governs **what is recorded from now on. It never deletes what was
 already recorded.** Three consequences:
 
 1. **Turning a part off stops new entries only.** Existing history stays exactly
-   as it was. Anything else would be rewriting the past — and for chained
+   as it was. Anything else would be rewriting the past - and for chained
    entries (§7.1) it is not even possible without visibly breaking the chain,
    which is the point of having one.
-2. **Deleting is a separate, explicit, permissioned action** — retention policy
-   or a right-to-erasure request (§7.9) — never a side effect of flipping a
+2. **Deleting is a separate, explicit, permissioned action** - retention policy
+   or a right-to-erasure request (§7.9) - never a side effect of flipping a
    switch. That separation keeps "stop collecting this" and "destroy what we
    collected" from being the same gesture, because they are very different
    decisions.
@@ -773,7 +773,7 @@ toggle only decides what the audit plugin persists.
 ## 10. Admin page
 
 A single new page in the admin settings, in two halves (tabs). It has its **own
-self-contained dashboard** — it queries the audit table directly and renders its
+self-contained dashboard** - it queries the audit table directly and renders its
 own charts, so it works with zero external infrastructure. Grafana/OTLP (§8) is
 the *heavy-duty, optional* path for operators who want more; the admin page must
 never require it.
@@ -781,37 +781,37 @@ never require it.
 Two rendering surfaces, matching how plugins already do UI:
 
 - **In-client** via the plugin's `SettingsPanel` / component manifest
-  (`api/src/client_manifest.rs`) — good enough for the configuration half and
+  (`api/src/client_manifest.rs`) - good enough for the configuration half and
   basic filtering, no browser needed.
-- **Rich web page** — a plugin-served **React + MUI** app (the file-server web
+- **Rich web page** - a plugin-served **React + MUI** app (the file-server web
   pattern: Vite build, `@mui/material`, served over the plugin's axum HTTP) for
   the full Grafana/Kibana-style viewer with charts and advanced search.
 
-### 10.1 Half A — Configuration (requires `ConfigureAudit`)
+### 10.1 Half A - Configuration (requires `ConfigureAudit`)
 
-Renders the §9.2 toggle matrix as friendly grouped switches — **Audit**,
-**Signals**, **Telemetry**, **Retention**, **Rules**, **Disclosure** — so a
+Renders the §9.2 toggle matrix as friendly grouped switches - **Audit**,
+**Signals**, **Telemetry**, **Retention**, **Rules**, **Disclosure** - so a
 non-technical operator flips "collect mute telemetry" without touching a config
 file. Also:
 
 - assign `ViewAudit` / `ConfigureAudit` to users/groups (§9.1);
-- OTLP settings (endpoint, protocol, headers, which streams — §8);
+- OTLP settings (endpoint, protocol, headers, which streams - §8);
 - per-part retention (§7.9) and the rules editor (§7.6);
 - a live "what's being collected right now" summary and **chain status** with a
   one-click `verify` (§7.1).
 
 Every change here is itself an audit entry (`category='config'`, §7.2).
 
-### 10.2 Half B — Viewer (requires `ViewAudit`)
+### 10.2 Half B - Viewer (requires `ViewAudit`)
 
 Dashboard style modeled on the file-server admin page:
 
-- **KPI tiles** — actions today, active flags, open reports, distinct actors.
-- **Time-series & breakdown charts** — actions over time, by category, flag
+- **KPI tiles** - actions today, active flags, open reports, distinct actors.
+- **Time-series & breakdown charts** - actions over time, by category, flag
   rate, reports by category, top-N most-actioned users / most-active moderators.
   (Charts follow the project's dataviz conventions; the same aggregates that
   feed OTLP metrics in §8 drive them locally.)
-- **Results table** — the audit entries, keyset-paginated and sortable; click a
+- **Results table** - the audit entries, keyset-paginated and sortable; click a
   row for a detail drawer (full `detail_json`, chain position, `relates_to`
   links, jump to the user's rap sheet §7.5).
 - **The search scopes the whole dashboard** (Kibana-style): narrowing the query
@@ -819,7 +819,7 @@ Dashboard style modeled on the file-server admin page:
 - **Live tail** toggle (the subscribe stream, §5) and **export** (CSV/JSON) of
   the current result.
 
-### 10.3 Dual-mode search — the core requirement
+### 10.3 Dual-mode search - the core requirement
 
 One search, two front-ends onto the *same* query, kept in sync so users graduate
 from one to the other:
@@ -845,7 +845,7 @@ from one to the other:
 
 #### Two execution modes
 
-Power users asked for the *full* SQL surface — joins, unions, CTEs, aggregates —
+Power users asked for the *full* SQL surface - joins, unions, CTEs, aggregates -
 not a toy subset. That is worth having, but it changes where the security
 boundary can live, so the viewer has two modes:
 
@@ -860,7 +860,7 @@ of their first message, joined to their report count".
 
 **Why the boundary has to move.** In the restricted design, the parser *was* the
 security boundary: a whitelist that could only express what `FancyAuditQuery`
-allows. That does not survive joins and unions — `UNION SELECT` and arbitrary
+allows. That does not survive joins and unions - `UNION SELECT` and arbitrary
 joins are precisely the primitives that reach other tables, and a whitelist that
 permits them is no longer a boundary. So for advanced mode the enforcement moves
 down into the database, where it is a real, engine-level control rather than
@@ -868,8 +868,8 @@ string inspection (§10.4).
 
 #### Parser: what to build on (researched)
 
-There *is* a crate that advertises exactly "Lucene syntax → SQL" —
-[`lucene-query-syntax`](https://crates.io/crates/lucene-query-syntax) — and it is
+There *is* a crate that advertises exactly "Lucene syntax → SQL" -
+[`lucene-query-syntax`](https://crates.io/crates/lucene-query-syntax) - and it is
 **not usable here**:
 
 - **Licence: AGPL-3.0-or-later.** The server is BSD-licensed; linking AGPL code
@@ -884,9 +884,9 @@ Two viable options instead:
 | Option | Crate | Licence | Health (Jul 2026) | Trade-off |
 |---|---|---|---|---|
 | **A. Real SQL grammar** | [`sqlparser`](https://crates.io/crates/sqlparser) (sqlparser-rs, used by Apache DataFusion) | Apache-2.0 | v0.62, ~10.4M recent downloads | Battle-tested SQL grammar for free, and the only option that can serve *both* modes: `parse_expr()` for a standalone `WHERE`-style expression in simple mode, full statement parsing for validation/shaping in advanced mode (§10.4). Users get genuinely familiar syntax. |
-| **B. Hand-roll a tiny grammar** | [`winnow`](https://crates.io/crates/winnow) or [`chumsky`](https://crates.io/crates/chumsky) | MIT | winnow ~204M recent; chumsky ~8.6M recent, excellent error messages | Safe by construction, but caps expressiveness at whatever we implement — it cannot deliver the requested joins/unions without becoming a SQL engine of our own. Would also mean owning the grammar, errors and autocomplete metadata. |
+| **B. Hand-roll a tiny grammar** | [`winnow`](https://crates.io/crates/winnow) or [`chumsky`](https://crates.io/crates/chumsky) | MIT | winnow ~204M recent; chumsky ~8.6M recent, excellent error messages | Safe by construction, but caps expressiveness at whatever we implement - it cannot deliver the requested joins/unions without becoming a SQL engine of our own. Would also mean owning the grammar, errors and autocomplete metadata. |
 
-**Decided: A — `sqlparser`.** The ask is explicitly a SQL language, and
+**Decided: A - `sqlparser`.** The ask is explicitly a SQL language, and
 `sqlparser` gives the real grammar (and all its edge cases) for free under a
 compatible licence. In **simple mode** it parses an expression and lowers to
 `FancyAuditQuery`; in **advanced mode** it parses the full statement for
@@ -899,15 +899,15 @@ Full SQL is safe here only because the caller never touches base tables and
 never holds write capability. Four layers, in order of importance:
 
 1. **Views, not tables.** Advanced mode can reference only a small set of
-   curated read-only views — `audit_entries`, `audit_flags`,
+   curated read-only views - `audit_entries`, `audit_flags`,
    `audit_signals_agg`, and `audit_signal_edges`. The views project exactly the
    columns an auditor may see (identity snapshots, no internal chain plumbing)
    and are the *only* objects in scope.
 2. **The database enforces it, not the parser.** This is the actual boundary:
-   - **PostgreSQL / MySQL** — a dedicated role with `GRANT SELECT` on those
+   - **PostgreSQL / MySQL** - a dedicated role with `GRANT SELECT` on those
      views and nothing else. A `UNION SELECT` against any other table fails in
      the engine, not in our code.
-   - **SQLite** (no roles) — a separate connection opened `SQLITE_OPEN_READONLY`
+   - **SQLite** (no roles) - a separate connection opened `SQLITE_OPEN_READONLY`
      with an **authorizer callback** (`sqlite3_set_authorizer`, exposed by
      rusqlite as `set_authorizer`) that denies every action except `SELECT` on
      the whitelisted views, and refuses `ATTACH`, `PRAGMA`, DDL and DML
@@ -916,7 +916,7 @@ never holds write capability. Four layers, in order of importance:
 3. **Permission scoping lives in the grant.** `audit_signal_edges` (the raw
    who→whom data) is only reachable when the caller has that part enabled
    (§9.2); otherwise the object is simply not authorised. A `ViewAudit` holder
-   without it cannot reach the data no matter what SQL they write — there is no
+   without it cannot reach the data no matter what SQL they write - there is no
    query to get clever with.
 4. **Parse-time checks as defence in depth**, not as the boundary: reject
    anything that isn't a single `SELECT`/CTE, enforce a `LIMIT`, and extract the
@@ -927,17 +927,17 @@ advanced mode runs with a statement timeout, a hard row cap, and (SQLite) a
 progress handler that can interrupt a long-running statement. A slow query
 degrades that one request, not the server.
 
-**Every advanced query is audited** (§7.2) with its SQL text — the people with
+**Every advanced query is audited** (§7.2) with its SQL text - the people with
 the most query power are the ones most worth logging.
 
-**On by default — but it proves the sandbox first.** Advanced mode is available
+**On by default - but it proves the sandbox first.** Advanced mode is available
 to `ViewAudit` holders out of the box. Its safety depends on the deployment
 actually having the boundary in place (the right grants, or the authorizer
-installed), and an operator can't be expected to verify that by hand — so the
+installed), and an operator can't be expected to verify that by hand - so the
 plugin verifies it itself, at startup:
 
 - open the read-only/authorized connection and attempt a handful of things that
-  **must** fail — `SELECT` from a table outside the view set, a write, an
+  **must** fail - `SELECT` from a table outside the view set, a write, an
   `ATTACH`, a `PRAGMA`;
 - if every one is refused, advanced mode enables;
 - if *any* of them succeeds, advanced mode **stays off**, the server logs why,
@@ -952,7 +952,7 @@ doubles as the regression test for the grants and the authorizer.
 
 Full SQL must not become the only way to get answers:
 
-- **Filter builder first** (§10.3) — the default surface; no syntax at all.
+- **Filter builder first** (§10.3) - the default surface; no syntax at all.
 - **Builder → SQL escape hatch.** The pills can *generate* the equivalent SQL
   and drop it into the editor, which is how a non-technical user gradually
   learns the language instead of facing a blank editor.
@@ -960,16 +960,16 @@ Full SQL must not become the only way to get answers:
   (`category`, `severity`, `source`), and facet values pulled live from the
   data, plus signature help for functions. The server exposes the view schema +
   enum domains for this, so the client never hardcodes them.
-- **Query templates** — a starter library ("bans without a reason this month",
+- **Query templates** - a starter library ("bans without a reason this month",
   "most-actioned users", "moderator activity by day") that are ordinary saved
   queries, so they double as worked examples.
-- **Explain / dry-run** — show the row estimate and let the user cancel before
+- **Explain / dry-run** - show the row estimate and let the user cancel before
   running something expensive.
 
 [`tantivy`](https://crates.io/crates/tantivy) (MIT, healthy) is worth noting but
 is a different thing: a full search *engine* with its own index, not a SQL
 bridge. Only reach for it if we later want ranked full-text over `reason` /
-`detail_json` — and then it's a second index to keep in sync, not a replacement
+`detail_json` - and then it's a second index to keep in sync, not a replacement
 for the SQL path.
 
 ---
@@ -977,13 +977,13 @@ for the SQL path.
 ## 11. Implementation phases
 
 Since it's a plugin, the first real work is the **bridge event stream** (§7.10)
-— it's the dependency everything else hangs off, and it's independently useful.
+- it's the dependency everything else hangs off, and it's independently useful.
 
 1. **Bridge event stream (host + core).** Add the host→plugin `on_server_event`
    fan-out with per-`kind` subscription, and `emitServerEvent(...)` calls in the
    core moderation handlers (`msgUserRemove`, `msgBanList`, `msgUserState`,
    `msgACL`, channel lifecycle, registration, `FancyServerSettings`) plus the
-   host's privileged callbacks (`plugin.action`). No storage yet — a test plugin
+   host's privileged callbacks (`plugin.action`). No storage yet - a test plugin
    asserts the events arrive.
 2. **Audit plugin MVP.** `server_audit` table + migrations, git-style hash chain
    (§7.1), subscribe to the stream and record. `ConfigureAudit`/`ViewAudit`

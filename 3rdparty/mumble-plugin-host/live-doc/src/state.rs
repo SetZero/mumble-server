@@ -440,9 +440,9 @@ impl AppState {
 }
 
 fn generate_secret() -> Vec<u8> {
-    use rand::RngCore;
+    use rand::Rng;
     let mut buf = vec![0u8; 32];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     buf
 }
 

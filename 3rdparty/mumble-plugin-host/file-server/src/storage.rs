@@ -13,7 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use rand::RngCore;
+use rand::Rng;
 use rusqlite::{params, Connection};
 
 /// Length of the auto-generated signing secret in bytes.
@@ -454,7 +454,7 @@ pub fn load_or_create_signing_secret(
         fs::remove_file(&path)?;
     }
     let mut secret = [0u8; SIGNING_SECRET_BYTES];
-    rand::thread_rng().fill_bytes(&mut secret);
+    rand::rng().fill_bytes(&mut secret);
     write_secret_restricted(&path, &secret)?;
     Ok(secret)
 }

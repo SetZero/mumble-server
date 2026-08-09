@@ -116,6 +116,9 @@ jobs:
             3rdparty/mumble-plugin-host/target/release/libmumble_live_doc.so
             3rdparty/mumble-plugin-host/target/release/mumble_live_doc.dll
             3rdparty/mumble-plugin-host/target/release/libmumble_live_doc.dylib
+            3rdparty/mumble-plugin-host/target/release/libmumble_audit.so
+            3rdparty/mumble-plugin-host/target/release/mumble_audit.dll
+            3rdparty/mumble-plugin-host/target/release/libmumble_audit.dylib
             3rdparty/mumble-plugin-host/host/include/mumble_plugin_host.h
           if-no-files-found: warn
 

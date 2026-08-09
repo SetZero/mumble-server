@@ -25,6 +25,7 @@
 #include <soci/soci.h>
 
 #include <cassert>
+#include <chrono>
 #include <exception>
 #include <optional>
 #include <span>
