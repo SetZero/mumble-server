@@ -59,8 +59,8 @@ pub use crate::component_macros::__text_input_with_id;
 pub use crate::host_facade::{Caller, Host};
 pub use crate::permissions::Permissions;
 pub use crate::plugin::{
-    MumblePlugin, MumblePlugin_TO, PluginContext, PluginContext_TO, PluginMessageIn,
-    PluginMessageOut,
+    KvOp, KvPair, MumblePlugin, MumblePlugin_TO, NameRev, NamedObject, ObjectSlot, PluginContext,
+    PluginContext_TO, PluginMessageIn, PluginMessageOut,
 };
 
 // Re-export the proc-macros so plugin authors only need a single
@@ -77,7 +77,7 @@ pub use mumble_plugin_api_derive::{
 ///
 /// The host refuses to load any cdylib that exposes a different value
 /// from its [`FancyPluginMod::abi_version`] field.
-pub const PLUGIN_ABI_VERSION: u32 = 3;
+pub const PLUGIN_ABI_VERSION: u32 = 4;
 
 /// ABI version of the **WebAssembly** plugin contract, defined by the shared
 /// WIT package in `wit/` (`world.wit` *and* `ui.wit` - both belong to
@@ -96,7 +96,7 @@ pub const PLUGIN_ABI_VERSION: u32 = 3;
 /// generates its bindings from this same `wit/`) and the JS / Python / Go
 /// authoring SDKs, which cannot depend on this crate (`abi_stable` is not
 /// `wasm32`-buildable); keep all of them in lockstep with `wit/`.
-pub const WASM_ABI_VERSION: u32 = 2;
+pub const WASM_ABI_VERSION: u32 = 3;
 
 /// Name of the plain C-ABI function every plugin cdylib exports via
 /// [`fancy_export_plugin!`].  The host reads this *before* performing any
@@ -485,8 +485,12 @@ mod tests {
 
     #[test]
     fn abi_version_is_current() {
-        // Bumped to 3 when `PluginContext::send_request_response` was added.
-        assert_eq!(PLUGIN_ABI_VERSION, 3);
+        // Bumped to 3 when `PluginContext::send_request_response` was added,
+        // and to 4 for the storage half - `kv_*`, `object_*` and `name_*`
+        // (`docs/STORAGE-UNIFICATION.md` D5). The assertion exists so that
+        // adding a method to the vtable cannot pass without somebody deciding
+        // that every compiled plugin must be rebuilt.
+        assert_eq!(PLUGIN_ABI_VERSION, 4);
     }
 
     #[test]

@@ -67,6 +67,74 @@ pub struct PluginMessageOut {
     pub channel_id: ROption<ChannelId>,
 }
 
+/// One write in a KV batch. A `None` value is a delete.
+///
+/// Batches are applied atomically, which is what lets a plugin keep its own
+/// secondary indexes consistent with its records - the one thing key/value
+/// genuinely costs it over SQL (`docs/STORAGE.md` §5.6).
+#[repr(C)]
+#[derive(Debug, Clone, StableAbi)]
+pub struct KvOp {
+    /// The key, within this plugin's own namespace.
+    pub key: RVec<u8>,
+    /// The value to store, or `RNone` to remove the key.
+    pub value: ROption<RVec<u8>>,
+}
+
+/// One key/value pair a scan returned.
+#[repr(C)]
+#[derive(Debug, Clone, StableAbi)]
+pub struct KvPair {
+    /// The key.
+    pub key: RVec<u8>,
+    /// Its value.
+    pub value: RVec<u8>,
+}
+
+/// A writable slot for one object, and where to send the bytes.
+///
+/// The bytes never cross this boundary: the host hands back a short-lived
+/// signed URL and the plugin `PUT`s to it. That is the same split the control
+/// connection makes for a client's uploads, and for the same reason - a
+/// megabyte moved through the host is a megabyte blocking everything else.
+#[repr(C)]
+#[derive(Debug, Clone, StableAbi)]
+pub struct ObjectSlot {
+    /// The key the object will be stored under, for [`PluginContext::name_put`].
+    pub key: RString,
+    /// Where to send the bytes.
+    pub url: RString,
+    /// Which HTTP method to use.
+    pub method: RString,
+    /// When the URL stops working.
+    pub expires_at_ms: u64,
+}
+
+/// One revision of a name.
+#[repr(C)]
+#[derive(Debug, Clone, StableAbi)]
+pub struct NameRev {
+    /// False when the name has never been written, which is the ordinary
+    /// answer for a document being opened for the first time.
+    pub found: bool,
+    /// Which revision, from 1.
+    pub rev: u64,
+    /// The object this revision answers with.
+    pub key: RString,
+    /// When it was made.
+    pub created_at_ms: u64,
+}
+
+/// One name in a namespace, at the revision it currently answers with.
+#[repr(C)]
+#[derive(Debug, Clone, StableAbi)]
+pub struct NamedObject {
+    /// The name.
+    pub name: RString,
+    /// Its latest revision.
+    pub latest: NameRev,
+}
+
 /// Server-side handle plugins use to call back into the host.
 ///
 /// Cloneable across threads.  The host wraps its internal state in an
@@ -261,6 +329,114 @@ pub trait PluginContext: Send + Sync + 'static {
     fn revoke_channel_access(&self, server_id: ServerId, channel: ChannelId, user_id: u32) -> bool {
         let _ = (server_id, channel, user_id);
         false
+    }
+
+    /// Read one key from this plugin's own storage.
+    ///
+    /// The namespace is implicit: the host knows which plugin is calling and
+    /// scopes every operation to it, so a plugin cannot name - or reach -
+    /// another's data (`docs/STORAGE.md` L6).
+    ///
+    /// The default returns nothing, for a host that offers no storage.
+    fn kv_get(&self, server_id: ServerId, key: RSlice<'_, u8>) -> ROption<RVec<u8>> {
+        let _ = (server_id, key);
+        abi_stable::std_types::RNone
+    }
+
+    /// Every pair in `[start, end)`, in key order, at most `limit` of them.
+    ///
+    /// `reverse` walks the range backwards, which is what makes "the newest
+    /// N" a range scan rather than a sort: a key of `channel ‖ uuidv7` is
+    /// physically ordered by time, so the end of the range is the present.
+    fn kv_scan(
+        &self,
+        server_id: ServerId,
+        start: RSlice<'_, u8>,
+        end: RSlice<'_, u8>,
+        limit: u32,
+        reverse: bool,
+    ) -> RVec<KvPair> {
+        let _ = (server_id, start, end, limit, reverse);
+        RVec::new()
+    }
+
+    /// Apply a batch of writes atomically: all of them, or none.
+    fn kv_write(&self, server_id: ServerId, ops: RSlice<'_, KvOp>) -> PluginResult<()> {
+        let _ = (server_id, ops);
+        PluginResult::RErr(crate::PluginError::Other(
+            "this host offers no plugin storage".into(),
+        ))
+    }
+
+    /// Open a writable slot for one object in this plugin's namespace.
+    ///
+    /// `size` is the ceiling the slot is signed for; an upload past it is cut
+    /// off. `public` decides whether the object can be fetched by link with no
+    /// signature - which an emote must be, because an `<img>` cannot sign a
+    /// request, and a document must not.
+    fn object_reserve(
+        &self,
+        server_id: ServerId,
+        filename: RStr<'_>,
+        content_type: RStr<'_>,
+        size: u64,
+        public: bool,
+    ) -> ROption<ObjectSlot> {
+        let _ = (server_id, filename, content_type, size, public);
+        abi_stable::std_types::RNone
+    }
+
+    /// A short-lived signed URL to read one object back.
+    ///
+    /// Refused for a key outside this plugin's own namespace.
+    fn object_url(&self, server_id: ServerId, key: RStr<'_>) -> ROption<RString> {
+        let _ = (server_id, key);
+        abi_stable::std_types::RNone
+    }
+
+    /// Point `name` at `key`, as a new revision. Returns the revision number.
+    ///
+    /// `keep` bounds the history afterwards: `0` keeps every revision, `1` is
+    /// what something with no history wants. Objects left pointed at by
+    /// nothing are removed with the revisions that held them.
+    fn name_put(
+        &self,
+        server_id: ServerId,
+        name: RStr<'_>,
+        key: RStr<'_>,
+        keep: u64,
+    ) -> PluginResult<u64> {
+        let _ = (server_id, name, key, keep);
+        PluginResult::RErr(crate::PluginError::Other(
+            "this host offers no plugin storage".into(),
+        ))
+    }
+
+    /// What `name` currently answers with.
+    fn name_latest(&self, server_id: ServerId, name: RStr<'_>) -> ROption<NameRev> {
+        let _ = (server_id, name);
+        abi_stable::std_types::RNone
+    }
+
+    /// A name's revisions, newest first.
+    fn name_revisions(&self, server_id: ServerId, name: RStr<'_>, limit: u32) -> RVec<NameRev> {
+        let _ = (server_id, name, limit);
+        RVec::new()
+    }
+
+    /// Every name this plugin has stored, each at its latest revision.
+    fn name_list(&self, server_id: ServerId) -> RVec<NamedObject> {
+        let _ = server_id;
+        RVec::new()
+    }
+
+    /// Forget a name and every revision of it, removing the objects that
+    /// nothing else points at.
+    fn name_forget(&self, server_id: ServerId, name: RStr<'_>) -> PluginResult<()> {
+        let _ = (server_id, name);
+        PluginResult::RErr(crate::PluginError::Other(
+            "this host offers no plugin storage".into(),
+        ))
     }
 }
 

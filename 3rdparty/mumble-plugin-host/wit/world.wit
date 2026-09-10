@@ -17,6 +17,40 @@
 package mumble:plugin@0.1.0;
 
 interface types {
+    /// One write in a KV batch. A missing value is a delete.
+    record kv-op {
+        key: list<u8>,
+        value: option<list<u8>>,
+    }
+
+    /// One key/value pair a scan returned.
+    record kv-pair {
+        key: list<u8>,
+        value: list<u8>,
+    }
+
+    /// A writable slot for one object, and where to send the bytes.
+    record object-slot {
+        key: string,
+        url: string,
+        method: string,
+        expires-at-ms: u64,
+    }
+
+    /// One revision of a name.
+    record name-rev {
+        found: bool,
+        rev: u64,
+        key: string,
+        created-at-ms: u64,
+    }
+
+    /// One name at the revision it currently answers with.
+    record named-object {
+        name: string,
+        latest: name-rev,
+    }
+
     /// Virtual server id within a single murmur process.
     type server-id = u32;
     /// Connected client session id within a virtual server.
@@ -69,6 +103,7 @@ interface types {
 /// Implemented by the host; only valid while a `plugin` export call is running.
 interface host {
     use types.{server-id, session-id, channel-id, plugin-message-out, plugin-error};
+    use types.{kv-op, kv-pair, object-slot, name-rev, named-object};
 
     /// Send a `PluginDataTransmission` to a single connected session.
     send-plugin-data: func(
@@ -113,6 +148,64 @@ interface host {
 
     /// Resolve a username (exact match) to its current session id.
     find-session-by-name: func(server-id: server-id, name: string) -> option<session-id>;
+
+    // -- storage -----------------------------------------------------------
+    //
+    // Until these existed a WASM plugin could not persist a single byte: the
+    // sandbox has no filesystem, no network and no environment, and the host
+    // offered nothing in their place. The namespace is implicit - the host
+    // knows which plugin is calling - so a key here cannot name another's.
+
+    /// Read one key from this plugin's own storage.
+    kv-get: func(server-id: server-id, key: list<u8>) -> option<list<u8>>;
+
+    /// Every pair in `[start, end)`, in key order, at most `limit` of them.
+    /// `reverse` walks the range backwards.
+    kv-scan: func(
+        server-id: server-id,
+        start: list<u8>,
+        end: list<u8>,
+        limit: u32,
+        reverse: bool,
+    ) -> list<kv-pair>;
+
+    /// Apply a batch of writes atomically: all of them, or none. The batch is
+    /// what makes a secondary index safe to keep.
+    kv-write: func(server-id: server-id, ops: list<kv-op>) -> result<_, plugin-error>;
+
+    /// Open a writable slot for one object in this plugin's namespace. The
+    /// bytes do not cross this boundary: `PUT` them to the returned URL.
+    object-reserve: func(
+        server-id: server-id,
+        filename: string,
+        content-type: string,
+        size: u64,
+        public: bool,
+    ) -> option<object-slot>;
+
+    /// A short-lived signed URL to read one of this plugin's objects back.
+    object-url: func(server-id: server-id, key: string) -> option<string>;
+
+    /// Point a name at an object, as a new revision. `keep` bounds the history
+    /// afterwards; `0` keeps every revision.
+    name-put: func(
+        server-id: server-id,
+        name: string,
+        key: string,
+        keep: u64,
+    ) -> result<u64, plugin-error>;
+
+    /// What a name currently answers with.
+    name-latest: func(server-id: server-id, name: string) -> option<name-rev>;
+
+    /// A name's revisions, newest first.
+    name-revisions: func(server-id: server-id, name: string, limit: u32) -> list<name-rev>;
+
+    /// Every name this plugin has stored, each at its latest revision.
+    name-list: func(server-id: server-id) -> list<named-object>;
+
+    /// Forget a name and every revision of it.
+    name-forget: func(server-id: server-id, name: string) -> result<_, plugin-error>;
 }
 
 /// Hooks the guest implements (mirrors the native `MumblePlugin` trait).

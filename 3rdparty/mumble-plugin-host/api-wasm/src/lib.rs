@@ -61,7 +61,7 @@
 /// ABI version this binding crate targets. The host rejects a component whose
 /// `abi-version` export does not equal its own `PLUGIN_ABI_VERSION`; return
 /// this value from [`Guest::abi_version`].
-pub const PLUGIN_ABI_VERSION: u32 = 2;
+pub const PLUGIN_ABI_VERSION: u32 = 3;
 
 // Component bindings generated from the shared WIT. Emitted at the crate root
 // (not a private module) so the re-exported `export_plugin!` macro can resolve
