@@ -20,6 +20,8 @@
 //! The raw free functions remain available for macro-generated code
 //! and for plugins that prefer them.
 
+use abi_stable::std_types::RResult::{RErr, ROk};
+use abi_stable::std_types::ROption::{RNone, RSome};
 use abi_stable::std_types::{RArc, ROption, RSlice, RStr, RString, RVec};
 
 use crate::client_manifest::InteractionResponse;
@@ -28,7 +30,10 @@ use crate::commands::{
     send_interaction_response_to_sessions,
 };
 use crate::permissions::Permissions;
-use crate::plugin::{PluginContext_TO, PluginMessageIn, PluginMessageOut};
+use crate::plugin::{
+    KvOp, NameRev, NamedObject, ObjectSlot, PluginContext_TO, PluginMessageIn,
+    PluginMessageOut,
+};
 use crate::{ChannelId, PluginError, PluginResult, ServerId, SessionId};
 
 /// Lightweight description of the user / channel / server that
@@ -426,6 +431,175 @@ impl<'a> Host<'a> {
             channel_id,
             response,
         );
+    }
+
+    /// Read one key from this plugin's own storage.
+    ///
+    /// The namespace is implicit - the host scopes every operation to the
+    /// calling plugin - so a key here cannot collide with, or reach, another
+    /// plugin's data.
+    #[must_use]
+    pub fn kv_get(&self, server_id: ServerId, key: &[u8]) -> Option<Vec<u8>> {
+        self.ctx
+            .kv_get(server_id, RSlice::from_slice(key))
+            .into_option()
+            .map(RVec::into_vec)
+    }
+
+    /// Every pair in `[start, end)`, in key order, at most `limit` of them.
+    ///
+    /// `reverse` walks it backwards, which is how "the newest N" is a range
+    /// scan rather than a sort.
+    #[must_use]
+    pub fn kv_scan(
+        &self,
+        server_id: ServerId,
+        start: &[u8],
+        end: &[u8],
+        limit: u32,
+        reverse: bool,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.ctx
+            .kv_scan(
+                server_id,
+                RSlice::from_slice(start),
+                RSlice::from_slice(end),
+                limit,
+                reverse,
+            )
+            .into_iter()
+            .map(|pair| (pair.key.into_vec(), pair.value.into_vec()))
+            .collect()
+    }
+
+    /// Store one key.
+    ///
+    /// # Errors
+    ///
+    /// [`PluginError`] when the host has no storage or the write failed.
+    pub fn kv_put(&self, server_id: ServerId, key: &[u8], value: &[u8]) -> Result<(), PluginError> {
+        self.kv_write(
+            server_id,
+            &[KvOp {
+                key: key.to_vec().into(),
+                value: RSome(value.to_vec().into()),
+            }],
+        )
+    }
+
+    /// Remove one key.
+    ///
+    /// # Errors
+    ///
+    /// As [`Host::kv_put`].
+    pub fn kv_delete(&self, server_id: ServerId, key: &[u8]) -> Result<(), PluginError> {
+        self.kv_write(
+            server_id,
+            &[KvOp {
+                key: key.to_vec().into(),
+                value: RNone,
+            }],
+        )
+    }
+
+    /// Apply a batch of writes atomically: all of them, or none.
+    ///
+    /// The batch is what makes a secondary index safe to keep - the record and
+    /// the index entry that points at it land together or not at all.
+    ///
+    /// # Errors
+    ///
+    /// As [`Host::kv_put`].
+    pub fn kv_write(&self, server_id: ServerId, ops: &[KvOp]) -> Result<(), PluginError> {
+        result_to_std(self.ctx.kv_write(server_id, RSlice::from_slice(ops)))
+    }
+
+    /// Open a writable slot for one object in this plugin's namespace.
+    ///
+    /// The bytes do not travel through the host: `PUT` them to the returned
+    /// URL, then point a name at [`ObjectSlot::key`] with [`Host::name_put`].
+    #[must_use]
+    pub fn object_reserve(
+        &self,
+        server_id: ServerId,
+        filename: &str,
+        content_type: &str,
+        size: u64,
+        public: bool,
+    ) -> Option<ObjectSlot> {
+        self.ctx
+            .object_reserve(
+                server_id,
+                RStr::from_str(filename),
+                RStr::from_str(content_type),
+                size,
+                public,
+            )
+            .into_option()
+    }
+
+    /// A short-lived signed URL to read one object back.
+    #[must_use]
+    pub fn object_url(&self, server_id: ServerId, key: &str) -> Option<String> {
+        self.ctx
+            .object_url(server_id, RStr::from_str(key))
+            .into_option()
+            .map(RString::into_string)
+    }
+
+    /// Point `name` at `key`, as a new revision. Returns the revision number.
+    ///
+    /// `keep` bounds the history afterwards: `0` keeps everything, `1` keeps
+    /// only what the name now answers with.
+    ///
+    /// # Errors
+    ///
+    /// [`PluginError`] when the host has no storage or the write failed.
+    pub fn name_put(
+        &self,
+        server_id: ServerId,
+        name: &str,
+        key: &str,
+        keep: u64,
+    ) -> Result<u64, PluginError> {
+        match self
+            .ctx
+            .name_put(server_id, RStr::from_str(name), RStr::from_str(key), keep)
+        {
+            ROk(rev) => Ok(rev),
+            RErr(error) => Err(error),
+        }
+    }
+
+    /// What `name` currently answers with, or `None` for one never written.
+    #[must_use]
+    pub fn name_latest(&self, server_id: ServerId, name: &str) -> Option<NameRev> {
+        self.ctx
+            .name_latest(server_id, RStr::from_str(name))
+            .into_option()
+    }
+
+    /// A name's revisions, newest first.
+    #[must_use]
+    pub fn name_revisions(&self, server_id: ServerId, name: &str, limit: u32) -> Vec<NameRev> {
+        self.ctx
+            .name_revisions(server_id, RStr::from_str(name), limit)
+            .into_vec()
+    }
+
+    /// Every name this plugin has stored, each at its latest revision.
+    #[must_use]
+    pub fn name_list(&self, server_id: ServerId) -> Vec<NamedObject> {
+        self.ctx.name_list(server_id).into_vec()
+    }
+
+    /// Forget a name and every revision of it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Host::name_put`].
+    pub fn name_forget(&self, server_id: ServerId, name: &str) -> Result<(), PluginError> {
+        result_to_std(self.ctx.name_forget(server_id, RStr::from_str(name)))
     }
 }
 
